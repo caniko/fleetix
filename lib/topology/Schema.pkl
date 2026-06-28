@@ -1,0 +1,107 @@
+/// Fleet topology schema — typed class definitions
+/// Consumed by host files and aggregator.
+
+class LinkRole = "server" | "client" | "peer"
+
+class DeviceType = "server" | "desktop" | "laptop"
+
+class Link {
+  subnet: String
+  port: UInt16 = 0
+  endpointSubdomain: String? = null
+  exemptFromProxy: Boolean = false
+}
+
+class LinkBinding {
+  address: String
+  publicKey: String? = null
+  role: LinkRole = "client"
+  externalInterface: String? = null
+}
+
+class Network {
+  lanIp: String? = null
+  lanBroadcast: String? = null
+  macAddress: String? = null
+  directLinkIp: String? = null
+  directLinkMac: String? = null
+  directLinkInterface: String? = null
+  directLinkPeers: Listing<String> = new Listing {}
+  wakeOnLanInterface: String? = null
+}
+
+class Rebuild {
+  buildHost: String? = null
+  useSubstitutes: Boolean = false
+}
+
+class User {
+  hasAccount: Boolean
+  personalPc: Boolean = false
+  gpg: String? = null
+}
+
+class Gpu {
+  igpu: String? = null
+  dgpu: String? = null
+}
+
+class Storage {
+  dataRoot: String? = null
+}
+
+class Host {
+  system: String
+  deviceType: DeviceType? = null
+  hostPubkey: String? = null
+  hostNames: Listing<String> = new Listing {}
+  network: Network = new Network {}
+  rebuild: Rebuild = new Rebuild {}
+  links: Mapping<String, LinkBinding> = new {}
+  users: Mapping<String, User> = new {}
+  gpu: Gpu = new Gpu {}
+  storage: Storage = new Storage {}
+}
+
+class DynamicHost {
+  fqdn: String
+  proxied: Boolean = false
+  zone: String? = null
+}
+
+class Domains {
+  zones: Listing<String> = new Listing {}
+  mailSubdomain: String? = null
+  vpnSubdomain: String? = null
+  managedZones: Listing<String> = new Listing {}
+  dynamicHosts: Listing<DynamicHost> = new Listing {}
+}
+
+class ReverseProxyService {
+  name: String
+  hostname: String? = null
+  port: UInt16
+  targetHost: String? = null
+  proxied: Boolean = false
+  cloudflareProxied: Boolean = false
+  publishCname: Boolean = true
+  vpnOnly: Boolean = false
+  upstreamScheme: String? = null
+  tlsServerName: String? = null
+}
+
+class StaticFileService {
+  name: String
+  hostname: String? = null
+  kind: String? = null
+  cloudflareProxied: Boolean = false
+  dnsComment: String? = null
+}
+
+class Services {
+  sshPort: UInt16 = 1337
+  hostSshKeyPath: String? = null
+  hostSshPubKeyPath: String? = null
+  reverseProxyServices: Listing<ReverseProxyService> = new Listing {}
+  staticFileServices: Listing<StaticFileService> = new Listing {}
+}
