@@ -79,7 +79,6 @@ fn network_to_nix(net: &Network) -> String {
     field_opt(&mut out, "lanIp", &net.lan_ip);
     field_opt(&mut out, "lanBroadcast", &net.lan_broadcast);
     field_opt(&mut out, "macAddress", &net.mac_address);
-    field_opt(&mut out, "lanInterface", &net.lan_interface);
     field_opt(&mut out, "directLinkIp", &net.direct_link_ip);
     field_opt(&mut out, "directLinkMac", &net.direct_link_mac);
     field_opt(&mut out, "directLinkInterface", &net.direct_link_interface);
