@@ -152,10 +152,10 @@ fn storage_to_nix(st: &Storage) -> String {
 
 fn domains_to_nix(d: &Domains) -> String {
     let mut out = "{ __pkl_class = \"Domains\"; ".to_string();
-    out.push_str(&format!("zones = [{}]; ", d.zones.iter().map(nix_str).collect::<Vec<_>>().join(" ")));
+    out.push_str(&format!("zones = [{}]; ", d.zones.iter().map(|s| nix_str(s)).collect::<Vec<_>>().join(" ")));
     field_opt(&mut out, "mailSubdomain", &d.mail_subdomain);
     field_opt(&mut out, "vpnSubdomain", &d.vpn_subdomain);
-    out.push_str(&format!("managedZones = [{}]; ", d.managed_zones.iter().map(nix_str).collect::<Vec<_>>().join(" ")));
+    out.push_str(&format!("managedZones = [{}]; ", d.managed_zones.iter().map(|s| nix_str(s)).collect::<Vec<_>>().join(" ")));
     out.push_str(&format!("dynamicHosts = [{}]; ", d.dynamic_hosts.iter().map(dynamic_host_to_nix).collect::<Vec<_>>().join(" ")));
     out.push('}');
     out
