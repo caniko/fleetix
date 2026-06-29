@@ -117,8 +117,8 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
 
         Cli::Eval { path } => {
             let topo = topology::load_topology(&path).await?;
-            let json = serde_json::to_string_pretty(&topo).into_diagnostic()?;
-            println!("{json}");
+            let nix = crate::nix::topology_to_nix(&topo);
+            println!("{nix}");
         }
 
         Cli::EvalJson { path } => {

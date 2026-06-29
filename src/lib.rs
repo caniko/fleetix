@@ -1,4 +1,5 @@
 pub mod accessors;
+pub mod nix;
 pub mod topology;
 pub mod validate;
 
