@@ -157,6 +157,70 @@
             grep -q "emailIdentities =" topology.nix
             touch $out
           '';
+
+          fleetix-lib-helpers = let
+            topology = {
+              hosts = {
+                atlas = {
+                  network = {
+                    lanIp = "192.168.178.88";
+                    directLinkIp = "10.10.0.1";
+                  };
+                  links.wg-home.address = "10.123.0.5";
+                };
+                nomad = {
+                  network = {};
+                  links.direct-link.address = "10.10.0.2";
+                };
+              };
+              services.reverseProxyServices = [
+                {
+                  name = "immich";
+                  port = 2283;
+                  targetHost = "atlas";
+                  lanExposed = true;
+                }
+                {
+                  name = "ollama";
+                  port = 11434;
+                  targetHost = "atlas";
+                  vpnOnly = true;
+                }
+              ];
+            };
+            endpoint = self.lib.serviceEndpoint {
+              inherit topology;
+              serviceName = "immich";
+              addressPolicy = [ "direct-link" "lan" ];
+            };
+            nodes = self.lib.adapters.infernix.mkFleetNodes {
+              inherit topology;
+              nodes = {
+                atlas.models.qwen3-vl = {
+                  name = "qwen3-vl";
+                  capabilities = [ "chat" ];
+                };
+                nomad = {
+                  addressPolicy = [ "direct-link" ];
+                  modelPort = 8015;
+                  models.embed = {
+                    name = "embed";
+                    capabilities = [ "embeddings" ];
+                  };
+                };
+              };
+            };
+          in pkgs.runCommand "fleetix-lib-helpers" {} ''
+            test "${self.lib.resolveHostAddress { inherit topology; hostName = "atlas"; policy = [ "lan" ]; }}" = "192.168.178.88"
+            test "${self.lib.resolveHostAddress { inherit topology; hostName = "nomad"; policy = [ "direct-link" ]; }}" = "10.10.0.2"
+            test "${endpoint.url}" = "http://10.10.0.1:2283"
+            test "${toString (self.lib.lanExposedPorts { inherit topology; hostName = "atlas"; })}" = "2283"
+            test "${nodes.atlas.address}" = "192.168.178.88"
+            test "${toString nodes.atlas.modelPort}" = "8013"
+            test "${nodes.nomad.address}" = "10.10.0.2"
+            test "${toString nodes.nomad.modelPort}" = "8015"
+            touch $out
+          '';
         }
       );
 

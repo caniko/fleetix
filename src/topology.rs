@@ -182,7 +182,7 @@ pub struct CodebergPagesSite {
     pub target_repo: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
     #[serde(default = "default_ssh_port")]
