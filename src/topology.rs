@@ -33,6 +33,8 @@ pub struct LinkBinding {
     pub role: LinkRole,
     #[serde(default)]
     pub external_interface: Option<String>,
+    #[serde(default)]
+    pub mac_address: Option<String>,
 }
 
 fn default_link_role() -> LinkRole {
@@ -94,6 +96,8 @@ pub struct Network {
     pub lan_broadcast: Option<String>,
     #[serde(default)]
     pub mac_address: Option<String>,
+    #[serde(default)]
+    pub lan_interface: Option<String>,
     #[serde(default)]
     pub direct_link_ip: Option<String>,
     #[serde(default)]
@@ -157,6 +161,8 @@ pub struct Domains {
     pub managed_zones: Vec<String>,
     #[serde(default)]
     pub dynamic_hosts: Vec<DynamicHost>,
+    #[serde(default)]
+    pub codeberg_pages_sites: Vec<CodebergPagesSite>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +173,13 @@ pub struct DynamicHost {
     pub proxied: bool,
     #[serde(default)]
     pub zone: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodebergPagesSite {
+    pub subdomain: String,
+    pub target_repo: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +195,10 @@ pub struct Services {
     pub reverse_proxy_services: Vec<ReverseProxyService>,
     #[serde(default)]
     pub static_file_services: Vec<StaticFileService>,
+    #[serde(default)]
+    pub internal_services: Vec<InternalService>,
+    #[serde(default)]
+    pub email_identities: EmailIdentities,
 }
 
 fn default_ssh_port() -> u16 {
@@ -227,6 +244,32 @@ pub struct StaticFileService {
     pub cloudflare_proxied: bool,
     #[serde(default)]
     pub dns_comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InternalService {
+    pub name: String,
+    pub port: u16,
+    #[serde(default)]
+    pub target_host: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailIdentities {
+    #[serde(default)]
+    pub admin_email: Option<String>,
+    #[serde(default)]
+    pub noreply_email: Option<String>,
+    #[serde(default)]
+    pub cloudflare_contact_email: Option<String>,
+    #[serde(default)]
+    pub brevo_login: Option<String>,
+    #[serde(default)]
+    pub postmaster_email: Option<String>,
 }
 
 /// Evaluate a .pkl topology file and produce a typed Topology value.

@@ -1,9 +1,9 @@
-// Fleet topology schema.
-// Consuming flakes own real topology data.
+// Generic Fleetix topology module.
+// Real fleet data belongs in the consuming flake.
 
 class Link {
   subnet: String
-  port: UInt16 = 0
+  port: Int = 0
   endpointSubdomain: String? = null
   exemptFromProxy: Boolean = false
 }
@@ -40,14 +40,8 @@ class User {
   signingKey: String? = null
 }
 
-class Gpu {
-  igpu: String? = null
-  dgpu: String? = null
-}
-
-class Storage {
-  dataRoot: String? = null
-}
+class Gpu { igpu: String? = null; dgpu: String? = null }
+class Storage { dataRoot: String? = null }
 
 class Host {
   system: String
@@ -62,11 +56,8 @@ class Host {
   storage: Storage = new Storage {}
 }
 
-class DynamicHost {
-  fqdn: String
-  proxied: Boolean = false
-  zone: String? = null
-}
+class DynamicHost { fqdn: String; proxied: Boolean = false; zone: String? = null }
+class CodebergPagesSite { subdomain: String; targetRepo: String }
 
 class Domains {
   zones: Listing<String> = new Listing {}
@@ -78,31 +69,21 @@ class Domains {
 }
 
 class ReverseProxyService {
-  name: String
-  hostname: String? = null
-  port: UInt16
-  targetHost: String? = null
-  proxied: Boolean = false
-  cloudflareProxied: Boolean = false
-  publishCname: Boolean = true
-  vpnOnly: Boolean = false
-  upstreamScheme: String? = null
-  tlsServerName: String? = null
-  serviceHost: String? = null
-  zone: String? = null
+  name: String; hostname: String? = null; port: Int
+  targetHost: String? = null; proxied: Boolean = false
+  cloudflareProxied: Boolean = false; publishCname: Boolean = true
+  vpnOnly: Boolean = false; upstreamScheme: String? = null
+  tlsServerName: String? = null; serviceHost: String? = null; zone: String? = null
 }
 
 class StaticFileService {
-  name: String
-  hostname: String? = null
-  kind: String? = null
-  cloudflareProxied: Boolean = false
-  dnsComment: String? = null
+  name: String; hostname: String? = null; kind: String? = null
+  cloudflareProxied: Boolean = false; dnsComment: String? = null
 }
 
 class InternalService {
   name: String
-  port: UInt16
+  port: Int
   targetHost: String? = null
   description: String? = null
 }
@@ -115,13 +96,8 @@ class EmailIdentities {
   postmasterEmail: String? = null
 }
 
-class CodebergPagesSite {
-  subdomain: String
-  targetRepo: String
-}
-
 class Services {
-  sshPort: UInt16 = 1337
+  sshPort: Int = 1337
   hostSshKeyPath: String? = null
   hostSshPubKeyPath: String? = null
   reverseProxyServices: Listing<ReverseProxyService> = new Listing {}
@@ -129,3 +105,8 @@ class Services {
   internalServices: Listing<InternalService> = new Listing {}
   emailIdentities: EmailIdentities = new EmailIdentities {}
 }
+
+links = new {}
+hosts = new {}
+domains = new Domains {}
+services = new Services {}

@@ -2,16 +2,16 @@
 
 Fleet topology library — typed Pkl schema, Rust bindings, and Nix modules.
 
-`fleetix` provides a single source of truth for fleet-wide host, link,
-domain, and service topology. A Pkl schema defines the data shape; the
-Rust crate consumes Pkl-evaluated output at build time; Nix modules
-expose the resulting topology to NixOS and Home Manager configurations.
+`fleetix` provides generic tooling for fleet-wide host, link, domain, and
+service topology. A consuming flake owns the real topology data and generated
+sidecars; Fleetix provides the Pkl schema shape, Rust bindings, export CLI, and
+Nix modules that expose a generated topology to NixOS and Home Manager.
 
 ## Layout
 
 - `src/` — Rust crate (`fleetix`) with topology types, accessors, and a CLI.
-- `examples/Topology.pkl` — self-contained Pkl schema + fleet data.
-- `lib/` — Nix sidecar expressions generated from Pkl.
+- `examples/Topology.pkl` — self-contained synthetic topology example.
+- `lib/topology/` — generic Pkl schema material; no production fleet data.
 - `modules/nixos` and `modules/home-manager` — consumer modules.
 
 ## License

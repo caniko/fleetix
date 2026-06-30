@@ -146,12 +146,15 @@
 
           fleetix-fmt = craneLib.cargoFmt { inherit src; pname = "fleetix"; };
 
-          # Validate that the sidecar exports expected keys (pure Nix, no sandbox issues)
-          validate-sidecar = pkgs.runCommand "validate-sidecar" {} ''
-            topo=$(cat ${./lib/.fleetix-topology.nix})
-            echo "Sidecar is $(echo "$topo" | wc -c) bytes, has hosts: $(
-              echo "$topo" | grep -c "hosts = "
-            ) entries"
+          validate-example-export = pkgs.runCommand "validate-example-export" {
+            nativeBuildInputs = [ self.packages.${system}.fleetixCrate ];
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          } ''
+            fleetix eval ${./examples/Topology.pkl} > topology.nix
+            grep -q "hosts =" topology.nix
+            grep -q "codebergPagesSites =" topology.nix
+            grep -q "internalServices =" topology.nix
+            grep -q "emailIdentities =" topology.nix
             touch $out
           '';
         }
