@@ -63,6 +63,7 @@
             strictDeps = true;
             doCheck = true;
             cargoExtraArgs = "--features cli";
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           };
 
           # Flake app: evaluate a .pkl topology and produce a Nix expression
@@ -71,6 +72,41 @@
             runtimeInputs = [ fleetixCrate ];
             text = ''
               fleetix eval "$@"
+            '';
+          };
+
+          # Export any Pkl file to an importable Nix expression sidecar.
+          pklToNix = pkgs.writeShellApplication {
+            name = "fleetix-pkl-to-nix";
+            runtimeInputs = [
+              pkgs.coreutils
+              pkgs.nix
+              pkgs.pkl
+            ];
+            text = ''
+              if [ "$#" -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
+                echo "Usage: fleetix-pkl-to-nix <input.pkl> <output.nix>"
+                exit 0
+              fi
+
+              if [ $# -ne 2 ]; then
+                echo "Usage: fleetix-pkl-to-nix <input.pkl> <output.nix>" >&2
+                exit 1
+              fi
+
+              input="$1"
+              output="$2"
+              json_tmp="$(mktemp)"
+              nix_tmp="$(mktemp)"
+              trap 'rm -f "$json_tmp" "$nix_tmp"' EXIT
+
+              pkl eval -f json "$input" > "$json_tmp"
+              {
+                echo "# Generated from $input; do not edit by hand."
+                nix-instantiate --eval --strict --expr "builtins.fromJSON (builtins.readFile $json_tmp)"
+              } > "$nix_tmp"
+              mv "$nix_tmp" "$output"
+              echo "Wrote $output from $input"
             '';
           };
 
@@ -95,7 +131,7 @@
         in
         {
           default = fleetixCrate;
-          inherit fleetixCrate evalPkl exportNix;
+          inherit fleetixCrate evalPkl exportNix pklToNix;
         }
       );
 
@@ -112,6 +148,10 @@
           type = "app";
           program = "${self.packages.${system}.exportNix}/bin/fleetix-export-nix";
         };
+        pkl-to-nix = {
+          type = "app";
+          program = "${self.packages.${system}.pklToNix}/bin/fleetix-pkl-to-nix";
+        };
       });
 
       checks = forSystems (system:
@@ -123,6 +163,7 @@
             inherit src;
             pname = "fleetix";
             strictDeps = true;
+            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         in
