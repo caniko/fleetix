@@ -47,8 +47,8 @@
       lib = fleetixLib;
 
       # NixOS module for consuming fleetix topology from the sidecar
-      nixosModules.topology = import ./modules/nixos/topology.nix { fleetixLib = self.lib; };
-      homeModules.topology = import ./modules/home-manager/topology.nix { fleetixLib = self.lib; };
+      nixosModules.topology = import ./modules/nixos.nix { fleetixLib = self.lib; };
+      homeModules.topology = import ./modules/home-manager.nix;
 
       packages = forSystems (system:
         let

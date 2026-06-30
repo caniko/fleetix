@@ -12,7 +12,7 @@ Nix modules that expose a generated topology to NixOS and Home Manager.
 - `src/` — Rust crate (`fleetix`) with topology types, accessors, and a CLI.
 - `examples/Topology.pkl` — self-contained synthetic topology example.
 - `lib/topology/` — generic Pkl schema material; no production fleet data.
-- `modules/nixos` and `modules/home-manager` — consumer modules.
+- `modules/nixos.nix` and `modules/home-manager.nix` — consumer modules.
 
 ## License
 

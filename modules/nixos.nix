@@ -1,7 +1,7 @@
 { fleetixLib }:
 { config, lib, ... }:
 let
-  inherit (lib) mkOption types mkIf;
+  inherit (lib) mkIf mkOption types;
 in {
   options.fleetix = {
     topology = mkOption {
