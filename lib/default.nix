@@ -89,7 +89,11 @@ rec {
     }:
       let
         svc = lookupReverseProxyService topology serviceName;
-        targetHost = svc.targetHost or null;
+        targetHost =
+          if svc == null then
+            null
+          else
+            svc.targetHost or null;
         address =
           if svc == null || targetHost == null then
             null
@@ -148,11 +152,20 @@ rec {
         hostName: node:
           let
             policy = node.addressPolicy or addressPolicy;
-            address = node.address or hosts.resolveHostAddress {
-              inherit topology hostName policy;
-            };
-            modelPort = node.modelPort or defaultModelPort;
-            nodePort = node.nodePort or defaultNodePort;
+            nodeAddress = node.address or null;
+            address =
+              if nodeAddress != null then
+                nodeAddress
+              else
+                hosts.resolveHostAddress {
+                  inherit topology hostName policy;
+                };
+            nodeModelPort = node.modelPort or null;
+            modelPort =
+              if nodeModelPort != null then nodeModelPort else defaultModelPort;
+            nodeNodePort = node.nodePort or null;
+            nodePort =
+              if nodeNodePort != null then nodeNodePort else defaultNodePort;
           in
             recursiveUpdate node {
               inherit address modelPort nodePort;

@@ -193,12 +193,22 @@
               serviceName = "immich";
               addressPolicy = [ "direct-link" "lan" ];
             };
+            missingEndpoint = self.lib.serviceEndpoint {
+              inherit topology;
+              serviceName = "missing";
+              addressPolicy = [ "lan" ];
+              require = false;
+            };
             nodes = self.lib.adapters.infernix.mkFleetNodes {
               inherit topology;
               nodes = {
-                atlas.models.qwen3-vl = {
-                  name = "qwen3-vl";
-                  capabilities = [ "chat" ];
+                atlas = {
+                  address = null;
+                  modelPort = null;
+                  models.qwen3-vl = {
+                    name = "qwen3-vl";
+                    capabilities = [ "chat" ];
+                  };
                 };
                 nomad = {
                   addressPolicy = [ "direct-link" ];
@@ -214,6 +224,7 @@
             test "${self.lib.resolveHostAddress { inherit topology; hostName = "atlas"; policy = [ "lan" ]; }}" = "192.168.178.88"
             test "${self.lib.resolveHostAddress { inherit topology; hostName = "nomad"; policy = [ "direct-link" ]; }}" = "10.10.0.2"
             test "${endpoint.url}" = "http://10.10.0.1:2283"
+            test "${if missingEndpoint == null then "null" else "unexpected"}" = "null"
             test "${toString (self.lib.lanExposedPorts { inherit topology; hostName = "atlas"; })}" = "2283"
             test "${nodes.atlas.address}" = "192.168.178.88"
             test "${toString nodes.atlas.modelPort}" = "8013"
