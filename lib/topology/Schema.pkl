@@ -86,6 +86,7 @@ class ReverseProxyService {
   cloudflareProxied: Boolean = false
   publishCname: Boolean = true
   vpnOnly: Boolean = false
+  lanExposed: Boolean = false
   upstreamScheme: String? = null
   tlsServerName: String? = null
   serviceHost: String? = null

@@ -72,7 +72,7 @@ class ReverseProxyService {
   name: String; hostname: String? = null; port: Int
   targetHost: String? = null; proxied: Boolean = false
   cloudflareProxied: Boolean = false; publishCname: Boolean = true
-  vpnOnly: Boolean = false; upstreamScheme: String? = null
+  vpnOnly: Boolean = false; lanExposed: Boolean = false; upstreamScheme: String? = null
   tlsServerName: String? = null; serviceHost: String? = null; zone: String? = null
 }
 

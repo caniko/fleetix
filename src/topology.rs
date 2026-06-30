@@ -223,6 +223,8 @@ pub struct ReverseProxyService {
     #[serde(default)]
     pub vpn_only: bool,
     #[serde(default)]
+    pub lan_exposed: bool,
+    #[serde(default)]
     pub upstream_scheme: Option<String>,
     #[serde(default)]
     pub tls_server_name: Option<String>,

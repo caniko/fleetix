@@ -283,6 +283,7 @@ fn rps_to_nix(rps: &ReverseProxyService) -> String {
     ));
     out.push_str(&format!("publishCname = {}; ", nix_bool(rps.publish_cname)));
     out.push_str(&format!("vpnOnly = {}; ", nix_bool(rps.vpn_only)));
+    out.push_str(&format!("lanExposed = {}; ", nix_bool(rps.lan_exposed)));
     field_opt(&mut out, "upstreamScheme", &rps.upstream_scheme);
     field_opt(&mut out, "tlsServerName", &rps.tls_server_name);
     field_opt(&mut out, "serviceHost", &rps.service_host);
