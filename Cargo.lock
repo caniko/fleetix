@@ -912,7 +912,7 @@ dependencies = [
 [[package]]
 name = "pklx"
 version = "0.1.0"
-source = "git+https://codeberg.org/caniko/nix-pklx.git#6b784d0f8ed07193edb1d04a6c49def27e303981"
+source = "git+https://codeberg.org/caniko/nix-pklx.git#7f842e2aaea49e11313405c4df51440ac2a515cb"
 dependencies = [
  "clap",
  "indexmap",
