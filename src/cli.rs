@@ -1,8 +1,27 @@
 use crate::topology;
 use crate::validate;
 use clap::Parser;
-use miette::IntoDiagnostic;
+use std::io::Write;
 use std::path::PathBuf;
+
+use pklx::pklr::EvalOptions;
+
+fn build_options(http_rewrite: Vec<String>, http_proxy: Option<String>) -> miette::Result<EvalOptions> {
+    let mut options = EvalOptions::default();
+    if !http_rewrite.is_empty() {
+        options.http_rewrites = http_rewrite;
+    }
+    if let Some(proxy_url) = http_proxy {
+        let proxy = pklx::pklr::reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| miette::miette!("Invalid proxy URL '{}': {}", proxy_url, e))?;
+        let client = pklx::pklr::reqwest::Client::builder()
+            .proxy(proxy)
+            .build()
+            .map_err(|e| miette::miette!("Failed to build HTTP client: {}", e))?;
+        options.client = Some(client);
+    }
+    Ok(options)
+}
 
 #[derive(Parser)]
 #[command(name = "fleetix", about = "Fleet topology toolkit")]
@@ -11,6 +30,12 @@ pub enum Cli {
     Validate {
         /// Path to the .pkl topology file
         path: PathBuf,
+        /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
+        #[arg(long = "http-rewrite")]
+        http_rewrite: Vec<String>,
+        /// HTTP proxy URL (e.g. http://proxy:8080)
+        #[arg(long = "http-proxy")]
+        http_proxy: Option<String>,
     },
     /// Show a human-readable fleet overview
     Show {
@@ -19,6 +44,12 @@ pub enum Cli {
         /// Filter to a single host
         #[arg(short, long)]
         host: Option<String>,
+        /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
+        #[arg(long = "http-rewrite")]
+        http_rewrite: Vec<String>,
+        /// HTTP proxy URL (e.g. http://proxy:8080)
+        #[arg(long = "http-proxy")]
+        http_proxy: Option<String>,
     },
     /// List links with derived values
     Links {
@@ -27,23 +58,34 @@ pub enum Cli {
         /// Filter to a single link
         #[arg(short, long)]
         name: Option<String>,
+        /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
+        #[arg(long = "http-rewrite")]
+        http_rewrite: Vec<String>,
+        /// HTTP proxy URL (e.g. http://proxy:8080)
+        #[arg(long = "http-proxy")]
+        http_proxy: Option<String>,
     },
     /// Evaluate topology and output a Nix expression
     Eval {
         /// Path to the .pkl topology file
         path: PathBuf,
-    },
-    /// Evaluate topology and output JSON
-    EvalJson {
-        /// Path to the .pkl topology file
-        path: PathBuf,
+        /// Output an rkyv archive for zero-copy access instead of Nix
+        #[arg(long)]
+        rkyv: bool,
+        /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
+        #[arg(long = "http-rewrite")]
+        http_rewrite: Vec<String>,
+        /// HTTP proxy URL (e.g. http://proxy:8080)
+        #[arg(long = "http-proxy")]
+        http_proxy: Option<String>,
     },
 }
 
 pub async fn run(cli: Cli) -> miette::Result<()> {
     match cli {
-        Cli::Validate { path } => {
-            let topo = topology::load_topology(&path).await?;
+        Cli::Validate { path, http_rewrite, http_proxy } => {
+            let options = build_options(http_rewrite, http_proxy)?;
+            let topo = topology::load_topology_with_options(&path, options).await?;
             let report = validate::validate(&topo);
             for err in &report.errors {
                 eprintln!("  ERROR: {err}");
@@ -63,8 +105,9 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             }
         }
 
-        Cli::Show { path, host } => {
-            let topo = topology::load_topology(&path).await?;
+        Cli::Show { path, host, http_rewrite, http_proxy } => {
+            let options = build_options(http_rewrite, http_proxy)?;
+            let topo = topology::load_topology_with_options(&path, options).await?;
             if let Some(h) = host {
                 match topo.hosts.get(&h) {
                     Some(hdata) => println!(
@@ -90,8 +133,9 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             }
         }
 
-        Cli::Links { path, name } => {
-            let topo = topology::load_topology(&path).await?;
+        Cli::Links { path, name, http_rewrite, http_proxy } => {
+            let options = build_options(http_rewrite, http_proxy)?;
+            let topo = topology::load_topology_with_options(&path, options).await?;
             if let Some(n) = name {
                 match topo.links.get(&n) {
                     Some(link) => {
@@ -115,16 +159,18 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             }
         }
 
-        Cli::Eval { path } => {
-            let topo = topology::load_topology(&path).await?;
-            let nix = crate::nix::topology_to_nix(&topo);
-            println!("{nix}");
-        }
-
-        Cli::EvalJson { path } => {
-            let topo = topology::load_topology(&path).await?;
-            let json = serde_json::to_string_pretty(&topo).into_diagnostic()?;
-            println!("{json}");
+        Cli::Eval { path, rkyv, http_rewrite, http_proxy } => {
+            let options = build_options(http_rewrite, http_proxy)?;
+            if rkyv {
+                let topo = topology::load_topology_with_options(&path, options).await?;
+                let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&topo)
+                    .map_err(|e| miette::miette!("Failed to create rkyv archive: {e}"))?;
+                std::io::stdout().write_all(&bytes)
+                    .map_err(|e| miette::miette!("Failed to write output: {e}"))?;
+            } else {
+                let nix = pklx::eval_pkl(&path, options).await?;
+                println!("{nix}");
+            }
         }
     }
 
