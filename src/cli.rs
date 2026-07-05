@@ -6,7 +6,10 @@ use std::path::PathBuf;
 
 use pklx::pklr::EvalOptions;
 
-fn build_options(http_rewrite: Vec<String>, http_proxy: Option<String>) -> miette::Result<EvalOptions> {
+fn build_options(
+    http_rewrite: Vec<String>,
+    http_proxy: Option<String>,
+) -> miette::Result<EvalOptions> {
     let mut options = EvalOptions::default();
     if !http_rewrite.is_empty() {
         options.http_rewrites = http_rewrite;
@@ -79,11 +82,31 @@ pub enum Cli {
         #[arg(long = "http-proxy")]
         http_proxy: Option<String>,
     },
+    /// Export topology sidecars from a topology file
+    Export {
+        /// Path to the .pkl topology file
+        path: PathBuf,
+        /// Output Nix sidecar path
+        output: PathBuf,
+        /// Optional self-contained compatibility Pkl output path
+        #[arg(long = "compat-pkl")]
+        compat_pkl: Option<PathBuf>,
+        /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
+        #[arg(long = "http-rewrite")]
+        http_rewrite: Vec<String>,
+        /// HTTP proxy URL (e.g. http://proxy:8080)
+        #[arg(long = "http-proxy")]
+        http_proxy: Option<String>,
+    },
 }
 
 pub async fn run(cli: Cli) -> miette::Result<()> {
     match cli {
-        Cli::Validate { path, http_rewrite, http_proxy } => {
+        Cli::Validate {
+            path,
+            http_rewrite,
+            http_proxy,
+        } => {
             let options = build_options(http_rewrite, http_proxy)?;
             let topo = topology::load_topology_with_options(&path, options).await?;
             let report = validate::validate(&topo);
@@ -105,7 +128,12 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             }
         }
 
-        Cli::Show { path, host, http_rewrite, http_proxy } => {
+        Cli::Show {
+            path,
+            host,
+            http_rewrite,
+            http_proxy,
+        } => {
             let options = build_options(http_rewrite, http_proxy)?;
             let topo = topology::load_topology_with_options(&path, options).await?;
             if let Some(h) = host {
@@ -133,7 +161,12 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             }
         }
 
-        Cli::Links { path, name, http_rewrite, http_proxy } => {
+        Cli::Links {
+            path,
+            name,
+            http_rewrite,
+            http_proxy,
+        } => {
             let options = build_options(http_rewrite, http_proxy)?;
             let topo = topology::load_topology_with_options(&path, options).await?;
             if let Some(n) = name {
@@ -159,18 +192,60 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             }
         }
 
-        Cli::Eval { path, rkyv, http_rewrite, http_proxy } => {
+        Cli::Eval {
+            path,
+            rkyv,
+            http_rewrite,
+            http_proxy,
+        } => {
             let options = build_options(http_rewrite, http_proxy)?;
             if rkyv {
                 let topo = topology::load_topology_with_options(&path, options).await?;
                 let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&topo)
                     .map_err(|e| miette::miette!("Failed to create rkyv archive: {e}"))?;
-                std::io::stdout().write_all(&bytes)
+                std::io::stdout()
+                    .write_all(&bytes)
                     .map_err(|e| miette::miette!("Failed to write output: {e}"))?;
             } else {
                 let nix = pklx::eval_pkl(&path, options).await?;
                 println!("{nix}");
             }
+        }
+
+        Cli::Export {
+            path,
+            output,
+            compat_pkl,
+            http_rewrite,
+            http_proxy,
+        } => {
+            let options = build_options(http_rewrite, http_proxy)?;
+            let eval_path = if let Some(compat_path) = compat_pkl {
+                let compat = topology::flatten_modular_topology(&path)?;
+                if let Some(parent) = compat_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| miette::miette!("create {}: {e}", parent.display()))?;
+                }
+                std::fs::write(&compat_path, compat)
+                    .map_err(|e| miette::miette!("write {}: {e}", compat_path.display()))?;
+                compat_path
+            } else {
+                path.clone()
+            };
+            let nix = pklx::eval_pkl(&eval_path, options).await?;
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| miette::miette!("create {}: {e}", parent.display()))?;
+            }
+            std::fs::write(
+                &output,
+                format!(
+                    "# Generated from {}; do not edit by hand.\n{nix}",
+                    path.display()
+                ),
+            )
+            .map_err(|e| miette::miette!("write {}: {e}", output.display()))?;
+            println!("Wrote {}", output.display());
         }
     }
 

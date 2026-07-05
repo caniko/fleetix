@@ -1,8 +1,10 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Topology {
@@ -12,7 +14,9 @@ pub struct Topology {
     pub services: Services,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Link {
@@ -25,7 +29,9 @@ pub struct Link {
     pub exempt_from_proxy: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct LinkBinding {
@@ -44,7 +50,16 @@ fn default_link_role() -> LinkRole {
     LinkRole::Client
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug), compare(PartialEq))]
 pub enum LinkRole {
     #[serde(rename = "server")]
@@ -55,7 +70,9 @@ pub enum LinkRole {
     Peer,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
@@ -82,7 +99,9 @@ pub struct Host {
     pub data_root: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 pub enum DeviceType {
     #[serde(rename = "server")]
@@ -93,7 +112,9 @@ pub enum DeviceType {
     Laptop,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Network {
@@ -117,7 +138,9 @@ pub struct Network {
     pub wake_on_lan_interface: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Rebuild {
@@ -129,7 +152,9 @@ pub struct Rebuild {
     pub build_cache: BuildCache,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildCache {
@@ -141,7 +166,9 @@ pub struct BuildCache {
     pub key_prefix: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct User {
@@ -155,7 +182,9 @@ pub struct User {
     pub signing_key: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Gpu {
@@ -165,7 +194,9 @@ pub struct Gpu {
     pub dgpu: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Storage {
@@ -173,7 +204,9 @@ pub struct Storage {
     pub data_root: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Domains {
@@ -191,7 +224,9 @@ pub struct Domains {
     pub codeberg_pages_sites: Vec<CodebergPagesSite>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicHost {
@@ -202,7 +237,9 @@ pub struct DynamicHost {
     pub zone: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct CodebergPagesSite {
@@ -210,7 +247,9 @@ pub struct CodebergPagesSite {
     pub target_repo: String,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
@@ -234,7 +273,9 @@ fn default_ssh_port() -> u16 {
     1337
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct ReverseProxyService {
@@ -264,7 +305,9 @@ pub struct ReverseProxyService {
     pub zone: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct StaticFileService {
@@ -279,7 +322,9 @@ pub struct StaticFileService {
     pub dns_comment: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct InternalService {
@@ -291,7 +336,9 @@ pub struct InternalService {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
 pub struct EmailIdentities {
@@ -308,7 +355,9 @@ pub struct EmailIdentities {
 }
 
 /// Load a Topology from an rkyv archive (zero-copy access).
-pub fn load_topology_from_rkyv(bytes: &[u8]) -> Result<&rkyv::Archived<Topology>, rkyv::rancor::Error> {
+pub fn load_topology_from_rkyv(
+    bytes: &[u8],
+) -> Result<&rkyv::Archived<Topology>, rkyv::rancor::Error> {
     rkyv::access::<rkyv::Archived<Topology>, rkyv::rancor::Error>(bytes)
 }
 
@@ -323,4 +372,133 @@ pub async fn load_topology_with_options(
     options: pklx::pklr::EvalOptions,
 ) -> miette::Result<Topology> {
     crate::pkl::load_with_options(path, options).await
+}
+
+/// Render a modular topology entrypoint into a self-contained compatibility
+/// Pkl file for consumers whose evaluator cannot yet resolve local imports.
+pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
+    let src_dir = path
+        .parent()
+        .ok_or_else(|| miette::miette!("topology path has no parent: {}", path.display()))?;
+    let entrypoint = std::fs::read_to_string(path)
+        .map_err(|e| miette::miette!("read topology entrypoint {}: {e}", path.display()))?;
+
+    let mut out = String::new();
+    out.push_str(
+        "// Generated compatibility topology. Edit the modular topology source instead.\n\n",
+    );
+    out.push_str(&strip_imports(&read_to_string(src_dir.join("Schema.pkl"))?));
+    out.push_str("\n\nlinks = new {\n");
+    for rel in imported_paths(&entrypoint, "links/") {
+        out.push_str(&unwrap_section(
+            &strip_imports(&read_to_string(src_dir.join(&rel))?).replace("new S.", "new "),
+            "links",
+        ));
+    }
+    out.push_str("}\n\nhosts = new {\n");
+    for rel in imported_paths(&entrypoint, "hosts/") {
+        out.push_str(&unwrap_section(
+            &strip_imports(&read_to_string(src_dir.join(&rel))?).replace("new S.", "new "),
+            "hosts",
+        ));
+    }
+    out.push_str("}\n\n");
+    out.push_str(
+        &strip_imports(&read_to_string(src_dir.join("Domains.pkl"))?).replace("new S.", "new "),
+    );
+    out.push_str("\n\n");
+    out.push_str(
+        &strip_imports(&read_to_string(src_dir.join("Services.pkl"))?).replace("new S.", "new "),
+    );
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn read_to_string(path: PathBuf) -> miette::Result<String> {
+    std::fs::read_to_string(&path).map_err(|e| miette::miette!("read {}: {e}", path.display()))
+}
+
+fn strip_imports(input: &str) -> String {
+    input
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("import "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn imported_paths(input: &str, prefix: &str) -> Vec<String> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let start = line.find("import(\"")? + "import(\"".len();
+            let rest = &line[start..];
+            let end = rest.find("\")")?;
+            let rel = &rest[..end];
+            rel.starts_with(prefix).then(|| rel.to_string())
+        })
+        .collect()
+}
+
+fn unwrap_section(input: &str, section: &str) -> String {
+    let header = format!("{section} = new {{");
+    let mut lines = Vec::new();
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(&header) {
+            let rest = rest.trim().strip_suffix('}').unwrap_or(rest.trim()).trim();
+            if !rest.is_empty() {
+                lines.push(rest.to_string());
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.last().is_some_and(|line| line.trim() == "}") {
+        lines.pop();
+    }
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod flatten_tests {
+    use super::*;
+
+    #[test]
+    fn imported_paths_keep_entrypoint_order() {
+        let input = r#"
+links = new {
+  ["wg-home"] = (import("links/WgHome.pkl")).links["wg-home"]
+  ["lan"] = (import("links/Lan.pkl")).links["lan"]
+}
+"#;
+        assert_eq!(
+            imported_paths(input, "links/"),
+            vec!["links/WgHome.pkl", "links/Lan.pkl"]
+        );
+    }
+
+    #[test]
+    fn unwrap_section_removes_only_outer_binding() {
+        let input = "links = new {\n  [\"wg\"] = new Link {}\n}\n";
+        assert_eq!(unwrap_section(input, "links"), "  [\"wg\"] = new Link {}\n");
+    }
+
+    #[test]
+    fn unwrap_section_handles_comments_and_single_line_bindings() {
+        let input =
+            "// comment\nlinks = new { [\"lan\"] = new Link { subnet = \"192.0.2.0/24\" } }\n";
+        assert_eq!(
+            unwrap_section(input, "links"),
+            "// comment\n[\"lan\"] = new Link { subnet = \"192.0.2.0/24\" }\n"
+        );
+    }
 }
