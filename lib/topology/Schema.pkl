@@ -31,6 +31,13 @@ class Network {
 class Rebuild {
   buildHost: String? = null
   useSubstitutes: Boolean = false
+  buildCache: BuildCache = new BuildCache {}
+}
+
+class BuildCache {
+  enable: Boolean = false
+  packageAttrNames: Listing<String> = new Listing {}
+  keyPrefix: String? = null
 }
 
 class User {

@@ -32,6 +32,31 @@ Adapters stay intentionally thin: Fleetix provides network and service
 derivation, while consumers such as Infernix keep workload semantics, model
 inventory, scheduling policy, and application-specific defaults.
 
+Host `rebuild.buildCache` is backend-neutral fleet policy. It records whether a
+host should use a fleet build cache for selected package attributes, while the
+consuming flake chooses the concrete cache implementation.
+
+## Pkl Helpers
+
+`fleetix::pkl` exposes generic Rust helpers for downstream crates that keep
+their canonical config in Pkl:
+
+- `load(path).await` evaluates a Pkl file and deserializes it into any serde
+  model.
+- `load_sync(path)` provides the same behavior for synchronous command-line
+  code.
+- `string_literal(value)` renders strings safely for generated Pkl files.
+
+The generic flake app `pkl-to-nix` evaluates any Pkl file into an importable Nix
+sidecar:
+
+```bash
+nix run .#pkl-to-nix -- examples/Topology.pkl /tmp/topology.nix
+```
+
+Topology-specific consumers should keep using `export-nix` when they need
+Fleetix's normalized topology rendering.
+
 ## License
 
 Dual-licensed under MIT or Apache-2.0, at your option.

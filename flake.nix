@@ -10,7 +10,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     rs-harbor = {
-      url = "git+https://codeberg.org/caniko/rs-harbor.git";
+      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.crane.follows = "crane";
       inputs.flake-utils.follows = "flake-utils";
@@ -80,8 +80,7 @@
             name = "fleetix-pkl-to-nix";
             runtimeInputs = [
               pkgs.coreutils
-              pkgs.nix
-              pkgs.pkl
+              fleetixCrate
             ];
             text = ''
               if [ "$#" -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
@@ -96,14 +95,12 @@
 
               input="$1"
               output="$2"
-              json_tmp="$(mktemp)"
               nix_tmp="$(mktemp)"
-              trap 'rm -f "$json_tmp" "$nix_tmp"' EXIT
+              trap 'rm -f "$nix_tmp"' EXIT
 
-              pkl eval -f json "$input" > "$json_tmp"
               {
                 echo "# Generated from $input; do not edit by hand."
-                nix-instantiate --eval --strict --expr "builtins.fromJSON (builtins.readFile $json_tmp)"
+                fleetix eval "$input"
               } > "$nix_tmp"
               mv "$nix_tmp" "$output"
               echo "Wrote $output from $input"
@@ -115,16 +112,26 @@
             name = "fleetix-export-nix";
             runtimeInputs = [ fleetixCrate ];
             text = ''
-              if [ $# -lt 1 ]; then
-                echo "Usage: fleetix-export-nix <input.pkl> [output.nix]"
+              if [ "$#" -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
+                echo "Usage: fleetix-export-nix <input.pkl> [output.nix] [compat.pkl]"
+                exit 0
+              fi
+
+              if [ $# -lt 1 ] || [ $# -gt 3 ]; then
+                echo "Usage: fleetix-export-nix <input.pkl> [output.nix] [compat.pkl]" >&2
                 exit 1
               fi
               input="$1"
               output="''${2:-}"
+              compat="''${3:-}"
               if [ -z "$output" ]; then
                 output="$(dirname "$input")/.fleetix-topology.nix"
               fi
-              fleetix eval "$input" > "$output"
+              if [ -n "$compat" ]; then
+                fleetix export "$input" "$output" --compat-pkl "$compat"
+              else
+                fleetix export "$input" "$output"
+              fi
               echo "Wrote $output"
             '';
           };
@@ -196,6 +203,10 @@
             grep -q "codebergPagesSites =" topology.nix
             grep -q "internalServices =" topology.nix
             grep -q "emailIdentities =" topology.nix
+            grep -q "buildCache =" topology.nix
+            grep -q "packageAttrNames =" topology.nix
+            grep -q '"dashboard-api"' topology.nix
+            grep -q 'keyPrefix = "edge-a"' topology.nix
             touch $out
           '';
 

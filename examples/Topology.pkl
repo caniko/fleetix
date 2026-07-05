@@ -31,6 +31,13 @@ class Network {
 class Rebuild {
   buildHost: String? = null
   useSubstitutes: Boolean = false
+  buildCache: BuildCache = new BuildCache {}
+}
+
+class BuildCache {
+  enable: Boolean = false
+  packageAttrNames: Listing<String> = new Listing {}
+  keyPrefix: String? = null
 }
 
 class User {
@@ -126,7 +133,15 @@ hosts = new {
       lanIp = "192.0.2.10"
       lanInterface = "eth0"
     }
-    rebuild = new Rebuild { buildHost = "builder-a" useSubstitutes = true }
+    rebuild = new Rebuild {
+      buildHost = "builder-a"
+      useSubstitutes = true
+      buildCache = new BuildCache {
+        enable = true
+        packageAttrNames = new Listing { "dashboard-api" }
+        keyPrefix = "edge-a"
+      }
+    }
     links = new {
       ["wg-mesh"] = new LinkBinding {
         address = "10.44.0.1"
