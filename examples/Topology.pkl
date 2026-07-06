@@ -65,6 +65,7 @@ class Host {
 
 class DynamicHost { fqdn: String; proxied: Boolean = false; zone: String? = null }
 class CodebergPagesSite { subdomain: String; targetRepo: String }
+class Redirect { from: String; to: String; status: Int = 301; preservePath: Boolean = true }
 
 class Domains {
   zones: Listing<String> = new Listing {}
@@ -73,6 +74,7 @@ class Domains {
   managedZones: Listing<String> = new Listing {}
   dynamicHosts: Listing<DynamicHost> = new Listing {}
   codebergPagesSites: Listing<CodebergPagesSite> = new Listing {}
+  redirects: Listing<Redirect> = new Listing {}
 }
 
 class ReverseProxyService {
@@ -185,6 +187,9 @@ domains = new Domains {
   }
   codebergPagesSites = new Listing {
     new CodebergPagesSite { subdomain = "docs" targetRepo = "example/docs" }
+  }
+  redirects = new Listing {
+    new Redirect { from = "example.test" to = "https://dashboard.example.test" }
   }
 }
 

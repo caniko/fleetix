@@ -75,6 +75,13 @@ class DynamicHost {
   zone: String? = null
 }
 
+class Redirect {
+  from: String
+  to: String
+  status: Int = 301
+  preservePath: Boolean = true
+}
+
 class Domains {
   zones: Listing<String> = new Listing {}
   mailSubdomain: String? = null
@@ -82,6 +89,7 @@ class Domains {
   managedZones: Listing<String> = new Listing {}
   dynamicHosts: Listing<DynamicHost> = new Listing {}
   codebergPagesSites: Listing<CodebergPagesSite> = new Listing {}
+  redirects: Listing<Redirect> = new Listing {}
 }
 
 class ReverseProxyService {
