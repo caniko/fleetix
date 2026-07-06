@@ -4,3 +4,7 @@
 /.direnv/
 .envrc
 /.pre-commit-config.yaml
+docs/book/
+website/public/
+.plinth-project/
+dist/plinth-project/
