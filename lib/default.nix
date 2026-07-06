@@ -1,14 +1,15 @@
 { lib }:
 let
-  inherit (builtins) attrNames hasAttr;
+  inherit (builtins) hasAttr;
   inherit (lib)
     filter
-    filterAttrs
     findFirst
     hasSuffix
+    foldl'
     mapAttrs
-    mapAttrsToList
     optionalAttrs
+    removeAttrs
+    removeSuffix
     recursiveUpdate
     splitString
     ;
@@ -39,6 +40,81 @@ let
   lookupReverseProxyService = topology: serviceName:
     findFirst (svc: svc.name == serviceName) null (topology.services.reverseProxyServices or []);
 
+  byNameFrom = entries:
+    builtins.listToAttrs (map (entry: {
+      inherit (entry) name;
+      value = entry;
+    }) entries);
+
+  stripPklValue = value:
+    if builtins.isAttrs value then
+      builtins.listToAttrs (
+        builtins.filter (entry: entry.value != null) (
+          builtins.map (name: {
+            inherit name;
+            value = stripPklValue value.${name};
+          }) (builtins.attrNames (removeAttrs value ["__pkl_class"]))
+        )
+      )
+    else if builtins.isList value then
+      map stripPklValue value
+    else
+      value;
+
+  stripPklClass = stripPklValue;
+
+  mkWgEndpointHost = endpointSubdomain: zone:
+    let
+      endpoint =
+        if endpointSubdomain == null then
+          "wg"
+        else
+          endpointSubdomain;
+    in
+    if lib.hasInfix "." endpoint then endpoint else "${endpoint}-home.${zone}";
+
+  hostInZoneImpl = { fqdn, zone }:
+    fqdn == zone || hasSuffix ".${zone}" fqdn;
+
+  zoneForHostImpl = { zones, fqdn }:
+    let
+      matches = filter (zone: hostInZoneImpl { inherit fqdn zone; }) zones;
+    in
+      if matches == [ ] then
+        null
+      else
+        foldl'
+          (best: zone:
+            if best == null || builtins.length (splitString "." zone) > builtins.length (splitString "." best) then
+              zone
+            else
+              best)
+          null
+          matches;
+
+  relativeNameImpl = { fqdn, zone }:
+    if fqdn == zone then "@" else removeSuffix ".${zone}" fqdn;
+
+  codebergPagesTarget = site:
+    let
+      parts = splitString "/" site.targetRepo;
+      repoName = builtins.elemAt parts (builtins.length parts - 1);
+    in
+    "${repoName}.caniko.codeberg.page";
+
+  cnameIntent = {
+    name,
+    hostname,
+    target,
+    zone,
+    proxied ? false,
+    comment ? null,
+    source ? null,
+  }: {
+    inherit name hostname target zone proxied comment source;
+    relativeName = relativeNameImpl { fqdn = hostname; inherit zone; };
+  };
+
   resolveHostAddressImpl = {
     topology,
     hostName,
@@ -66,9 +142,136 @@ rec {
 
   hosts = {
     resolveHostAddress = resolveHostAddressImpl;
+
+    normalize = {
+      topology,
+      wgHomeLinkName ? "wg-home",
+    }:
+      builtins.mapAttrs (_name: host:
+        let
+          ln = host.links or { };
+          wg = ln.${wgHomeLinkName} or { };
+          direct = ln.direct-link or { };
+        in
+        host
+        // {
+          network =
+            (host.network or { })
+            // {
+              wgHomeIp = wg.address or null;
+              wgHomePublicKey =
+                if (wg.role or "") == "server" then
+                  wg.publicKey or null
+                else
+                  null;
+              directLinkIp = direct.address or null;
+              directLinkMac = direct.macAddress or null;
+              directLinkInterface = direct.externalInterface or null;
+            };
+          wgHomeIp = wg.address or null;
+          dataRoot = (host.storage or { }).dataRoot or null;
+        })
+      (topology.hosts or { });
+  };
+
+  domains = {
+    hostInZone = hostInZoneImpl;
+
+    zoneForHost = {
+      topology ? null,
+      zones ? (topology.domains.managedZones or topology.domains.zones or []),
+      fqdn,
+    }:
+      zoneForHostImpl { inherit zones fqdn; };
+
+    relativeName = relativeNameImpl;
+
+    dynamicHostsForZone = { topology, zone }:
+      filter (host: domains.zoneForHost { inherit topology; fqdn = host.fqdn; } == zone)
+        (topology.domains.dynamicHosts or []);
+
+    dynamicHostAddressExcludes = { topology, zone }:
+      builtins.concatMap (host: [
+        { name = relativeNameImpl { inherit zone; fqdn = host.fqdn; }; type = "A"; }
+        { name = relativeNameImpl { inherit zone; fqdn = host.fqdn; }; type = "AAAA"; }
+      ]) (domains.dynamicHostsForZone { inherit topology zone; });
+
+    proxiedDynamicHosts = { topology }:
+      filter (host: host.proxied or false) (topology.domains.dynamicHosts or []);
+
+    proxiedDynamicHostFqdns = { topology }:
+      map (host: host.fqdn) (domains.proxiedDynamicHosts { inherit topology; });
+
+    normalize = { topology }:
+      let
+        cleanTopology = stripPklClass topology;
+        tdom = cleanTopology.domains or { };
+        tlinks = cleanTopology.links or { };
+        zones = tdom.zones or [ "example.invalid" ];
+        primaryZone = builtins.elemAt zones 0;
+        secondaryZone = builtins.elemAt zones (
+          if builtins.length zones > 1 then 1 else 0
+        );
+        tertiaryZone = builtins.elemAt zones (
+          if builtins.length zones > 2 then 2 else 0
+        );
+        hostDomain = name: zone:
+          if name == "" then zone else "${name}.${zone}";
+        vpnDom =
+          let
+            v = tdom.vpnSubdomain or "vpn";
+          in
+          hostDomain v secondaryZone;
+        wgHomeLink = tlinks.wg-home or { };
+        wgHomeEndpointSubdomain = wgHomeLink.endpointSubdomain or "wg";
+      in
+      rec {
+        inherit hostDomain;
+        host = name: zone: hostDomain name zone;
+
+        tartanogluDomain = primaryZone;
+        candeeDomain = secondaryZone;
+        syndbDomain = tertiaryZone;
+
+        mailDomain = primaryZone;
+        mailHostname = hostDomain (tdom.mailSubdomain or "mail") primaryZone;
+
+        vpnDomain = vpnDom;
+        vpnHost = name: hostDomain name vpnDom;
+
+        wgEndpointHost = mkWgEndpointHost wgHomeEndpointSubdomain secondaryZone;
+        wireguardPort = wgHomeLink.port or 54321;
+
+        serviceHosts = services.serviceHosts { topology = cleanTopology; };
+
+        dynamicHosts = tdom.dynamicHosts or [ ];
+        managedZones = tdom.managedZones or [ ];
+        codebergPagesSites = tdom.codebergPagesSites or [ ];
+        redirects = tdom.redirects or [ ];
+      };
   };
 
   services = {
+    byName = { topology }:
+      byNameFrom (topology.services.reverseProxyServices or [])
+      // byNameFrom (topology.services.staticFileServices or [])
+      // byNameFrom (topology.services.internalServices or []);
+
+    reverseProxyByName = { topology }:
+      byNameFrom (topology.services.reverseProxyServices or []);
+
+    staticFileByName = { topology }:
+      byNameFrom (topology.services.staticFileServices or []);
+
+    internalByName = { topology }:
+      byNameFrom (topology.services.internalServices or []);
+
+    serviceHosts = { topology }:
+      builtins.listToAttrs (map (svc: {
+        inherit (svc) name;
+        value = svc.hostname or (builtins.toString svc.port);
+      }) ((topology.services.reverseProxyServices or []) ++ (topology.services.staticFileServices or [])));
+
     reverseProxyServicesForHost = {
       topology,
       hostName,
@@ -122,8 +325,170 @@ rec {
           requireValue
             "fleetix.serviceEndpoint: reverse proxy service `${serviceName}` is missing or has no resolvable target"
             endpoint
+      else
+        endpoint;
+
+    serviceCnameIntents = { topology }:
+      builtins.concatMap (service:
+        let
+          hostname = service.hostname or null;
+          zone = if hostname == null then null else domains.zoneForHost { inherit topology; fqdn = hostname; };
+        in
+        if zone == null || (service.vpnOnly or false) || !(service.publishCname or true) then
+          []
         else
-          endpoint;
+          [
+            (cnameIntent {
+              inherit zone hostname;
+              name = service.name;
+              target = zone;
+              proxied = service.cloudflareProxied or false;
+              comment = service.dnsComment or null;
+              source = "service";
+            })
+          ])
+      ((topology.services.reverseProxyServices or []) ++ (topology.services.staticFileServices or []));
+
+    codebergPagesCnameIntents = { topology, baseZone ? null }:
+      let
+        fallbackZone =
+          if baseZone != null then
+            baseZone
+          else
+            builtins.elemAt (topology.domains.zones or [ "example.invalid" ]) 0;
+      in
+      builtins.concatMap (site:
+        let
+          hostname = "${site.subdomain}.${fallbackZone}";
+          zone = domains.zoneForHost { inherit topology; fqdn = hostname; };
+        in
+        if zone == null then
+          []
+        else
+          [
+            (cnameIntent {
+              inherit zone hostname;
+              name = site.subdomain;
+              target = codebergPagesTarget site;
+              proxied = false;
+              comment = "Codeberg Pages: ${site.targetRepo}";
+              source = "codeberg-pages";
+            })
+          ])
+      (topology.domains.codebergPagesSites or []);
+
+    normalize = { topology, domains }:
+      let
+        tsvc = topology.services or { };
+        tlinks = topology.links or { };
+        wg = tlinks.wg-home or { };
+        reverseProxyServices = map stripPklClass (tsvc.reverseProxyServices or [ ]);
+        staticFileServices = map stripPklClass (tsvc.staticFileServices or [ ]);
+        internalServices = map stripPklClass (tsvc.internalServices or [ ]);
+        normalizedTopology = topology // {
+          services = (topology.services or { }) // {
+            inherit reverseProxyServices staticFileServices internalServices;
+          };
+        };
+      in
+      {
+        sshPort = tsvc.sshPort or 1337;
+        wireguard = {
+          wgHomeEndpointHost = wg.endpointSubdomain or "wg";
+          wgHomePort = wg.port or 54321;
+          wgHomeDdnsHost = "wg-home.${domains.candeeDomain}";
+        };
+        hostSshKeyPath = tsvc.hostSshKeyPath or "/etc/ssh/id_ed25519";
+        hostSshPubKeyPath = tsvc.hostSshPubKeyPath or "/etc/ssh/id_ed25519.pub";
+        inherit reverseProxyServices staticFileServices internalServices;
+        byName = services.byName { topology = normalizedTopology; };
+        reverseProxyByName = services.reverseProxyByName { topology = normalizedTopology; };
+        staticFileByName = services.staticFileByName { topology = normalizedTopology; };
+        internalByName = services.internalByName { topology = normalizedTopology; };
+        emailIdentities = stripPklClass (tsvc.emailIdentities or { });
+      };
+  };
+
+  links = {
+    normalize = { topology, domains ? null }:
+      let
+        baseLinks = builtins.mapAttrs (linkName: link:
+          let
+            hostsOnLink =
+              builtins.filter
+                (name: builtins.hasAttr linkName (topology.hosts.${name}.links or { }))
+                (builtins.attrNames (topology.hosts or { }));
+            serverNames =
+              builtins.filter
+                (name: (topology.hosts.${name}.links.${linkName} or { }).role or "" == "server")
+                hostsOnLink;
+            serverName =
+              if serverNames == [ ] then null else builtins.head serverNames;
+            clientNames =
+              if serverName == null then [ ] else builtins.filter (name: name != serverName) hostsOnLink;
+          in
+          link
+          // {
+            cidr = link.subnet or null;
+            serverAddress =
+              if serverName == null then
+                null
+              else
+                topology.hosts.${serverName}.links.${linkName}.address;
+            peers =
+              builtins.map (name:
+                let
+                  binding = topology.hosts.${name}.links.${linkName};
+                in
+                {
+                  inherit name;
+                  publicKey = binding.publicKey or "";
+                  allowedIPs = [ "${binding.address}/32" ];
+                })
+              clientNames;
+          })
+        (topology.links or { });
+        wg = baseLinks.wg-home or { };
+      in
+      baseLinks
+      // optionalAttrs (builtins.hasAttr "wg-home" baseLinks) {
+        wg-home =
+          wg
+          // {
+            endpointHost =
+              if domains == null then
+                (topology.links.wg-home or { }).endpointSubdomain or "wg"
+              else
+                mkWgEndpointHost ((topology.links.wg-home or { }).endpointSubdomain or "wg") domains.candeeDomain;
+          }
+          // optionalAttrs (domains != null) {
+            ddnsHost = mkWgEndpointHost ((topology.links.wg-home or { }).endpointSubdomain or "wg") domains.candeeDomain;
+          };
+      };
+  };
+
+  projections = {
+    normalize = { topology }:
+      let
+        cleanTopology = stripPklClass topology;
+        normalizedHosts = hosts.normalize { topology = cleanTopology; };
+        normalizedDomains = domains.normalize { inherit topology; };
+        normalizedServices = services.normalize {
+          topology = cleanTopology // { hosts = normalizedHosts; };
+          domains = normalizedDomains;
+        };
+        normalizedLinks = links.normalize {
+          topology = cleanTopology // { hosts = normalizedHosts; };
+          domains = normalizedDomains;
+        };
+      in
+      {
+        topology = cleanTopology;
+        hosts = normalizedHosts;
+        domains = normalizedDomains;
+        services = normalizedServices;
+        links = normalizedLinks;
+      };
   };
 
   firewall = {
@@ -176,54 +541,4 @@ rec {
       ) nodes;
   };
 
-  # Compatibility aliases for existing consumers.
-  resolveHostAddress = hosts.resolveHostAddress;
-  serviceEndpoint = services.serviceEndpoint;
-  reverseProxyServicesForHost = services.reverseProxyServicesForHost;
-  lanExposedPorts = firewall.lanExposedPorts;
-
-  # Derive a link's CIDR
-  linkCidr = link: link.subnet;
-
-  # Derive the server binding from a link
-  linkServer = link: hosts:
-    lib.head (
-      filterAttrs (_: host:
-        (host.links.${link.name} or {}).role or "" == "server"
-      ) hosts
-    );
-
-  # Derive server address
-  linkServerAddress = link: hosts:
-    let
-      server = linkServer link hosts;
-    in
-    server.value.links.${link.name}.address;
-
-  # Derive listen address for a host on a link
-  listenAddress = hostName: link: hosts:
-    let
-      host = hosts.${hostName};
-      binding = host.links.${link.name};
-      prefixLen = lib.head (splitString "/" link.subnet ++ ["24"]);
-    in
-    "${binding.address}/${prefixLen}";
-
-  # Derive the full peers list for the server side
-  linkPeers = linkName: hosts:
-    let
-      serverHost = lib.head (
-        attrNames (filterAttrs (_: host:
-          (host.links.${linkName} or {}).role or "" == "server"
-        ) hosts)
-      );
-    in
-    mapAttrsToList (name: host:
-      let b = host.links.${linkName}; in {
-        inherit name;
-        publicKey = b.publicKey or "";
-        allowedIPs = ["${b.address}/32"];
-        inherit (b) address;
-      }
-    ) (builtins.removeAttrs hosts [serverHost]);
 }
