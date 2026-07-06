@@ -589,7 +589,7 @@ links = new {
 import "../Schema.pkl" as S
 
 hosts = new {
-  atlas = new S.Host {
+  ["atlas"] = new S.Host {
     system = "x86_64-linux"
   }
 }
@@ -639,7 +639,7 @@ services = (import("Services.pkl")).services
 
         let flattened = flatten_modular_topology(&root.join("Topology.aggregated.pkl"))?;
         assert!(flattened.contains("[\"wg-home\"] = new Link"));
-        assert!(flattened.contains("atlas = new Host"));
+        assert!(flattened.contains("[\"atlas\"] = new Host"));
         assert!(flattened.contains("domains = new"));
         assert!(flattened.contains("services = new"));
         assert!(!flattened.contains("import "));

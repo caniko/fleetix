@@ -242,7 +242,7 @@
             import "../Schema.pkl" as S
 
             hosts = new {
-              atlas = new S.Host {
+              ["atlas"] = new S.Host {
                 system = "x86_64-linux"
               }
             }
@@ -284,12 +284,12 @@
             EOF
 
             fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix
-            grep -q "links =" topology.nix
-            grep -q "hosts =" topology.nix
-            grep -q "domains =" topology.nix
-            grep -q "services =" topology.nix
+            grep -Fq '\"links\":' topology.nix
+            grep -Fq '\"hosts\":' topology.nix
+            grep -Fq '\"domains\":' topology.nix
+            grep -Fq '\"services\":' topology.nix
             grep -q "wg-home" topology.nix
-            grep -q "redirects =" topology.nix
+            grep -Fq '\"redirects\":' topology.nix
             touch $out
           '';
 
