@@ -1,5 +1,9 @@
 # fleetix
 
+<!-- simit:badges:start -->
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.forgejo/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix)
+<!-- simit:badges:end -->
+
 Fleet topology library — typed Pkl schema, Rust bindings, and Nix modules.
 
 `fleetix` provides generic tooling for fleet-wide host, link, domain, and
