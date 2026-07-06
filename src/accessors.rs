@@ -1,4 +1,4 @@
-use crate::topology::{Link, LinkBinding, LinkRole, ReverseProxyService, Topology};
+use crate::topology::{DynamicHost, Link, LinkBinding, LinkRole, ReverseProxyService, Topology};
 
 /// Accessor methods on Topology — derived from the link schema.
 impl Topology {
@@ -176,6 +176,197 @@ impl Topology {
             .map(|svc| svc.port)
             .collect()
     }
+
+    /// Whether an FQDN belongs to a DNS zone.
+    pub fn host_in_zone(fqdn: &str, zone: &str) -> bool {
+        fqdn == zone || fqdn.ends_with(&format!(".{zone}"))
+    }
+
+    /// Managed zone for an FQDN, preferring the longest matching suffix.
+    pub fn zone_for_host<'a>(&'a self, fqdn: &str) -> Option<&'a str> {
+        self.domains
+            .managed_zones
+            .iter()
+            .chain(self.domains.zones.iter())
+            .filter(|zone| Self::host_in_zone(fqdn, zone))
+            .max_by_key(|zone| zone.split('.').count())
+            .map(String::as_str)
+    }
+
+    /// Relative DNS owner name for an FQDN inside a zone.
+    pub fn relative_name<'a>(fqdn: &'a str, zone: &str) -> Option<&'a str> {
+        if fqdn == zone {
+            Some("@")
+        } else {
+            fqdn.strip_suffix(&format!(".{zone}"))
+        }
+    }
+
+    /// Dynamic hosts that belong to a zone.
+    pub fn dynamic_hosts_for_zone<'a>(&'a self, zone: &str) -> Vec<&'a DynamicHost> {
+        self.domains
+            .dynamic_hosts
+            .iter()
+            .filter(|host| self.zone_for_host(&host.fqdn) == Some(zone))
+            .collect()
+    }
+
+    /// Provider-neutral A/AAAA ownership intent for dynamic hosts in a zone.
+    pub fn dynamic_host_address_excludes(&self, zone: &str) -> Vec<AddressExclude> {
+        self.dynamic_hosts_for_zone(zone)
+            .into_iter()
+            .flat_map(|host| {
+                let name = Self::relative_name(&host.fqdn, zone).unwrap_or(host.fqdn.as_str());
+                [
+                    AddressExclude {
+                        name: name.to_string(),
+                        record_type: "A",
+                    },
+                    AddressExclude {
+                        name: name.to_string(),
+                        record_type: "AAAA",
+                    },
+                ]
+            })
+            .collect()
+    }
+
+    /// Reverse-proxy service hostnames keyed by service name.
+    pub fn service_hosts(&self) -> indexmap::IndexMap<&str, &str> {
+        let reverse = self
+            .services
+            .reverse_proxy_services
+            .iter()
+            .map(|svc| (svc.name.as_str(), svc.hostname.as_deref().unwrap_or("")));
+        let static_files = self
+            .services
+            .static_file_services
+            .iter()
+            .map(|svc| (svc.name.as_str(), svc.hostname.as_deref().unwrap_or("")));
+        reverse.chain(static_files).collect()
+    }
+
+    /// Generic CNAME intents for public service hostnames.
+    pub fn service_cname_intents(&self) -> Vec<CnameIntent> {
+        self.services
+            .reverse_proxy_services
+            .iter()
+            .map(ServiceRef::from)
+            .chain(
+                self.services
+                    .static_file_services
+                    .iter()
+                    .map(ServiceRef::from),
+            )
+            .filter_map(|service| {
+                let hostname = service.hostname()?;
+                if service.vpn_only() || !service.publish_cname() {
+                    return None;
+                }
+                let zone = self.zone_for_host(hostname)?;
+                Some(CnameIntent {
+                    name: service.name().to_string(),
+                    hostname: hostname.to_string(),
+                    zone: zone.to_string(),
+                    relative_name: Self::relative_name(hostname, zone)
+                        .unwrap_or(hostname)
+                        .to_string(),
+                    target: zone.to_string(),
+                    proxied: service.cloudflare_proxied(),
+                    comment: service.dns_comment().map(str::to_string),
+                    source: "service",
+                })
+            })
+            .collect()
+    }
+
+    /// Generic CNAME intents for Codeberg Pages sites.
+    pub fn codeberg_pages_cname_intents(&self, base_zone: Option<&str>) -> Vec<CnameIntent> {
+        let Some(default_zone) =
+            base_zone.or_else(|| self.domains.zones.first().map(String::as_str))
+        else {
+            return vec![];
+        };
+        self.domains
+            .codeberg_pages_sites
+            .iter()
+            .filter_map(|site| {
+                let hostname = format!("{}.{}", site.subdomain, default_zone);
+                let zone = self.zone_for_host(&hostname)?;
+                Some(CnameIntent {
+                    name: site.subdomain.clone(),
+                    hostname,
+                    zone: zone.to_string(),
+                    relative_name: site.subdomain.clone(),
+                    target: codeberg_pages_target(&site.target_repo),
+                    proxied: false,
+                    comment: None,
+                    source: "codeberg-pages",
+                })
+            })
+            .collect()
+    }
+}
+
+enum ServiceRef<'a> {
+    Reverse(&'a ReverseProxyService),
+    Static(&'a crate::topology::StaticFileService),
+}
+
+impl<'a> From<&'a crate::topology::StaticFileService> for ServiceRef<'a> {
+    fn from(service: &'a crate::topology::StaticFileService) -> Self {
+        Self::Static(service)
+    }
+}
+
+impl<'a> ServiceRef<'a> {
+    fn name(&self) -> &'a str {
+        match self {
+            Self::Reverse(service) => service.name.as_str(),
+            Self::Static(service) => service.name.as_str(),
+        }
+    }
+
+    fn hostname(&self) -> Option<&'a str> {
+        match self {
+            Self::Reverse(service) => service.hostname.as_deref(),
+            Self::Static(service) => service.hostname.as_deref(),
+        }
+    }
+
+    fn vpn_only(&self) -> bool {
+        match self {
+            Self::Reverse(service) => service.vpn_only,
+            Self::Static(_) => false,
+        }
+    }
+
+    fn publish_cname(&self) -> bool {
+        match self {
+            Self::Reverse(service) => service.publish_cname,
+            Self::Static(_) => true,
+        }
+    }
+
+    fn cloudflare_proxied(&self) -> bool {
+        match self {
+            Self::Reverse(service) => service.cloudflare_proxied,
+            Self::Static(service) => service.cloudflare_proxied,
+        }
+    }
+
+    fn dns_comment(&self) -> Option<&'a str> {
+        match self {
+            Self::Reverse(_) => None,
+            Self::Static(service) => service.dns_comment.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a ReverseProxyService> for ServiceRef<'a> {
+    fn from(service: &'a ReverseProxyService) -> Self {
+        Self::Reverse(service)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +386,24 @@ pub struct ServiceEndpoint<'a> {
     pub url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressExclude {
+    pub name: String,
+    pub record_type: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CnameIntent {
+    pub name: String,
+    pub hostname: String,
+    pub zone: String,
+    pub relative_name: String,
+    pub target: String,
+    pub proxied: bool,
+    pub comment: Option<String>,
+    pub source: &'static str,
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerEntry<'a> {
     pub hostname: &'a str,
@@ -207,10 +416,18 @@ fn cidr_prefix_len(subnet: &str) -> Option<u8> {
     subnet.split('/').nth(1)?.parse().ok()
 }
 
+fn codeberg_pages_target(target_repo: &str) -> String {
+    let repo = target_repo.rsplit('/').next().unwrap_or(target_repo);
+    format!("{repo}.caniko.codeberg.page")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topology::{Host, Network, ReverseProxyService, Services};
+    use crate::topology::{
+        CodebergPagesSite, Domains, DynamicHost, Host, Network, Redirect, ReverseProxyService,
+        Services,
+    };
     use indexmap::IndexMap;
 
     fn test_topology() -> Topology {
@@ -274,13 +491,44 @@ mod tests {
         Topology {
             links: IndexMap::new(),
             hosts,
-            domains: crate::topology::Domains {
-                zones: vec![],
+            domains: Domains {
+                zones: vec![
+                    "example.test".to_string(),
+                    "internal.example.test".to_string(),
+                ],
                 mail_subdomain: None,
                 vpn_subdomain: None,
-                managed_zones: vec![],
-                dynamic_hosts: vec![],
-                codeberg_pages_sites: vec![],
+                managed_zones: vec![
+                    "example.test".to_string(),
+                    "internal.example.test".to_string(),
+                ],
+                dynamic_hosts: vec![
+                    DynamicHost {
+                        fqdn: "example.test".to_string(),
+                        proxied: true,
+                        zone: None,
+                    },
+                    DynamicHost {
+                        fqdn: "wg.example.test".to_string(),
+                        proxied: false,
+                        zone: None,
+                    },
+                    DynamicHost {
+                        fqdn: "host.internal.example.test".to_string(),
+                        proxied: false,
+                        zone: None,
+                    },
+                ],
+                codeberg_pages_sites: vec![CodebergPagesSite {
+                    subdomain: "docs".to_string(),
+                    target_repo: "example/docs".to_string(),
+                }],
+                redirects: vec![Redirect {
+                    from: "example.test".to_string(),
+                    to: "https://dashboard.example.test".to_string(),
+                    status: 301,
+                    preserve_path: true,
+                }],
             },
             services: Services {
                 reverse_proxy_services: vec![
@@ -290,6 +538,8 @@ mod tests {
                         port: 2283,
                         target_host: Some("atlas".to_string()),
                         lan_exposed: true,
+                        cloudflare_proxied: true,
+                        publish_cname: true,
                         ..empty_reverse_proxy_service()
                     },
                     ReverseProxyService {
@@ -390,5 +640,86 @@ mod tests {
         let all_services = topo.reverse_proxy_services_for_host("atlas", true);
         assert_eq!(all_services.len(), 3);
         assert_eq!(topo.lan_exposed_ports("atlas"), vec![2283]);
+    }
+
+    #[test]
+    fn derives_domain_zone_and_relative_names() {
+        let topo = test_topology();
+        assert!(Topology::host_in_zone("api.example.test", "example.test"));
+        assert_eq!(
+            topo.zone_for_host("host.internal.example.test"),
+            Some("internal.example.test")
+        );
+        assert_eq!(
+            Topology::relative_name("example.test", "example.test"),
+            Some("@")
+        );
+        assert_eq!(
+            Topology::relative_name("wg.example.test", "example.test"),
+            Some("wg")
+        );
+    }
+
+    #[test]
+    fn derives_dynamic_host_excludes() {
+        let topo = test_topology();
+        let excludes = topo.dynamic_host_address_excludes("example.test");
+        assert_eq!(
+            excludes,
+            vec![
+                AddressExclude {
+                    name: "@".to_string(),
+                    record_type: "A",
+                },
+                AddressExclude {
+                    name: "@".to_string(),
+                    record_type: "AAAA",
+                },
+                AddressExclude {
+                    name: "wg".to_string(),
+                    record_type: "A",
+                },
+                AddressExclude {
+                    name: "wg".to_string(),
+                    record_type: "AAAA",
+                },
+            ]
+        );
+
+        let internal_excludes = topo.dynamic_host_address_excludes("internal.example.test");
+        assert_eq!(
+            internal_excludes,
+            vec![
+                AddressExclude {
+                    name: "host".to_string(),
+                    record_type: "A",
+                },
+                AddressExclude {
+                    name: "host".to_string(),
+                    record_type: "AAAA",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn exposes_redirects_service_hosts_and_cname_intents() {
+        let topo = test_topology();
+        assert_eq!(topo.domains.redirects[0].from, "example.test");
+        assert_eq!(topo.service_hosts()["immich"], "immich.example.test");
+
+        let service_intents = topo.service_cname_intents();
+        assert!(service_intents.iter().any(|intent| {
+            intent.name == "immich"
+                && intent.relative_name == "immich"
+                && intent.target == "example.test"
+                && intent.proxied
+        }));
+        assert!(!service_intents.iter().any(|intent| intent.name == "ollama"));
+
+        let page_intents = topo.codeberg_pages_cname_intents(None);
+        assert_eq!(page_intents.len(), 1);
+        assert_eq!(page_intents[0].relative_name, "docs");
+        assert_eq!(page_intents[0].target, "docs.caniko.codeberg.page");
     }
 }

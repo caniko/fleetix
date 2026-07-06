@@ -2,7 +2,7 @@ use crate::topology;
 use crate::validate;
 use clap::Parser;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use pklx::pklr::EvalOptions;
 
@@ -24,6 +24,53 @@ fn build_options(
         options.client = Some(client);
     }
     Ok(options)
+}
+
+async fn eval_pkl_for_nix(path: &Path, options: EvalOptions) -> miette::Result<String> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("Topology.aggregated.pkl") {
+        return pklx::eval_pkl(path, options).await;
+    }
+
+    let flattened = topology::flatten_modular_topology(path)?;
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| miette::miette!("build temporary topology filename: {e}"))?
+        .as_nanos();
+    let tmp_path = std::env::temp_dir().join(format!(
+        "fleetix-topology-{}-{unique}.pkl",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, flattened)
+        .map_err(|e| miette::miette!("write temporary topology {}: {e}", tmp_path.display()))?;
+
+    let result = pklx::eval_pkl(&tmp_path, options).await;
+    let _ = std::fs::remove_file(&tmp_path);
+    result.map(wrap_topology_nix)
+}
+
+fn wrap_topology_nix(nix: String) -> String {
+    format!(
+        r#"let
+  scrub = value:
+    if builtins.isAttrs value then
+      builtins.listToAttrs (
+        builtins.filter (entry: entry.value != null) (
+          builtins.map (name: {{
+            inherit name;
+            value = scrub value.${{name}};
+          }}) (builtins.attrNames (builtins.removeAttrs value ["__pkl_class"]))
+        )
+      )
+    else if builtins.isList value then
+      builtins.map scrub value
+    else
+      value;
+in
+  scrub (
+{nix}
+  )
+"#
+    )
 }
 
 #[derive(Parser)]
@@ -88,9 +135,6 @@ pub enum Cli {
         path: PathBuf,
         /// Output Nix sidecar path
         output: PathBuf,
-        /// Optional self-contained compatibility Pkl output path
-        #[arg(long = "compat-pkl")]
-        compat_pkl: Option<PathBuf>,
         /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
         #[arg(long = "http-rewrite")]
         http_rewrite: Vec<String>,
@@ -207,7 +251,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
                     .write_all(&bytes)
                     .map_err(|e| miette::miette!("Failed to write output: {e}"))?;
             } else {
-                let nix = pklx::eval_pkl(&path, options).await?;
+                let nix = eval_pkl_for_nix(&path, options).await?;
                 println!("{nix}");
             }
         }
@@ -215,24 +259,11 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
         Cli::Export {
             path,
             output,
-            compat_pkl,
             http_rewrite,
             http_proxy,
         } => {
             let options = build_options(http_rewrite, http_proxy)?;
-            let eval_path = if let Some(compat_path) = compat_pkl {
-                let compat = topology::flatten_modular_topology(&path)?;
-                if let Some(parent) = compat_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| miette::miette!("create {}: {e}", parent.display()))?;
-                }
-                std::fs::write(&compat_path, compat)
-                    .map_err(|e| miette::miette!("write {}: {e}", compat_path.display()))?;
-                compat_path
-            } else {
-                path.clone()
-            };
-            let nix = pklx::eval_pkl(&eval_path, options).await?;
+            let nix = eval_pkl_for_nix(&path, options).await?;
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| miette::miette!("create {}: {e}", parent.display()))?;

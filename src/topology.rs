@@ -222,6 +222,8 @@ pub struct Domains {
     pub dynamic_hosts: Vec<DynamicHost>,
     #[serde(default)]
     pub codeberg_pages_sites: Vec<CodebergPagesSite>,
+    #[serde(default)]
+    pub redirects: Vec<Redirect>,
 }
 
 #[derive(
@@ -245,6 +247,32 @@ pub struct DynamicHost {
 pub struct CodebergPagesSite {
     pub subdomain: String,
     pub target_repo: String,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct Redirect {
+    pub from: String,
+    pub to: String,
+    #[serde(default = "default_redirect_status")]
+    pub status: u16,
+    #[serde(default = "default_redirect_preserve_path")]
+    pub preserve_path: bool,
+}
+
+fn default_redirect_status() -> u16 {
+    301
+}
+
+fn default_redirect_preserve_path() -> bool {
+    true
+}
+
+fn default_publish_cname() -> bool {
+    true
 }
 
 #[derive(
@@ -289,7 +317,7 @@ pub struct ReverseProxyService {
     pub proxied: bool,
     #[serde(default)]
     pub cloudflare_proxied: bool,
-    #[serde(default)]
+    #[serde(default = "default_publish_cname")]
     pub publish_cname: bool,
     #[serde(default)]
     pub vpn_only: bool,
@@ -361,21 +389,9 @@ pub fn load_topology_from_rkyv(
     rkyv::access::<rkyv::Archived<Topology>, rkyv::rancor::Error>(bytes)
 }
 
-/// Evaluate a .pkl topology file and produce a typed Topology value.
-pub async fn load_topology(path: &Path) -> miette::Result<Topology> {
-    crate::pkl::load(path).await
-}
-
-/// Evaluate a .pkl topology file with custom evaluator options.
-pub async fn load_topology_with_options(
-    path: &Path,
-    options: pklx::pklr::EvalOptions,
-) -> miette::Result<Topology> {
-    crate::pkl::load_with_options(path, options).await
-}
-
 /// Render a modular topology entrypoint into a self-contained compatibility
-/// Pkl file for consumers whose evaluator cannot yet resolve local imports.
+/// Pkl file for consumers whose evaluator cannot resolve local aggregate
+/// imports.
 pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
     let src_dir = path
         .parent()
@@ -388,6 +404,7 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
         "// Generated compatibility topology. Edit the modular topology source instead.\n\n",
     );
     out.push_str(&strip_imports(&read_to_string(src_dir.join("Schema.pkl"))?));
+
     out.push_str("\n\nlinks = new {\n");
     for rel in imported_paths(&entrypoint, "links/") {
         out.push_str(&unwrap_section(
@@ -429,76 +446,204 @@ fn strip_imports(input: &str) -> String {
 }
 
 fn imported_paths(input: &str, prefix: &str) -> Vec<String> {
-    input
+    let mut paths: Vec<String> = input
         .lines()
         .filter_map(|line| {
-            let start = line.find("import(\"")? + "import(\"".len();
-            let rest = &line[start..];
-            let end = rest.find("\")")?;
-            let rel = &rest[..end];
-            rel.starts_with(prefix).then(|| rel.to_string())
+            let line = line.trim();
+            let rest = line.strip_prefix("import \"")?;
+            let (path, _) = rest.split_once('"')?;
+            path.starts_with(prefix).then(|| path.to_string())
         })
-        .collect()
+        .collect();
+
+    let mut rest = input;
+    while let Some(index) = rest.find("import(\"") {
+        let after_import = &rest[index + "import(\"".len()..];
+        let Some((path, after_path)) = after_import.split_once('"') else {
+            break;
+        };
+        if path.starts_with(prefix) {
+            paths.push(path.to_string());
+        }
+        rest = after_path;
+    }
+
+    paths
 }
 
 fn unwrap_section(input: &str, section: &str) -> String {
-    let header = format!("{section} = new {{");
-    let mut lines = Vec::new();
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&header) {
-            let rest = rest.trim().strip_suffix('}').unwrap_or(rest.trim()).trim();
-            if !rest.is_empty() {
-                lines.push(rest.to_string());
+    let needle = format!("{section} = new");
+    let Some(start) = input.find(&needle) else {
+        return input.to_string();
+    };
+    let Some(open_rel) = input[start..].find('{') else {
+        return input.to_string();
+    };
+    let body_start = start + open_rel + 1;
+    let mut depth = 1usize;
+    let mut body_end = input.len();
+
+    for (offset, ch) in input[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    body_end = body_start + offset;
+                    break;
+                }
             }
-        } else {
-            lines.push(line.to_string());
+            _ => {}
         }
     }
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
-    }
-    if lines.last().is_some_and(|line| line.trim() == "}") {
-        lines.pop();
-    }
-    let mut out = lines.join("\n");
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out
+
+    input[body_start..body_end].to_string()
+}
+
+/// Evaluate a .pkl topology file and produce a typed Topology value.
+pub async fn load_topology(path: &Path) -> miette::Result<Topology> {
+    crate::pkl::load(path).await
+}
+
+/// Evaluate a .pkl topology file with custom evaluator options.
+pub async fn load_topology_with_options(
+    path: &Path,
+    options: pklx::pklr::EvalOptions,
+) -> miette::Result<Topology> {
+    crate::pkl::load_with_options(path, options).await
 }
 
 #[cfg(test)]
-mod flatten_tests {
+mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn imported_paths_keep_entrypoint_order() {
         let input = r#"
-links = new {
-  ["wg-home"] = (import("links/WgHome.pkl")).links["wg-home"]
-  ["lan"] = (import("links/Lan.pkl")).links["lan"]
-}
+import "hosts/Atlas.pkl"
+import "links/WgHome.pkl"
+import "hosts/Nomad.pkl"
 "#;
+
         assert_eq!(
-            imported_paths(input, "links/"),
-            vec!["links/WgHome.pkl", "links/Lan.pkl"]
+            imported_paths(input, "hosts/"),
+            vec!["hosts/Atlas.pkl", "hosts/Nomad.pkl"]
         );
     }
 
     #[test]
     fn unwrap_section_removes_only_outer_binding() {
-        let input = "links = new {\n  [\"wg\"] = new Link {}\n}\n";
-        assert_eq!(unwrap_section(input, "links"), "  [\"wg\"] = new Link {}\n");
+        let input = r#"
+links = new {
+  wg-home = new Link {
+    subnet = "10.123.0.0/24"
+  }
+}
+"#;
+
+        let body = unwrap_section(input, "links");
+        assert!(body.contains("wg-home = new Link"));
+        assert!(!body.contains("links = new"));
+        assert!(body.contains("subnet = \"10.123.0.0/24\""));
     }
 
     #[test]
-    fn unwrap_section_handles_comments_and_single_line_bindings() {
-        let input =
-            "// comment\nlinks = new { [\"lan\"] = new Link { subnet = \"192.0.2.0/24\" } }\n";
-        assert_eq!(
-            unwrap_section(input, "links"),
-            "// comment\n[\"lan\"] = new Link { subnet = \"192.0.2.0/24\" }\n"
-        );
+    fn flatten_modular_topology_mirrors_aggregate_import_shape() -> miette::Result<()> {
+        let temp = tempfile::tempdir().map_err(|e| miette::miette!("create tempdir: {e}"))?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("links"))
+            .map_err(|e| miette::miette!("create links dir: {e}"))?;
+        fs::create_dir_all(root.join("hosts"))
+            .map_err(|e| miette::miette!("create hosts dir: {e}"))?;
+
+        fs::write(
+            root.join("Schema.pkl"),
+            r#"
+class Link {
+  subnet: String
+}
+
+class Host {
+  system: String
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write Schema.pkl: {e}"))?;
+        fs::write(
+            root.join("links/WgHome.pkl"),
+            r#"
+import "../Schema.pkl" as S
+
+links = new {
+  ["wg-home"] = new S.Link {
+    subnet = "10.123.0.0/24"
+  }
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write link fixture: {e}"))?;
+        fs::write(
+            root.join("hosts/Atlas.pkl"),
+            r#"
+import "../Schema.pkl" as S
+
+hosts = new {
+  atlas = new S.Host {
+    system = "x86_64-linux"
+  }
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write host fixture: {e}"))?;
+        fs::write(
+            root.join("Domains.pkl"),
+            r#"
+import "Schema.pkl" as S
+
+domains = new {
+  zones = new Listing<String> {
+    "example.test"
+  }
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write Domains.pkl: {e}"))?;
+        fs::write(
+            root.join("Services.pkl"),
+            r#"
+import "Schema.pkl" as S
+
+services = new {
+  reverseProxyServices = new Listing {}
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write Services.pkl: {e}"))?;
+        fs::write(
+            root.join("Topology.aggregated.pkl"),
+            r#"
+links = new {
+  ["wg-home"] = (import("links/WgHome.pkl")).links["wg-home"]
+}
+
+hosts = new {
+  atlas = (import("hosts/Atlas.pkl")).hosts["atlas"]
+}
+
+domains = (import("Domains.pkl")).domains
+services = (import("Services.pkl")).services
+"#,
+        )
+        .map_err(|e| miette::miette!("write aggregate fixture: {e}"))?;
+
+        let flattened = flatten_modular_topology(&root.join("Topology.aggregated.pkl"))?;
+        assert!(flattened.contains("[\"wg-home\"] = new Link"));
+        assert!(flattened.contains("atlas = new Host"));
+        assert!(flattened.contains("domains = new"));
+        assert!(flattened.contains("services = new"));
+        assert!(!flattened.contains("import "));
+
+        Ok(())
     }
 }
