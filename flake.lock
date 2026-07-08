@@ -187,7 +187,6 @@
     "root": {
       "inputs": {
         "crane": "crane",
-        "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "rs-harbor": "rs-harbor",
         "rust-overlay": "rust-overlay_2"
@@ -198,9 +197,7 @@
         "crane": [
           "crane"
         ],
-        "flake-utils": [
-          "flake-utils"
-        ],
+        "flake-utils": "flake-utils",
         "meta-harbor": "meta-harbor",
         "nix-opencode-lsp": "nix-opencode-lsp",
         "nixpkgs": [
