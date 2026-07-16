@@ -382,11 +382,75 @@ pub struct EmailIdentities {
     pub postmaster_email: Option<String>,
 }
 
-/// Load a Topology from an rkyv archive (zero-copy access).
+/// Load a legacy unversioned Topology rkyv archive (zero-copy access).
+///
+/// Prefer [`load_topology_archive_from_rkyv`] for persisted or cross-release
+/// bytes; this function remains for callers of the original raw format.
 pub fn load_topology_from_rkyv(
     bytes: &[u8],
 ) -> Result<&rkyv::Archived<Topology>, rkyv::rancor::Error> {
     rkyv::access::<rkyv::Archived<Topology>, rkyv::rancor::Error>(bytes)
+}
+
+/// Version marker for the self-describing archive envelope.
+pub const TOPOLOGY_ARCHIVE_VERSION: u16 = 1;
+
+/// Versioned archive payload for consumers that need to persist topology
+/// archives across process or release boundaries.
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct TopologyArchive {
+    pub schema_version: u16,
+    pub topology: Topology,
+}
+
+/// Serialize a topology with an explicit archive schema version.
+pub fn archive_topology(topology: &Topology) -> Result<Vec<u8>, rkyv::rancor::Error> {
+    rkyv::to_bytes::<rkyv::rancor::Error>(&TopologyArchive {
+        schema_version: TOPOLOGY_ARCHIVE_VERSION,
+        topology: topology.clone(),
+    })
+    .map(|bytes| bytes.to_vec())
+}
+
+#[derive(Debug)]
+pub enum TopologyArchiveError {
+    Archive(rkyv::rancor::Error),
+    UnsupportedVersion(u16),
+}
+
+impl std::fmt::Display for TopologyArchiveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Archive(error) => write!(formatter, "archive decode failed: {error}"),
+            Self::UnsupportedVersion(version) => {
+                write!(
+                    formatter,
+                    "unsupported topology archive schema version {version}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TopologyArchiveError {}
+
+/// Load a versioned topology archive and reject versions this library cannot
+/// interpret.
+pub fn load_topology_archive_from_rkyv(
+    bytes: &[u8],
+) -> Result<&rkyv::Archived<TopologyArchive>, TopologyArchiveError> {
+    let archive = rkyv::access::<rkyv::Archived<TopologyArchive>, rkyv::rancor::Error>(bytes)
+        .map_err(TopologyArchiveError::Archive)?;
+    if archive.schema_version != TOPOLOGY_ARCHIVE_VERSION {
+        return Err(TopologyArchiveError::UnsupportedVersion(
+            archive.schema_version.into(),
+        ));
+    }
+    Ok(archive)
 }
 
 /// Render a modular topology entrypoint into a self-contained compatibility
@@ -480,24 +544,60 @@ fn unwrap_section(input: &str, section: &str) -> String {
         return input.to_string();
     };
     let body_start = start + open_rel + 1;
-    let mut depth = 1usize;
-    let mut body_end = input.len();
-
-    for (offset, ch) in input[body_start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    body_end = body_start + offset;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
+    let Some(body_end) = matching_brace(input, body_start - 1) else {
+        return input.to_string();
+    };
 
     input[body_start..body_end].to_string()
+}
+
+fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    for (offset, ch) in input[open_index..].char_indices() {
+        let absolute = open_index + offset;
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && input[absolute..].starts_with("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+        } else if ch == '/' && input[absolute..].starts_with("//") {
+            in_line_comment = true;
+        } else if ch == '/' && input[absolute..].starts_with("/*") {
+            in_block_comment = true;
+        } else if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(absolute);
+            }
+        }
+    }
+    None
 }
 
 /// Evaluate a .pkl topology file and produce a typed Topology value.
@@ -516,6 +616,7 @@ pub async fn load_topology_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indexmap::IndexMap;
     use std::fs;
 
     #[test]
@@ -546,6 +647,23 @@ links = new {
         assert!(body.contains("wg-home = new Link"));
         assert!(!body.contains("links = new"));
         assert!(body.contains("subnet = \"10.123.0.0/24\""));
+    }
+
+    #[test]
+    fn unwrap_section_ignores_braces_in_strings_and_comments() {
+        let input = r#"
+links = new {
+  wg-home = new Link {
+    description = "literal { brace }"
+    // comment with a closing brace }
+    nested = new { value = "still { text }" }
+  }
+}
+"#;
+
+        let body = unwrap_section(input, "links");
+        assert!(body.contains("description = \"literal { brace }\""));
+        assert!(body.contains("nested = new { value = \"still { text }\" }"));
     }
 
     #[test]
@@ -645,5 +763,29 @@ services = (import("Services.pkl")).services
         assert!(!flattened.contains("import "));
 
         Ok(())
+    }
+
+    #[test]
+    fn versioned_archive_round_trips_with_schema_marker() {
+        let topology = Topology {
+            links: IndexMap::new(),
+            hosts: IndexMap::new(),
+            domains: Domains {
+                zones: vec!["example.test".to_string()],
+                mail_subdomain: None,
+                vpn_subdomain: None,
+                managed_zones: vec![],
+                dynamic_hosts: vec![],
+                codeberg_pages_sites: vec![],
+                redirects: vec![],
+            },
+            services: Services::default(),
+        };
+
+        let bytes = archive_topology(&topology).expect("archive topology");
+        let archived = load_topology_archive_from_rkyv(&bytes).expect("load archive");
+        assert_eq!(archived.schema_version, TOPOLOGY_ARCHIVE_VERSION);
+        assert_eq!(archived.topology.links.len(), 0);
+        assert_eq!(archived.topology.hosts.len(), 0);
     }
 }

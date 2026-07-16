@@ -1,6 +1,7 @@
 use crate::topology;
 use crate::validate;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -80,6 +81,9 @@ pub enum Cli {
     Validate {
         /// Path to the .pkl topology file
         path: PathBuf,
+        /// Diagnostic output format
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
         /// HTTP URL rewrite rules in "source_prefix=target_prefix" format
         #[arg(long = "http-rewrite")]
         http_rewrite: Vec<String>,
@@ -150,25 +154,35 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             path,
             http_rewrite,
             http_proxy,
+            format,
         } => {
             let options = build_options(http_rewrite, http_proxy)?;
             let topo = topology::load_topology_with_options(&path, options).await?;
             let report = validate::validate(&topo);
-            for err in &report.errors {
-                eprintln!("  ERROR: {err}");
-            }
-            for warn in &report.warnings {
-                eprintln!("  WARN:  {warn}");
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|e| miette::miette!("serialize validation report: {e}"))?
+                );
+            } else {
+                for err in &report.errors {
+                    eprintln!("  ERROR: {err}");
+                }
+                for warn in &report.warnings {
+                    eprintln!("  WARN:  {warn}");
+                }
             }
             if report.is_ok() {
-                println!("Validation passed with {} warnings.", report.warnings.len());
+                if format == OutputFormat::Human {
+                    println!("Validation passed with {} warnings.", report.warnings.len());
+                }
             } else {
-                eprintln!(
-                    "Validation FAILED with {} errors and {} warnings.",
+                return Err(miette::miette!(
+                    "validation failed with {} errors and {} warnings",
                     report.errors.len(),
                     report.warnings.len()
-                );
-                std::process::exit(1);
+                ));
             }
         }
 
@@ -192,7 +206,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
                         hdata.users.keys().cloned().collect::<Vec<_>>().join(", "),
                         hdata.rebuild.build_host,
                     ),
-                    None => println!("Host '{}' not found.", h),
+                    None => return Err(miette::miette!("host '{h}' not found")),
                 }
             } else {
                 println!("Fleet topology:");
@@ -224,7 +238,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
                             n, link.subnet, link.port, cidr, server, dial
                         );
                     }
-                    None => println!("Link '{}' not found.", n),
+                    None => return Err(miette::miette!("link '{n}' not found")),
                 }
             } else {
                 println!("Links:");
@@ -245,7 +259,7 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             let options = build_options(http_rewrite, http_proxy)?;
             if rkyv {
                 let topo = topology::load_topology_with_options(&path, options).await?;
-                let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&topo)
+                let bytes = topology::archive_topology(&topo)
                     .map_err(|e| miette::miette!("Failed to create rkyv archive: {e}"))?;
                 std::io::stdout()
                     .write_all(&bytes)
@@ -262,23 +276,85 @@ pub async fn run(cli: Cli) -> miette::Result<()> {
             http_rewrite,
             http_proxy,
         } => {
+            let validation_options = build_options(http_rewrite.clone(), http_proxy.clone())?;
             let options = build_options(http_rewrite, http_proxy)?;
-            let nix = eval_pkl_for_nix(&path, options).await?;
-            if let Some(parent) = output.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| miette::miette!("create {}: {e}", parent.display()))?;
+            let topology = topology::load_topology_with_options(&path, validation_options).await?;
+            let report = validate::validate(&topology);
+            if !report.is_ok() {
+                return Err(miette::miette!(
+                    "refusing to export invalid topology: {} errors and {} warnings",
+                    report.errors.len(),
+                    report.warnings.len()
+                ));
             }
-            std::fs::write(
+            let nix = eval_pkl_for_nix(&path, options).await?;
+            atomic_write(
                 &output,
                 format!(
                     "# Generated from {}; do not edit by hand.\n{nix}",
                     path.display()
                 ),
-            )
-            .map_err(|e| miette::miette!("write {}: {e}", output.display()))?;
+            )?;
             println!("Wrote {}", output.display());
         }
     }
 
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    Human,
+    Json,
+}
+
+fn atomic_write(path: &Path, contents: String) -> miette::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| miette::miette!("create {}: {e}", parent.display()))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fleetix-output");
+    let mut temporary = None;
+    for attempt in 0..100 {
+        let candidate = parent.join(format!(".{file_name}.tmp-{}-{attempt}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(miette::miette!("create temporary output: {error}"));
+            }
+        }
+    }
+    let (temporary_path, mut file) =
+        temporary.ok_or_else(|| miette::miette!("could not allocate a temporary output path"))?;
+
+    if let Ok(metadata) = fs::metadata(path) {
+        file.set_permissions(metadata.permissions())
+            .map_err(|e| miette::miette!("preserve {} permissions: {e}", path.display()))?;
+    }
+    let result = (|| {
+        file.write_all(contents.as_bytes())
+            .map_err(|e| miette::miette!("write {}: {e}", path.display()))?;
+        file.sync_all()
+            .map_err(|e| miette::miette!("sync {}: {e}", path.display()))?;
+        drop(file);
+        fs::rename(&temporary_path, path)
+            .map_err(|e| miette::miette!("replace {}: {e}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
 }

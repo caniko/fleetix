@@ -41,6 +41,8 @@
   in {
     lib = fleetixLib;
 
+    formatter = forSystems (system: (pkgsFor system).alejandra);
+
     # NixOS module for consuming fleetix topology from the sidecar
     nixosModules.topology = import ./modules/nixos.nix {fleetixLib = self.lib;};
     homeModules.topology = import ./modules/home-manager.nix;
@@ -91,9 +93,11 @@
 
             input="$1"
             output="$2"
+            output_dir="$(dirname -- "$output")"
+            mkdir -p -- "$output_dir"
             json_tmp="$(mktemp)"
-            nix_tmp="$(mktemp)"
-            trap 'rm -f "$json_tmp" "$nix_tmp"' EXIT
+            nix_tmp="$(mktemp "$output_dir/.fleetix-pkl-to-nix.XXXXXX")"
+            trap 'rm -f -- "$json_tmp" "$nix_tmp"' EXIT
 
             pkl eval -f json "$input" > "$json_tmp"
 
@@ -102,7 +106,11 @@
               printf 'builtins.fromJSON '
               jq -Rs . < "$json_tmp"
             } > "$nix_tmp"
-            mv "$nix_tmp" "$output"
+            if [ -e "$output" ]; then
+              chmod --reference="$output" "$nix_tmp"
+            fi
+            mv -- "$nix_tmp" "$output"
+            nix_tmp=""
             echo "Wrote $output from $input"
           '';
         };
@@ -140,18 +148,22 @@
       default = {
         type = "app";
         program = "${self.packages.${system}.fleetixCrate}/bin/fleetix";
+        meta.description = "Evaluate and export Fleetix Pkl topology";
       };
       eval-pkl = {
         type = "app";
         program = "${self.packages.${system}.evalPkl}/bin/fleetix-eval-pkl";
+        meta.description = "Evaluate a Pkl topology through Fleetix";
       };
       export-nix = {
         type = "app";
         program = "${self.packages.${system}.exportNix}/bin/fleetix-export-nix";
+        meta.description = "Export a Pkl topology as a Nix sidecar";
       };
       pkl-to-nix = {
         type = "app";
         program = "${self.packages.${system}.pklToNix}/bin/fleetix-pkl-to-nix";
+        meta.description = "Convert Pkl JSON output to an importable Nix expression";
       };
     });
 
@@ -167,6 +179,7 @@
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       in {
         fleetix-tests = craneLib.cargoTest (
           commonArgs
@@ -184,6 +197,20 @@
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           }
         );
+
+        fleetix-no-default-features = craneLib.cargoClippy (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoExtraArgs = "--no-default-features";
+            cargoClippyExtraArgs = "--all-targets -- -D warnings";
+          }
+        );
+
+        fleetix-publication-policy = assert (cargoToml.package.publish or true) == false;
+          pkgs.runCommand "fleetix-publication-policy" {} ''
+            touch $out
+          '';
 
         fleetix-fmt = craneLib.cargoFmt {
           inherit src;
@@ -453,7 +480,7 @@
             test "${(builtins.elemAt serviceIntents 0).target}" = "example.test"
             test "${toString (builtins.elemAt serviceIntents 0).proxied}" = "1"
             test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
-            test "${(builtins.elemAt pagesIntents 0).target}" = "docs.caniko.codeberg.page"
+            test "${(builtins.elemAt pagesIntents 0).target}" = "docs.example.codeberg.page"
             test "${normalized.hosts.atlas.network.wgHomeIp}" = "10.123.0.5"
             test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
             test "${normalized.links.wg-home.serverAddress}" = "10.123.0.5"
@@ -468,6 +495,30 @@
             test "${toString nodes.nomad.modelPort}" = "8015"
             touch $out
           '';
+
+        module-integration-fixtures = let
+          nixos = nixpkgs.lib.evalModules {
+            modules = [self.nixosModules.topology];
+          };
+          integratedHome = nixpkgs.lib.evalModules {
+            modules = [
+              self.homeModules.topology
+              {_module.args.osConfig = nixos.config;}
+            ];
+          };
+          standaloneHome = nixpkgs.lib.evalModules {
+            modules = [
+              self.homeModules.topology
+              {_module.args.osConfig = null;}
+            ];
+          };
+        in
+          pkgs.runCommand "fleetix-module-integration-fixtures" {} ''
+            test "${toString (builtins.hasAttr "fleetix" nixos.config)}" = 1
+            test "${toString (builtins.length (builtins.attrNames integratedHome.config.fleetix.topology))}" = 0
+            test "${toString (builtins.length (builtins.attrNames standaloneHome.config.fleetix.topology))}" = 0
+            touch $out
+          '';
       }
     );
 
@@ -477,10 +528,49 @@
         toolchain = rs-harbor.lib.mkToolchain {inherit pkgs;};
         cargoConfig = rs-harbor.lib.mkCargoConfig {inherit pkgs;};
         cross = rs-harbor.lib.mkCross {inherit pkgs system;};
-      in (rs-harbor.lib.mkDevShells {
-        inherit pkgs cross cargoConfig;
-        inherit (toolchain) craneLib;
-      })
+        stableToolchain = pkgs.rust-bin.stable."1.96.1".default;
+        stableCargoConfig = rs-harbor.lib.mkCargoConfig {
+          inherit pkgs;
+          channel = "stable";
+        };
+        stableCross = rs-harbor.lib.mkCross {
+          inherit pkgs system;
+          enableOsxcross = false;
+        };
+        msrvToolchain = pkgs.rust-bin.stable."1.88.0".default;
+        msrvCargoConfig = rs-harbor.lib.mkCargoConfig {
+          inherit pkgs;
+          channel = "stable";
+        };
+        msrvCross = rs-harbor.lib.mkCross {
+          inherit pkgs system;
+          enableOsxcross = false;
+        };
+      in
+        (rs-harbor.lib.mkDevShells {
+          inherit pkgs cross cargoConfig;
+          inherit (toolchain) craneLib;
+        })
+        // {
+          stable = rs-harbor.lib.mkDevShell {
+            inherit pkgs;
+            craneLib = (crane.mkLib pkgs).overrideToolchain (_: stableToolchain);
+            cargoConfig = stableCargoConfig;
+            cross = stableCross;
+            packages = [stableToolchain];
+            enableWindowsEnv = false;
+            enableOsxcrossEnv = false;
+          };
+          msrv = rs-harbor.lib.mkDevShell {
+            inherit pkgs;
+            craneLib = (crane.mkLib pkgs).overrideToolchain (_: msrvToolchain);
+            cargoConfig = msrvCargoConfig;
+            cross = msrvCross;
+            packages = [msrvToolchain];
+            enableWindowsEnv = false;
+            enableOsxcrossEnv = false;
+          };
+        }
     );
   };
 }

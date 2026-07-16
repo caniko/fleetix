@@ -61,6 +61,42 @@ nix run .#pkl-to-nix -- examples/Topology.pkl /tmp/topology.nix
 Topology-specific consumers should keep using `export-nix` when they need
 Fleetix's normalized topology rendering.
 
+## Validation and module integration
+
+Validate a topology before consuming it. Human diagnostics are the default;
+automation can request a stable JSON report containing `severity`, `code`,
+`path`, `value`, and `message` for every issue:
+
+```bash
+fleetix validate examples/Topology.pkl --format json
+```
+
+The NixOS module is disabled when `fleetix.source = null` (the default). Set
+`fleetix.source` to a generated Nix sidecar to populate `fleetix.topology`:
+
+```nix
+{ config, ... }:
+{
+  imports = [ fleetix.nixosModules.topology ];
+  fleetix.source = ./lib/generated/topology.nix;
+}
+```
+
+The Home Manager module has one integration mode: when imported by Home
+Manager with an `osConfig`, it mirrors `osConfig.fleetix.topology`; when used
+standalone it remains an empty, opt-in surface. Fleetix does not own a
+consumer's machine data or deployment policy.
+
+Topology rkyv archives use an explicit schema-version envelope. Consumers
+must reject archive versions they do not understand instead of treating raw
+bytes as a stable interchange format.
+
+The declared Rust MSRV is 1.88, required by the resolved `pklr` dependency.
+CI also checks the pinned current stable Rust 1.96.1 toolchain so the minimum
+compatibility promise and modern compiler behavior are tested separately.
+
 ## License
 
-Dual-licensed under MIT or Apache-2.0, at your option.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
+your option. The crate is currently marked non-publishable because its git
+dependency on `pklx` does not yet have a crates.io release.

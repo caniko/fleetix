@@ -1,4 +1,5 @@
 use crate::topology::{DynamicHost, Link, LinkBinding, LinkRole, ReverseProxyService, Topology};
+use std::net::IpAddr;
 
 /// Accessor methods on Topology — derived from the link schema.
 impl Topology {
@@ -13,14 +14,20 @@ impl Topology {
     }
 
     /// The server binding for a link (the binding with role == Server).
-    /// Returns None if no server or multiple servers (caller should `validate`).
+    ///
+    /// A link must have exactly one server for this accessor to return a
+    /// value. Returning `None` for an ambiguous link prevents callers from
+    /// silently selecting whichever host happens to appear first in the
+    /// topology map.
     pub fn link_server(&self, name: &str) -> Option<&LinkBinding> {
-        self.links.get(name).and_then(|_| {
-            self.hosts
-                .values()
-                .filter_map(|h| h.links.get(name))
-                .find(|b| b.role == LinkRole::Server)
-        })
+        self.links.get(name)?;
+        let mut servers = self
+            .hosts
+            .values()
+            .filter_map(|host| host.links.get(name))
+            .filter(|binding| binding.role == LinkRole::Server);
+        let server = servers.next()?;
+        servers.next().is_none().then_some(server)
     }
 
     /// The server hostname for a link.
@@ -29,7 +36,7 @@ impl Topology {
         self.hosts.iter().find_map(|(hname, host)| {
             host.links
                 .get(name)
-                .filter(|b| b.address == server_binding.address)
+                .filter(|binding| std::ptr::eq(*binding, server_binding))
                 .map(|_| hname.as_str())
         })
     }
@@ -51,7 +58,7 @@ impl Topology {
         let host = self.hosts.get(host_name)?;
         let link = self.links.get(link_name)?;
         let binding = host.links.get(link_name)?;
-        let prefix = cidr_prefix_len(&link.subnet).unwrap_or(24);
+        let prefix = cidr_prefix_len(&link.subnet)?;
         Some(format!("{}/{}", binding.address, prefix))
     }
 
@@ -59,7 +66,11 @@ impl Topology {
     pub fn allowed_ips(&self, host_name: &str, link_name: &str) -> Option<Vec<String>> {
         let host = self.hosts.get(host_name)?;
         let binding = host.links.get(link_name)?;
-        Some(vec![format!("{}/32", binding.address)])
+        Some(vec![format!(
+            "{}/{}",
+            binding.address,
+            address_prefix_len(&binding.address)?
+        )])
     }
 
     /// Client bindings for a link (all non-server bindings).
@@ -84,10 +95,11 @@ impl Topology {
             .filter_map(|(hname, host)| {
                 let binding = host.links.get(name)?;
                 let address = binding.address.clone();
+                let prefix = address_prefix_len(&address)?;
                 Some(PeerEntry {
                     hostname: hname,
                     public_key: binding.public_key.as_deref().unwrap_or_default(),
-                    allowed_ips: vec![format!("{}/32", address)],
+                    allowed_ips: vec![format!("{address}/{prefix}")],
                     address,
                 })
             })
@@ -142,7 +154,11 @@ impl Topology {
             .or(service.upstream_scheme.as_deref())
             .unwrap_or("http")
             .to_string();
-        let url = format!("{scheme}://{address}:{}", service.port);
+        let url = format!(
+            "{scheme}://{}:{}",
+            format_endpoint_address(address),
+            service.port
+        );
 
         Some(ServiceEndpoint {
             service: service.name.as_str(),
@@ -184,10 +200,13 @@ impl Topology {
 
     /// Managed zone for an FQDN, preferring the longest matching suffix.
     pub fn zone_for_host<'a>(&'a self, fqdn: &str) -> Option<&'a str> {
-        self.domains
-            .managed_zones
+        let zones = if self.domains.managed_zones.is_empty() {
+            &self.domains.zones
+        } else {
+            &self.domains.managed_zones
+        };
+        zones
             .iter()
-            .chain(self.domains.zones.iter())
             .filter(|zone| Self::host_in_zone(fqdn, zone))
             .max_by_key(|zone| zone.split('.').count())
             .map(String::as_str)
@@ -413,20 +432,45 @@ pub struct PeerEntry<'a> {
 }
 
 fn cidr_prefix_len(subnet: &str) -> Option<u8> {
-    subnet.split('/').nth(1)?.parse().ok()
+    let (address, prefix) = subnet.split_once('/')?;
+    let ip = address.parse::<IpAddr>().ok()?;
+    let prefix = prefix.parse::<u8>().ok()?;
+    (prefix
+        <= match ip {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        })
+    .then_some(prefix)
+}
+
+fn address_prefix_len(address: &str) -> Option<u8> {
+    Some(match address.parse::<IpAddr>().ok()? {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    })
+}
+
+fn format_endpoint_address(address: &str) -> String {
+    if address.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{address}]")
+    } else {
+        address.to_string()
+    }
 }
 
 fn codeberg_pages_target(target_repo: &str) -> String {
-    let repo = target_repo.rsplit('/').next().unwrap_or(target_repo);
-    format!("{repo}.caniko.codeberg.page")
+    let mut components = target_repo.rsplit('/');
+    let repo = components.next().unwrap_or(target_repo);
+    let owner = components.next().unwrap_or("unknown");
+    format!("{repo}.{owner}.codeberg.page")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::topology::{
-        CodebergPagesSite, Domains, DynamicHost, Host, Network, Redirect, ReverseProxyService,
-        Services,
+        CodebergPagesSite, Domains, DynamicHost, Host, Link, Network, Redirect,
+        ReverseProxyService, Services,
     };
     use indexmap::IndexMap;
 
@@ -628,6 +672,18 @@ mod tests {
             .service_endpoint("immich", &[AddressKind::DirectLink], Some("http"))
             .expect("immich endpoint");
         assert_eq!(endpoint.url, "http://10.10.0.1:2283");
+
+        let mut ipv6_topology = test_topology();
+        ipv6_topology
+            .hosts
+            .get_mut("atlas")
+            .expect("atlas fixture")
+            .network
+            .lan_ip = Some("2001:db8::10".to_string());
+        let endpoint = ipv6_topology
+            .service_endpoint("secure", &[AddressKind::Lan], None)
+            .expect("IPv6 secure endpoint");
+        assert_eq!(endpoint.url, "https://[2001:db8::10]:8443");
     }
 
     #[test]
@@ -720,6 +776,58 @@ mod tests {
         let page_intents = topo.codeberg_pages_cname_intents(None);
         assert_eq!(page_intents.len(), 1);
         assert_eq!(page_intents[0].relative_name, "docs");
-        assert_eq!(page_intents[0].target, "docs.caniko.codeberg.page");
+        assert_eq!(page_intents[0].target, "docs.example.codeberg.page");
+    }
+
+    #[test]
+    fn rejects_ambiguous_link_servers() {
+        let mut topo = test_topology();
+        topo.links.insert(
+            "wg-home".to_string(),
+            Link {
+                subnet: "10.123.0.0/24".to_string(),
+                port: 54321,
+                endpoint_subdomain: None,
+                exempt_from_proxy: false,
+            },
+        );
+        topo.hosts
+            .get_mut("atlas")
+            .expect("atlas fixture")
+            .links
+            .get_mut("wg-home")
+            .expect("atlas link fixture")
+            .role = LinkRole::Server;
+
+        assert_eq!(topo.link_server_host("wg-home"), Some("atlas"));
+        assert_eq!(topo.link_server_address("wg-home"), Some("10.123.0.5"));
+
+        topo.hosts
+            .get_mut("nomad")
+            .expect("nomad fixture")
+            .links
+            .insert(
+                "wg-home".to_string(),
+                LinkBinding {
+                    address: "10.123.0.6".to_string(),
+                    public_key: None,
+                    role: LinkRole::Server,
+                    external_interface: None,
+                    mac_address: None,
+                },
+            );
+        assert!(topo.link_server("wg-home").is_none());
+        assert!(topo.link_server_host("wg-home").is_none());
+    }
+
+    #[test]
+    fn falls_back_to_general_zones_when_managed_zones_are_empty() {
+        let mut topo = test_topology();
+        topo.domains.managed_zones.clear();
+        assert_eq!(
+            topo.zone_for_host("host.internal.example.test"),
+            Some("internal.example.test")
+        );
+        assert!(!Topology::host_in_zone("notexample.test", "example.test"));
     }
 }

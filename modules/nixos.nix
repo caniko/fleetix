@@ -1,22 +1,25 @@
-{ fleetixLib }:
-{ config, lib, ... }:
-let
+{fleetixLib}: {
+  config,
+  lib,
+  ...
+}: let
   inherit (lib) mkIf mkOption types;
 in {
   options.fleetix = {
     topology = mkOption {
       type = types.attrs;
       default = {};
-      readOnly = true;
       description = "Fleet topology loaded from the sidecar Nix expression.";
     };
 
     source = mkOption {
-      type = types.path;
+      type = types.nullOr types.path;
+      default = null;
       description = "Path to the fleetix topology sidecar (.nix file).";
     };
   };
 
-  config.fleetix.topology = mkIf (config.fleetix.source != null)
+  config.fleetix.topology =
+    mkIf (config.fleetix.source != null)
     (fleetixLib.fromPkl config.fleetix.source);
 }

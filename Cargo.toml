@@ -2,7 +2,7 @@
 name = "fleetix"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/caniko/fleetix"
@@ -10,13 +10,20 @@ homepage = "https://codeberg.org/caniko/fleetix"
 keywords = ["fleet", "topology", "nix", "pkl", "nixos"]
 categories = ["config"]
 readme = "README.md"
+publish = false
+
+[[bin]]
+name = "fleetix"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
-pklx = { git = "https://codeberg.org/caniko/nix-pklx.git" }
+pklx = { version = "0.1.0", git = "https://codeberg.org/caniko/nix-pklx.git" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 miette = "7"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
 indexmap = { version = "2", features = ["serde"] }
 rkyv = { version = "0.8", features = ["indexmap-2"] }
 
@@ -26,7 +33,7 @@ tempfile = "3"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "dep:serde_json"]
 
 [dependencies.clap]
 version = "4"

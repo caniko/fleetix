@@ -25,19 +25,27 @@ jobs:
         run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
 
       - name: Format check
-        run: nix develop -c cargo fmt --all -- --check
+        run: |
+          nix fmt -- --check .
+          nix develop -c cargo fmt --all -- --check
 
       - name: Check flake
         run: nix flake check
 
       - name: Test
-        run: nix develop -c cargo test
+        run: nix develop -c cargo test --all-features
 
       - name: Check cargo-audit tool
         run: nix develop -c command -v cargo-audit
 
-      - name: Check MSRV
-        run: nix develop -c cargo check --all-targets
+      - name: Check MSRV (Rust 1.88)
+        run: nix develop .#msrv -c cargo check --all-targets --all-features
+
+      - name: Check current stable (Rust 1.96)
+        run: nix develop .#stable -c cargo check --all-targets --all-features
+
+      - name: Check library without CLI
+        run: nix develop -c cargo check --all-targets --no-default-features
 
       - name: Fetch RustSec advisory database
         run: |
@@ -52,10 +60,13 @@ jobs:
           nix develop -c cargo audit --db "$db" --no-fetch --stale
 
       - name: Build docs
-        run: nix develop .#docs -c cargo doc --no-deps --all-features
+        run: nix develop -c cargo doc --no-deps --all-features
 
       - name: Clippy
-        run: nix develop -c cargo clippy --all-targets -- --deny warnings
+        run: nix develop -c cargo clippy --all-targets --all-features -- --deny warnings
 
-      - name: Package crate
-        run: nix develop -c cargo package --allow-dirty
+      - name: Check package publication policy
+        run: |
+          nix develop -c cargo metadata --no-deps --format-version 1 \
+            | sed -n '/^{/,$p' \
+            | jq -e '.packages | length == 1 and .[0].publish == []'

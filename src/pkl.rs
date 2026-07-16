@@ -21,10 +21,19 @@ where
 }
 
 /// Synchronous wrapper around [`load`] for command-line and legacy callers.
+///
+/// This function intentionally refuses to create a nested runtime. Callers
+/// already inside Tokio must use [`load`] instead; returning an error is safer
+/// than panicking in `Runtime::block_on`.
 pub fn load_sync<T>(path: &Path) -> Result<T>
 where
     T: DeserializeOwned,
 {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(miette::miette!(
+            "load_sync cannot run inside a Tokio runtime; use load(path).await"
+        ));
+    }
     let rt = tokio::runtime::Runtime::new().into_diagnostic()?;
     rt.block_on(load(path))
 }
