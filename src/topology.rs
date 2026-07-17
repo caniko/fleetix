@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +56,7 @@ fn default_link_role() -> LinkRole {
     Serialize,
     Deserialize,
     PartialEq,
+    Eq,
     rkyv::Archive,
     rkyv::Serialize,
     rkyv::Deserialize,
@@ -71,7 +72,7 @@ pub enum LinkRole {
 }
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
@@ -95,12 +96,10 @@ pub struct Host {
     pub gpu: Gpu,
     #[serde(default)]
     pub storage: Storage,
-    #[serde(default)]
-    pub data_root: Option<String>,
 }
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 #[rkyv(derive(Debug))]
 pub enum DeviceType {

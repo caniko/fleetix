@@ -1,7 +1,7 @@
 use clap::Parser;
+use std::process::ExitCode;
 
 #[tokio::main]
-async fn main() -> miette::Result<()> {
-    let cli = fleetix::cli::Cli::parse();
-    fleetix::cli::run(cli).await
+async fn main() -> ExitCode {
+    fleetix::cli::main_exit(fleetix::cli::Cli::parse()).await
 }

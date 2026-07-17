@@ -1,5 +1,4 @@
 {lib}: let
-  inherit (builtins) hasAttr;
   inherit
     (lib)
     filter
@@ -7,10 +6,8 @@
     hasSuffix
     foldl'
     mapAttrs
-    optionalAttrs
     removeAttrs
     removeSuffix
-    recursiveUpdate
     splitString
     ;
 
@@ -65,16 +62,6 @@
     else value;
 
   stripPklClass = stripPklValue;
-
-  mkWgEndpointHost = endpointSubdomain: zone: let
-    endpoint =
-      if endpointSubdomain == null
-      then "wg"
-      else endpointSubdomain;
-  in
-    if lib.hasInfix "." endpoint
-    then endpoint
-    else "${endpoint}-home.${zone}";
 
   hostInZoneImpl = {
     fqdn,
@@ -167,31 +154,11 @@ in rec {
   hosts = {
     resolveHostAddress = resolveHostAddressImpl;
 
-    normalize = {
-      topology,
-      wgHomeLinkName ? "wg-home",
-    }:
-      builtins.mapAttrs (_name: host: let
-        ln = host.links or {};
-        wg = ln.${wgHomeLinkName} or {};
-        direct = ln.direct-link or {};
-      in
+    normalize = {topology}:
+      builtins.mapAttrs (_name: host:
         host
         // {
-          network =
-            (host.network or {})
-            // {
-              wgHomeIp = wg.address or null;
-              wgHomePublicKey =
-                if (wg.role or "") == "server"
-                then wg.publicKey or null
-                else null;
-              directLinkIp = direct.address or null;
-              directLinkMac = direct.macAddress or null;
-              directLinkInterface = direct.externalInterface or null;
-            };
-          wgHomeIp = wg.address or null;
-          dataRoot = (host.storage or {}).dataRoot or null;
+          linkAddresses = builtins.mapAttrs (_linkName: binding: binding.address or null) (host.links or {});
         })
       (topology.hosts or {});
   };
@@ -202,10 +169,10 @@ in rec {
     zoneForHost = {
       topology ? null,
       zones ? let
-        managed = topology.domains.managedZones or [];
+        managed = (topology.domains or {}).managedZones or [];
       in
         if managed == []
-        then topology.domains.zones or []
+        then (topology.domains or {}).zones or []
         else managed,
       fqdn,
     }:
@@ -255,50 +222,29 @@ in rec {
     normalize = {topology}: let
       cleanTopology = stripPklClass topology;
       tdom = cleanTopology.domains or {};
-      tlinks = cleanTopology.links or {};
-      zones = tdom.zones or ["example.invalid"];
-      primaryZone = builtins.elemAt zones 0;
-      secondaryZone = builtins.elemAt zones (
-        if builtins.length zones > 1
-        then 1
-        else 0
-      );
-      tertiaryZone = builtins.elemAt zones (
-        if builtins.length zones > 2
-        then 2
-        else 0
-      );
+      zones = tdom.zones or [];
+      managedZones = tdom.managedZones or [];
       hostDomain = name: zone:
-        if name == ""
+        if zone == null
+        then null
+        else if name == ""
         then zone
         else "${name}.${zone}";
-      vpnDom = let
-        v = tdom.vpnSubdomain or "vpn";
-      in
-        hostDomain v secondaryZone;
-      wgHomeLink = tlinks.wg-home or {};
-      wgHomeEndpointSubdomain = wgHomeLink.endpointSubdomain or "wg";
+      primaryZone = if zones == [] then null else builtins.head zones;
+      mailDomain = primaryZone;
+      mailHostname = hostDomain (tdom.mailSubdomain or "mail") primaryZone;
+      vpnDomain = hostDomain (tdom.vpnSubdomain or "vpn") primaryZone;
     in rec {
       inherit hostDomain;
       host = name: zone: hostDomain name zone;
 
-      tartanogluDomain = primaryZone;
-      candeeDomain = secondaryZone;
-      syndbDomain = tertiaryZone;
-
-      mailDomain = primaryZone;
-      mailHostname = hostDomain (tdom.mailSubdomain or "mail") primaryZone;
-
-      vpnDomain = vpnDom;
-      vpnHost = name: hostDomain name vpnDom;
-
-      wgEndpointHost = mkWgEndpointHost wgHomeEndpointSubdomain secondaryZone;
-      wireguardPort = wgHomeLink.port or 54321;
+      inherit mailDomain mailHostname vpnDomain;
+      vpnHost = name: hostDomain name vpnDomain;
 
       serviceHosts = services.serviceHosts {topology = cleanTopology;};
 
       dynamicHosts = tdom.dynamicHosts or [];
-      managedZones = tdom.managedZones or [];
+      inherit managedZones;
       codebergPagesSites = tdom.codebergPagesSites or [];
       redirects = tdom.redirects or [];
     };
@@ -414,16 +360,21 @@ in rec {
       fallbackZone =
         if baseZone != null
         then baseZone
-        else builtins.elemAt (topology.domains.zones or ["example.invalid"]) 0;
+        else if (topology.domains.zones or []) == []
+        then null
+        else builtins.head topology.domains.zones;
     in
       builtins.concatMap (site: let
-        hostname = "${site.subdomain}.${fallbackZone}";
-        zone = domains.zoneForHost {
-          inherit topology;
-          fqdn = hostname;
-        };
+        hostname = if fallbackZone == null then null else "${site.subdomain}.${fallbackZone}";
+        zone =
+          if hostname == null
+          then null
+          else domains.zoneForHost {
+            inherit topology;
+            fqdn = hostname;
+          };
       in
-        if zone == null
+        if hostname == null || zone == null
         then []
         else [
           (cnameIntent {
@@ -437,13 +388,8 @@ in rec {
         ])
       (topology.domains.codebergPagesSites or []);
 
-    normalize = {
-      topology,
-      domains,
-    }: let
+    normalize = {topology}: let
       tsvc = topology.services or {};
-      tlinks = topology.links or {};
-      wg = tlinks.wg-home or {};
       reverseProxyServices = map stripPklClass (tsvc.reverseProxyServices or []);
       staticFileServices = map stripPklClass (tsvc.staticFileServices or []);
       internalServices = map stripPklClass (tsvc.internalServices or []);
@@ -457,14 +403,9 @@ in rec {
             };
         };
     in {
-      sshPort = tsvc.sshPort or 1337;
-      wireguard = {
-        wgHomeEndpointHost = wg.endpointSubdomain or "wg";
-        wgHomePort = wg.port or 54321;
-        wgHomeDdnsHost = "wg-home.${domains.candeeDomain}";
-      };
-      hostSshKeyPath = tsvc.hostSshKeyPath or "/etc/ssh/id_ed25519";
-      hostSshPubKeyPath = tsvc.hostSshPubKeyPath or "/etc/ssh/id_ed25519.pub";
+      sshPort = tsvc.sshPort or null;
+      hostSshKeyPath = tsvc.hostSshKeyPath or null;
+      hostSshPubKeyPath = tsvc.hostSshPubKeyPath or null;
       inherit reverseProxyServices staticFileServices internalServices;
       byName = services.byName {topology = normalizedTopology;};
       reverseProxyByName = services.reverseProxyByName {topology = normalizedTopology;};
@@ -515,22 +456,8 @@ in rec {
             clientNames;
         })
       (topology.links or {});
-      wg = baseLinks.wg-home or {};
     in
-      baseLinks
-      // optionalAttrs (builtins.hasAttr "wg-home" baseLinks) {
-        wg-home =
-          wg
-          // {
-            endpointHost =
-              if domains == null
-              then (topology.links.wg-home or {}).endpointSubdomain or "wg"
-              else mkWgEndpointHost ((topology.links.wg-home or {}).endpointSubdomain or "wg") domains.candeeDomain;
-          }
-          // optionalAttrs (domains != null) {
-            ddnsHost = mkWgEndpointHost ((topology.links.wg-home or {}).endpointSubdomain or "wg") domains.candeeDomain;
-          };
-      };
+      baseLinks;
   };
 
   projections = {
@@ -544,7 +471,6 @@ in rec {
       };
       normalizedLinks = links.normalize {
         topology = cleanTopology // {hosts = normalizedHosts;};
-        domains = normalizedDomains;
       };
     in {
       topology = cleanTopology;
@@ -569,43 +495,4 @@ in rec {
       );
   };
 
-  adapters.infernix = {
-    mkFleetNodes = {
-      topology,
-      nodes,
-      addressPolicy ? ["lan" "direct-link" "wg-home"],
-      defaultModelPort ? 8013,
-      defaultNodePort ? 8020,
-    }:
-      mapAttrs (
-        hostName: node: let
-          policy = node.addressPolicy or addressPolicy;
-          nodeAddress = node.address or null;
-          address =
-            if nodeAddress != null
-            then nodeAddress
-            else
-              hosts.resolveHostAddress {
-                inherit topology hostName policy;
-              };
-          nodeModelPort = node.modelPort or null;
-          modelPort =
-            if nodeModelPort != null
-            then nodeModelPort
-            else defaultModelPort;
-          nodeNodePort = node.nodePort or null;
-          nodePort =
-            if nodeNodePort != null
-            then nodeNodePort
-            else defaultNodePort;
-        in
-          recursiveUpdate node {
-            inherit address modelPort nodePort;
-          }
-          // optionalAttrs (hasAttr "addressPolicy" node) {
-            addressPolicy = node.addressPolicy;
-          }
-      )
-      nodes;
-  };
 }

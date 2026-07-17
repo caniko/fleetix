@@ -4,22 +4,53 @@
   ...
 }: let
   inherit (lib) mkIf mkOption types;
+  topologyType = types.attrs;
+  hasSource = config.fleetix.source != null;
+  hasValue = config.fleetix.value != null;
 in {
   options.fleetix = {
-    topology = mkOption {
-      type = types.attrs;
-      default = {};
-      description = "Fleet topology loaded from the sidecar Nix expression.";
+    enable = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Expose a Fleetix topology to NixOS consumers.";
     };
-
     source = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "Path to the fleetix topology sidecar (.nix file).";
+      description = "Path to a generated Fleetix Nix sidecar.";
+    };
+    value = mkOption {
+      type = types.nullOr topologyType;
+      default = null;
+      description = "Inline topology value, useful for tests and generated modules.";
+    };
+    topology = mkOption {
+      type = topologyType;
+      default = {};
+      readOnly = true;
+      description = "The selected Fleetix topology.";
     };
   };
 
-  config.fleetix.topology =
-    mkIf (config.fleetix.source != null)
-    (fleetixLib.fromPkl config.fleetix.source);
+  config = {
+    assertions = [
+      {
+        assertion = !(hasSource && hasValue);
+        message = "fleetix.source and fleetix.value are mutually exclusive";
+      }
+      {
+        assertion = !config.fleetix.enable || hasSource || hasValue;
+        message = "fleetix.enable requires fleetix.source or fleetix.value";
+      }
+      {
+        assertion = !hasSource && !hasValue || config.fleetix.enable;
+        message = "fleetix.source/value require fleetix.enable = true";
+      }
+    ];
+    fleetix.topology = mkIf config.fleetix.enable (
+      if hasSource
+      then fleetixLib.fromPkl config.fleetix.source
+      else config.fleetix.value
+    );
+  };
 }

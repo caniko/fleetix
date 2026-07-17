@@ -75,11 +75,7 @@
         # Export any Pkl file to an importable Nix expression sidecar.
         pklToNix = pkgs.writeShellApplication {
           name = "fleetix-pkl-to-nix";
-          runtimeInputs = [
-            pkgs.coreutils
-            pkgs.jq
-            pkgs.pkl
-          ];
+          runtimeInputs = [fleetixCrate];
           text = ''
             if [ "$#" -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
               echo "Usage: fleetix-pkl-to-nix <input.pkl> <output.nix>"
@@ -91,27 +87,7 @@
               exit 1
             fi
 
-            input="$1"
-            output="$2"
-            output_dir="$(dirname -- "$output")"
-            mkdir -p -- "$output_dir"
-            json_tmp="$(mktemp)"
-            nix_tmp="$(mktemp "$output_dir/.fleetix-pkl-to-nix.XXXXXX")"
-            trap 'rm -f -- "$json_tmp" "$nix_tmp"' EXIT
-
-            pkl eval -f json "$input" > "$json_tmp"
-
-            {
-              echo "# Generated from $input; do not edit by hand."
-              printf 'builtins.fromJSON '
-              jq -Rs . < "$json_tmp"
-            } > "$nix_tmp"
-            if [ -e "$output" ]; then
-              chmod --reference="$output" "$nix_tmp"
-            fi
-            mv -- "$nix_tmp" "$output"
-            nix_tmp=""
-            echo "Wrote $output from $input"
+            exec fleetix pkl-to-nix "$@"
           '';
         };
 
@@ -313,7 +289,7 @@
             grep -Fq '\"hosts\":' topology.nix
             grep -Fq '\"domains\":' topology.nix
             grep -Fq '\"services\":' topology.nix
-            grep -q "wg-home" topology.nix
+            grep -q '"mesh"' topology.nix
             grep -Fq '\"redirects\":' topology.nix
             touch $out
           '';
@@ -321,10 +297,10 @@
         fleetix-lib-helpers = let
           topology = {
             links = {
-              wg-home = {
+              mesh = {
                 subnet = "10.123.0.0/24";
-                port = 54321;
-                endpointSubdomain = "wg";
+                port = 51820;
+                endpointSubdomain = "mesh";
               };
               direct-link.subnet = "10.10.0.0/24";
             };
@@ -334,7 +310,7 @@
                   lanIp = "192.168.178.88";
                   directLinkIp = "10.10.0.1";
                 };
-                links.wg-home = {
+                links.mesh = {
                   address = "10.123.0.5";
                   role = "server";
                   publicKey = "server-key";
@@ -411,27 +387,6 @@
             addressPolicy = ["lan"];
             require = false;
           };
-          nodes = self.lib.adapters.infernix.mkFleetNodes {
-            inherit topology;
-            nodes = {
-              atlas = {
-                address = null;
-                modelPort = null;
-                models.qwen3-vl = {
-                  name = "qwen3-vl";
-                  capabilities = ["chat"];
-                };
-              };
-              nomad = {
-                addressPolicy = ["direct-link"];
-                modelPort = 8015;
-                models.embed = {
-                  name = "embed";
-                  capabilities = ["embeddings"];
-                };
-              };
-            };
-          };
           addressExcludes = self.lib.domains.dynamicHostAddressExcludes {
             inherit topology;
             zone = "example.test";
@@ -481,24 +436,29 @@
             test "${toString (builtins.elemAt serviceIntents 0).proxied}" = "1"
             test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
             test "${(builtins.elemAt pagesIntents 0).target}" = "docs.example.codeberg.page"
-            test "${normalized.hosts.atlas.network.wgHomeIp}" = "10.123.0.5"
+            test "${normalized.hosts.atlas.linkAddresses.mesh}" = "10.123.0.5"
             test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
-            test "${normalized.links.wg-home.serverAddress}" = "10.123.0.5"
+            test "${normalized.links.mesh.serverAddress}" = "10.123.0.5"
             test "${normalized.services.reverseProxyByName.immich.targetHost}" = "atlas"
             test "${toString (self.lib.firewall.lanExposedPorts {
               inherit topology;
               hostName = "atlas";
             })}" = "2283"
-            test "${nodes.atlas.address}" = "192.168.178.88"
-            test "${toString nodes.atlas.modelPort}" = "8013"
-            test "${nodes.nomad.address}" = "10.10.0.2"
-            test "${toString nodes.nomad.modelPort}" = "8015"
             touch $out
           '';
 
         module-integration-fixtures = let
+          topology = {
+            hosts.demo.system = "x86_64-linux";
+            links.mesh = {subnet = "10.0.0.0/24";};
+            domains.zones = ["example.test"];
+            services = {};
+          };
           nixos = nixpkgs.lib.evalModules {
-            modules = [self.nixosModules.topology];
+            modules = [
+              self.nixosModules.topology
+              {fleetix.enable = true; fleetix.value = topology;}
+            ];
           };
           integratedHome = nixpkgs.lib.evalModules {
             modules = [
@@ -510,13 +470,15 @@
             modules = [
               self.homeModules.topology
               {_module.args.osConfig = null;}
+              {fleetix.enable = true; fleetix.value = topology;}
             ];
           };
         in
           pkgs.runCommand "fleetix-module-integration-fixtures" {} ''
             test "${toString (builtins.hasAttr "fleetix" nixos.config)}" = 1
-            test "${toString (builtins.length (builtins.attrNames integratedHome.config.fleetix.topology))}" = 0
-            test "${toString (builtins.length (builtins.attrNames standaloneHome.config.fleetix.topology))}" = 0
+            test "${nixos.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
+            test "${integratedHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
+            test "${standaloneHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
             touch $out
           '';
       }

@@ -73,8 +73,19 @@ impl ValidationReport {
 pub fn validate(topology: &Topology) -> ValidationReport {
     let mut report = ValidationReport::default();
 
+    validate_identifiers(topology, &mut report);
+    validate_domains(topology, &mut report);
+
     // 1. Every link has at most one server
     for (link_name, link) in &topology.links {
+        if link.port == 0 {
+            report.error(
+                "link.invalid_port",
+                Some(format!("links.{link_name}.port")),
+                Some("0".into()),
+                format!("link '{link_name}' must use a non-zero port"),
+            );
+        }
         if parse_cidr(&link.subnet).is_none() {
             report.error(
                 "link.invalid_subnet",
@@ -155,11 +166,29 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                     ),
                 }
             }
+            if binding.role == LinkRole::Server && binding.public_key.is_none() {
+                report.error(
+                    "link.server_missing_public_key",
+                    Some(format!("hosts.{host_name}.links.{link_name}.publicKey")),
+                    None,
+                    format!("server '{host_name}' on link '{link_name}' must declare publicKey"),
+                );
+            }
         }
     }
 
     // Bindings must not introduce undeclared links.
     for (host_name, host) in &topology.hosts {
+        for peer in &host.network.direct_link_peers {
+            if !topology.hosts.contains_key(peer) {
+                report.error(
+                    "host.invalid_direct_peer",
+                    Some(format!("hosts.{host_name}.network.directLinkPeers")),
+                    Some(peer.clone()),
+                    format!("host '{host_name}' references unknown direct-link peer '{peer}'"),
+                );
+            }
+        }
         for link_name in host.links.keys() {
             if !topology.links.contains_key(link_name) {
                 report.error(
@@ -221,6 +250,41 @@ pub fn validate(topology: &Topology) -> ValidationReport {
         }
     }
 
+    for svc in &topology.services.reverse_proxy_services {
+        if svc.port == 0 {
+            report.error(
+                "service.invalid_port",
+                Some(format!("services.reverseProxyServices.{}.port", svc.name)),
+                Some("0".into()),
+                format!("service '{}' must use a non-zero port", svc.name),
+            );
+        }
+        validate_service_hostname(topology, &mut report, &svc.name, svc.hostname.as_deref());
+        if let Some(zone) = &svc.zone {
+            if !topology.domains.zones.contains(zone) {
+                report.error(
+                    "service.undeclared_zone",
+                    Some(format!("services.reverseProxyServices.{}.zone", svc.name)),
+                    Some(zone.clone()),
+                    format!("service '{}' references undeclared zone '{zone}'", svc.name),
+                );
+            }
+        }
+    }
+    for svc in &topology.services.static_file_services {
+        validate_service_hostname(topology, &mut report, &svc.name, svc.hostname.as_deref());
+    }
+    for svc in &topology.services.internal_services {
+        if svc.port == 0 {
+            report.error(
+                "service.invalid_port",
+                Some(format!("services.internalServices.{}.port", svc.name)),
+                Some("0".into()),
+                format!("service '{}' must use a non-zero port", svc.name),
+            );
+        }
+    }
+
     // 4. Every dynamic host FQDN is in a declared managed zone. An empty
     // managed-zone list means the general zone list is authoritative.
     let validation_zones = if topology.domains.managed_zones.is_empty() {
@@ -229,6 +293,14 @@ pub fn validate(topology: &Topology) -> ValidationReport {
         &topology.domains.managed_zones
     };
     for dynamic_host in &topology.domains.dynamic_hosts {
+        if !valid_hostname(&dynamic_host.fqdn) {
+            report.error(
+                "dns.invalid_hostname",
+                Some(format!("domains.dynamicHosts.{}.fqdn", dynamic_host.fqdn)),
+                Some(dynamic_host.fqdn.clone()),
+                format!("dynamic host '{}' is not a valid hostname", dynamic_host.fqdn),
+            );
+        }
         let in_managed = validation_zones
             .iter()
             .any(|zone| Topology::host_in_zone(&dynamic_host.fqdn, zone));
@@ -314,6 +386,22 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     }
 
     for redirect in &topology.domains.redirects {
+        if !valid_hostname(&redirect.from) {
+            report.error(
+                "redirect.invalid_source",
+                Some(format!("domains.redirects.{}.from", redirect.from)),
+                Some(redirect.from.clone()),
+                format!("redirect source '{}' is not a valid hostname", redirect.from),
+            );
+        }
+        if redirect.to.trim().is_empty() {
+            report.error(
+                "redirect.invalid_target",
+                Some(format!("domains.redirects.{}.to", redirect.from)),
+                Some(redirect.to.clone()),
+                format!("redirect '{}' has an empty target", redirect.from),
+            );
+        }
         if !(300..=399).contains(&redirect.status) {
             report.error(
                 "redirect.invalid_status",
@@ -354,6 +442,71 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     }
 
     report
+}
+
+fn validate_identifiers(topology: &Topology, report: &mut ValidationReport) {
+    let mut aliases = HashSet::new();
+    for (host_name, host) in &topology.hosts {
+        if host_name.trim().is_empty() || host_name.contains('.') || host_name.contains('/') {
+            report.error("host.invalid_name", Some(format!("hosts.{host_name}")), Some(host_name.clone()), format!("host identifier '{host_name}' is invalid"));
+        }
+        if host.system.trim().is_empty() {
+            report.error("host.invalid_system", Some(format!("hosts.{host_name}.system")), None, format!("host '{host_name}' must declare system"));
+        }
+        for alias in &host.host_names {
+            if !valid_hostname(alias) && alias != host_name {
+                report.error("host.invalid_alias", Some(format!("hosts.{host_name}.hostNames")), Some(alias.clone()), format!("host '{host_name}' has invalid alias '{alias}'"));
+            }
+            if !aliases.insert(alias) {
+                report.error("host.duplicate_alias", Some(format!("hosts.{host_name}.hostNames")), Some(alias.clone()), format!("host alias '{alias}' is declared more than once"));
+            }
+        }
+    }
+    let mut zones = HashSet::new();
+    for zone in topology.domains.zones.iter().chain(topology.domains.managed_zones.iter()) {
+        if !valid_hostname(zone) {
+            report.error("dns.invalid_zone", Some("domains.zones".into()), Some(zone.clone()), format!("zone '{zone}' is not a valid hostname"));
+        }
+        if !zones.insert(zone) {
+            report.error("dns.duplicate_zone", Some("domains.zones".into()), Some(zone.clone()), format!("zone '{zone}' is declared more than once"));
+        }
+    }
+}
+
+fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
+    for zone in &topology.domains.managed_zones {
+        if !topology.domains.zones.contains(zone) {
+            report.error("dns.managed_zone_undeclared", Some("domains.managedZones".into()), Some(zone.clone()), format!("managed zone '{zone}' is not in domains.zones"));
+        }
+    }
+    let mut fqdns = HashSet::new();
+    for host in &topology.domains.dynamic_hosts {
+        if !fqdns.insert(&host.fqdn) {
+            report.error("dns.duplicate_dynamic_host", Some("domains.dynamicHosts".into()), Some(host.fqdn.clone()), format!("dynamic host '{}' is declared more than once", host.fqdn));
+        }
+    }
+    for site in &topology.domains.codeberg_pages_sites {
+        if site.subdomain.trim().is_empty() || site.subdomain.contains('.') {
+            report.error("pages.invalid_subdomain", Some("domains.codebergPagesSites".into()), Some(site.subdomain.clone()), format!("Codeberg Pages subdomain '{}' is invalid", site.subdomain));
+        }
+        if !site.target_repo.contains('/') {
+            report.error("pages.invalid_repository", Some("domains.codebergPagesSites".into()), Some(site.target_repo.clone()), format!("Codeberg Pages target '{}' must be owner/repository", site.target_repo));
+        }
+    }
+}
+
+fn validate_service_hostname(topology: &Topology, report: &mut ValidationReport, name: &str, hostname: Option<&str>) {
+    let Some(hostname) = hostname else { return; };
+    if !valid_hostname(hostname) {
+        report.error("service.invalid_hostname", Some(format!("services.{name}.hostname")), Some(hostname.into()), format!("service '{name}' has invalid hostname '{hostname}'"));
+    } else if !topology.domains.zones.is_empty() && !topology.domains.zones.iter().any(|zone| Topology::host_in_zone(hostname, zone)) {
+        report.error("service.hostname_outside_zone", Some(format!("services.{name}.hostname")), Some(hostname.into()), format!("service hostname '{hostname}' is outside declared zones"));
+    }
+}
+
+fn valid_hostname(value: &str) -> bool {
+    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') { return false; }
+    value.split('.').all(|label| !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-') && label.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))
 }
 
 fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {

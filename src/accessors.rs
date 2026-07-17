@@ -620,7 +620,6 @@ mod tests {
             users: IndexMap::new(),
             gpu: Default::default(),
             storage: Default::default(),
-            data_root: None,
         }
     }
 

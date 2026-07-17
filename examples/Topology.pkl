@@ -1,221 +1,74 @@
 // Synthetic Fleetix topology example.
 // Production fleet data should live in the consuming flake.
-
-class Link {
-  subnet: String
-  port: Int = 0
-  endpointSubdomain: String? = null
-  exemptFromProxy: Boolean = false
-}
-
-class LinkBinding {
-  address: String
-  publicKey: String? = null
-  role: String = "client"
-  externalInterface: String? = null
-  macAddress: String? = null
-}
-
-class Network {
-  lanIp: String? = null
-  lanBroadcast: String? = null
-  macAddress: String? = null
-  lanInterface: String? = null
-  directLinkIp: String? = null
-  directLinkMac: String? = null
-  directLinkInterface: String? = null
-  directLinkPeers: Listing<String> = new Listing {}
-  wakeOnLanInterface: String? = null
-}
-
-class Rebuild {
-  buildHost: String? = null
-  useSubstitutes: Boolean = false
-  buildCache: BuildCache = new BuildCache {}
-}
-
-class BuildCache {
-  enable: Boolean = false
-  packageAttrNames: Listing<String> = new Listing {}
-  keyPrefix: String? = null
-}
-
-class User {
-  hasAccount: Boolean
-  personalPc: Boolean = false
-  gpg: String? = null
-  signingKey: String? = null
-}
-
-class Gpu { igpu: String? = null; dgpu: String? = null }
-class Storage { dataRoot: String? = null }
-
-class Host {
-  system: String
-  deviceType: String? = null
-  hostPubkey: String? = null
-  hostNames: Listing<String> = new Listing {}
-  network: Network = new Network {}
-  rebuild: Rebuild = new Rebuild {}
-  links: Mapping<String, LinkBinding> = new {}
-  users: Mapping<String, User> = new {}
-  gpu: Gpu = new Gpu {}
-  storage: Storage = new Storage {}
-}
-
-class DynamicHost { fqdn: String; proxied: Boolean = false; zone: String? = null }
-class CodebergPagesSite { subdomain: String; targetRepo: String }
-class Redirect { from: String; to: String; status: Int = 301; preservePath: Boolean = true }
-
-class Domains {
-  zones: Listing<String> = new Listing {}
-  mailSubdomain: String? = null
-  vpnSubdomain: String? = null
-  managedZones: Listing<String> = new Listing {}
-  dynamicHosts: Listing<DynamicHost> = new Listing {}
-  codebergPagesSites: Listing<CodebergPagesSite> = new Listing {}
-  redirects: Listing<Redirect> = new Listing {}
-}
-
-class ReverseProxyService {
-  name: String; hostname: String? = null; port: Int
-  targetHost: String? = null; proxied: Boolean = false
-  cloudflareProxied: Boolean = false; publishCname: Boolean = true
-  vpnOnly: Boolean = false; lanExposed: Boolean = false; upstreamScheme: String? = null
-  tlsServerName: String? = null; serviceHost: String? = null; zone: String? = null
-}
-
-class StaticFileService {
-  name: String; hostname: String? = null; kind: String? = null
-  cloudflareProxied: Boolean = false; dnsComment: String? = null
-}
-
-class InternalService {
-  name: String
-  port: Int
-  targetHost: String? = null
-  description: String? = null
-}
-
-class EmailIdentities {
-  adminEmail: String? = null
-  noreplyEmail: String? = null
-  cloudflareContactEmail: String? = null
-  brevoLogin: String? = null
-  postmasterEmail: String? = null
-}
-
-class Services {
-  sshPort: Int = 1337
-  hostSshKeyPath: String? = null
-  hostSshPubKeyPath: String? = null
-  reverseProxyServices: Listing<ReverseProxyService> = new Listing {}
-  staticFileServices: Listing<StaticFileService> = new Listing {}
-  internalServices: Listing<InternalService> = new Listing {}
-  emailIdentities: EmailIdentities = new EmailIdentities {}
-}
+import "../lib/topology/Schema.pkl" as S
 
 links = new {
-  ["wg-mesh"] = new Link {
+  ["mesh"] = new S.Link {
     subnet = "10.44.0.0/24"
     port = 51820
-    endpointSubdomain = "wg"
-    exemptFromProxy = true
+    endpointSubdomain = "mesh"
   }
-  ["lan"] = new Link { subnet = "192.0.2.0/24" }
 }
 
 hosts = new {
-  ["edge-a"] = new Host {
+  ["edge"] = new S.Host {
     system = "x86_64-linux"
     deviceType = "server"
-    hostPubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleEdgeA"
-    hostNames = new Listing { "edge-a" "edge-a.example.test" }
-    network = new Network {
-      lanIp = "192.0.2.10"
-      lanInterface = "eth0"
-    }
-    rebuild = new Rebuild {
-      buildHost = "builder-a"
-      useSubstitutes = true
-      buildCache = new BuildCache {
-        enable = true
-        packageAttrNames = new Listing { "dashboard-api" }
-        keyPrefix = "edge-a"
-      }
-    }
+    hostPubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleEdge"
+    network = new S.Network { lanIp = "192.0.2.10" }
     links = new {
-      ["wg-mesh"] = new LinkBinding {
+      ["mesh"] = new S.LinkBinding {
         address = "10.44.0.1"
-        publicKey = "edge-a-wireguard-public-key"
+        publicKey = "edge-wireguard-public-key"
         role = "server"
-        externalInterface = "eth0"
       }
     }
-    users = new { ["operator"] = new User { hasAccount = true } }
-    storage = new Storage { dataRoot = "/srv/fleetix" }
   }
-
-  ["builder-a"] = new Host {
+  ["builder"] = new S.Host {
     system = "x86_64-linux"
     deviceType = "desktop"
-    hostPubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBuilderA"
-    network = new Network {
-      lanIp = "192.0.2.20"
-      macAddress = "02:00:00:00:00:20"
-      wakeOnLanInterface = "eth0"
-    }
-    rebuild = new Rebuild { buildHost = "builder-a" }
+    network = new S.Network { lanIp = "192.0.2.20" }
+    rebuild = new S.Rebuild { buildHost = "builder" }
     links = new {
-      ["wg-mesh"] = new LinkBinding {
+      ["mesh"] = new S.LinkBinding {
         address = "10.44.0.2"
-        publicKey = "builder-a-wireguard-public-key"
+        publicKey = "builder-wireguard-public-key"
       }
     }
-    users = new { ["operator"] = new User { hasAccount = true personalPc = true } }
   }
 }
 
-domains = new Domains {
+domains = new S.Domains {
   zones = new Listing { "example.test" }
-  mailSubdomain = "mail"
-  vpnSubdomain = "vpn"
   managedZones = new Listing { "example.test" }
   dynamicHosts = new Listing {
-    new DynamicHost { fqdn = "example.test" proxied = false }
-    new DynamicHost { fqdn = "wg.example.test" proxied = false }
+    new S.DynamicHost { fqdn = "example.test" }
+    new S.DynamicHost { fqdn = "mesh.example.test" }
   }
   codebergPagesSites = new Listing {
-    new CodebergPagesSite { subdomain = "docs" targetRepo = "example/docs" }
+    new S.CodebergPagesSite { subdomain = "docs" targetRepo = "example/docs" }
   }
   redirects = new Listing {
-    new Redirect { from = "example.test" to = "https://dashboard.example.test" }
+    new S.Redirect { from = "example.test" to = "https://docs.example.test" }
   }
 }
 
-services = new Services {
+services = new S.Services {
   sshPort = 2222
-  hostSshKeyPath = "/etc/ssh/ssh_host_ed25519_key"
-  hostSshPubKeyPath = "/etc/ssh/ssh_host_ed25519_key.pub"
   reverseProxyServices = new Listing {
-    new ReverseProxyService {
+    new S.ReverseProxyService {
       name = "dashboard"
       hostname = "dashboard.example.test"
       port = 8443
-      targetHost = "edge-a"
+      targetHost = "edge"
       upstreamScheme = "https"
     }
   }
   internalServices = new Listing {
-    new InternalService {
+    new S.InternalService {
       name = "metrics"
       port = 9090
-      targetHost = "edge-a"
-      description = "Prometheus-compatible metrics"
+      targetHost = "edge"
     }
-  }
-  emailIdentities = new EmailIdentities {
-    adminEmail = "admin@example.test"
-    noreplyEmail = "noreply@example.test"
   }
 }
