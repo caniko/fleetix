@@ -8,3 +8,4 @@ docs/book/
 website/public/
 .plinth-project/
 dist/plinth-project/
+graphify-out/
