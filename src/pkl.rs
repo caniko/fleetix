@@ -38,6 +38,11 @@ where
     rt.block_on(load(path))
 }
 
+/// Encode a string as a Pkl string literal.
+pub fn string_literal(value: &str) -> String {
+    pklx::pkl_string_literal(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +83,11 @@ nested = new {
         assert_eq!(fixture.name, "demo");
         assert_eq!(fixture.items, ["one", "two"]);
         assert!(fixture.nested.enabled);
+    }
+
+    #[test]
+    fn encodes_pkl_string_literals() {
+        assert_eq!(string_literal("a \"quoted\"\nline"), "\"a \\\"quoted\\\"\\nline\"");
     }
 
     #[tokio::test]
