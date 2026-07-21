@@ -467,7 +467,6 @@ in rec {
       normalizedDomains = domains.normalize {inherit topology;};
       normalizedServices = services.normalize {
         topology = cleanTopology // {hosts = normalizedHosts;};
-        domains = normalizedDomains;
       };
       normalizedLinks = links.normalize {
         topology = cleanTopology // {hosts = normalizedHosts;};
