@@ -467,6 +467,7 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
         "// Generated compatibility topology. Edit the modular topology source instead.\n\n",
     );
     out.push_str(&strip_imports(&read_to_string(src_dir.join("Schema.pkl"))?));
+    let shared_names = strip_imports(&read_to_string(src_dir.join("../shared/Names.pkl"))?);
 
     out.push_str("\n\nlinks = new {\n");
     for rel in imported_paths(&entrypoint, "links/") {
@@ -483,12 +484,18 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
         ));
     }
     out.push_str("}\n\n");
+    out.push_str(&shared_names);
+    out.push_str("\n\n");
     out.push_str(
-        &strip_imports(&read_to_string(src_dir.join("Domains.pkl"))?).replace("new S.", "new "),
+        &strip_imports(&read_to_string(src_dir.join("Domains.pkl"))?)
+            .replace("new S.", "new ")
+            .replace("N.names.", "names."),
     );
     out.push_str("\n\n");
     out.push_str(
-        &strip_imports(&read_to_string(src_dir.join("Services.pkl"))?).replace("new S.", "new "),
+        &strip_imports(&read_to_string(src_dir.join("Services.pkl"))?)
+            .replace("new S.", "new ")
+            .replace("N.names.", "names."),
     );
     if !out.ends_with('\n') {
         out.push('\n');
@@ -668,11 +675,14 @@ links = new {
     #[test]
     fn flatten_modular_topology_mirrors_aggregate_import_shape() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|e| miette::miette!("create tempdir: {e}"))?;
-        let root = temp.path();
+        let root = temp.path().join("topology");
+        fs::create_dir_all(&root).map_err(|e| miette::miette!("create topology dir: {e}"))?;
         fs::create_dir_all(root.join("links"))
             .map_err(|e| miette::miette!("create links dir: {e}"))?;
         fs::create_dir_all(root.join("hosts"))
             .map_err(|e| miette::miette!("create hosts dir: {e}"))?;
+        fs::create_dir_all(root.join("../shared"))
+            .map_err(|e| miette::miette!("create shared dir: {e}"))?;
 
         fs::write(
             root.join("Schema.pkl"),
@@ -717,15 +727,25 @@ hosts = new {
             root.join("Domains.pkl"),
             r#"
 import "Schema.pkl" as S
+import "../shared/Names.pkl" as N
 
 domains = new {
   zones = new Listing<String> {
-    "example.test"
+    N.names.zone
   }
 }
 "#,
         )
         .map_err(|e| miette::miette!("write Domains.pkl: {e}"))?;
+        fs::write(
+            root.join("../shared/Names.pkl"),
+            r#"
+names = new {
+  zone = "example.test"
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write Names.pkl: {e}"))?;
         fs::write(
             root.join("Services.pkl"),
             r#"
@@ -757,6 +777,9 @@ services = (import("Services.pkl")).services
         let flattened = flatten_modular_topology(&root.join("Topology.aggregated.pkl"))?;
         assert!(flattened.contains("[\"wg-home\"] = new Link"));
         assert!(flattened.contains("[\"atlas\"] = new Host"));
+        assert!(flattened.contains("names = new"));
+        assert!(flattened.contains("names.zone"));
+        assert!(!flattened.contains("N.names"));
         assert!(flattened.contains("domains = new"));
         assert!(flattened.contains("services = new"));
         assert!(!flattened.contains("import "));
