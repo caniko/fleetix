@@ -26,10 +26,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 indexmap = { version = "2", features = ["serde"] }
 rkyv = { version = "0.8", features = ["indexmap-2"] }
+tempfile = "3"
 
 [dev-dependencies]
 ron = "0.8"
-tempfile = "3"
 
 [features]
 default = ["cli"]
