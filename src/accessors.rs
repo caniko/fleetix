@@ -776,6 +776,12 @@ mod tests {
         assert_eq!(page_intents.len(), 1);
         assert_eq!(page_intents[0].relative_name, "docs");
         assert_eq!(page_intents[0].target, "docs.example.codeberg.page");
+
+        let mut nested_topo = topo;
+        nested_topo.domains.codeberg_pages_sites[0].subdomain = "apt.modde".to_string();
+        let nested_intents = nested_topo.codeberg_pages_cname_intents(None);
+        assert_eq!(nested_intents[0].hostname, "apt.modde.example.test");
+        assert_eq!(nested_intents[0].relative_name, "apt.modde");
     }
 
     #[test]

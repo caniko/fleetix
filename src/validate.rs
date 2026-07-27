@@ -486,8 +486,8 @@ fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
         }
     }
     for site in &topology.domains.codeberg_pages_sites {
-        if site.subdomain.trim().is_empty() || site.subdomain.contains('.') {
-            report.error("pages.invalid_subdomain", Some("domains.codebergPagesSites".into()), Some(site.subdomain.clone()), format!("Codeberg Pages subdomain '{}' is invalid", site.subdomain));
+        if !valid_hostname(&site.subdomain) {
+            report.error("pages.invalid_subdomain", Some("domains.codebergPagesSites".into()), Some(site.subdomain.clone()), format!("Codeberg Pages relative hostname '{}' is invalid", site.subdomain));
         }
         if !site.target_repo.contains('/') {
             report.error("pages.invalid_repository", Some("domains.codebergPagesSites".into()), Some(site.target_repo.clone()), format!("Codeberg Pages target '{}' must be owner/repository", site.target_repo));
@@ -549,7 +549,7 @@ fn address_in_subnet(address: IpAddr, network: IpAddr, prefix: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topology::{Domains, DynamicHost, Services};
+    use crate::topology::{CodebergPagesSite, Domains, DynamicHost, Services};
     use indexmap::IndexMap;
 
     #[test]
@@ -574,7 +574,10 @@ mod tests {
                         zone: None,
                     },
                 ],
-                codeberg_pages_sites: vec![],
+                codeberg_pages_sites: vec![CodebergPagesSite {
+                    subdomain: "apt.modde".to_string(),
+                    target_repo: "caniko/apt-modde".to_string(),
+                }],
                 redirects: vec![],
             },
             services: Services::default(),
