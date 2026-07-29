@@ -9,7 +9,7 @@
   integrated = osConfig != null;
   hasSource = config.fleetix.source != null;
   hasValue = config.fleetix.value != null;
-  mirrored = integrated && (osConfig.fleetix.topology or null);
+  mirrored = if integrated then (osConfig.fleetix.topology or null) else null;
 in {
   options.fleetix = {
     enable = mkOption {
@@ -30,7 +30,6 @@ in {
     topology = mkOption {
       type = topologyType;
       default = {};
-      readOnly = true;
       description = "The selected Fleetix topology.";
     };
   };

@@ -198,7 +198,11 @@
             nativeBuildInputs = [self.packages.${system}.fleetixCrate];
             SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           } ''
-            fleetix eval ${./examples/Topology.pkl} > topology.nix
+            fixture="$TMPDIR/example-root"
+            mkdir -p "$fixture/examples" "$fixture/lib/topology"
+            cp ${./examples/Topology.pkl} "$fixture/examples/Topology.pkl"
+            cp ${./lib/topology/Schema.pkl} "$fixture/lib/topology/Schema.pkl"
+            fleetix eval "$fixture/examples/Topology.pkl" > topology.nix
             grep -q "hosts =" topology.nix
             grep -q "codebergPagesSites =" topology.nix
             grep -q "redirects =" topology.nix
@@ -206,8 +210,9 @@
             grep -q "emailIdentities =" topology.nix
             grep -q "buildCache =" topology.nix
             grep -q "packageAttrNames =" topology.nix
-            grep -q '"dashboard-api"' topology.nix
-            grep -q 'keyPrefix = "edge-a"' topology.nix
+            grep -q 'dashboard' topology.nix
+            grep -q 'requiredAvailability = "always-on"' topology.nix
+            grep -q 'serviceIntents' topology.nix
             touch $out
           '';
 
@@ -218,6 +223,8 @@
           } ''
             fixture="$TMPDIR/topology"
             mkdir -p "$fixture/links" "$fixture/hosts"
+            mkdir -p "$TMPDIR/shared"
+            : > "$TMPDIR/shared/Names.pkl"
 
             cat > "$fixture/Schema.pkl" <<'EOF'
             class Link {
@@ -285,12 +292,12 @@
             EOF
 
             fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix
-            grep -Fq '\"links\":' topology.nix
-            grep -Fq '\"hosts\":' topology.nix
-            grep -Fq '\"domains\":' topology.nix
-            grep -Fq '\"services\":' topology.nix
-            grep -q '"mesh"' topology.nix
-            grep -Fq '\"redirects\":' topology.nix
+            grep -Fq 'links = {' topology.nix
+            grep -Fq 'hosts = {' topology.nix
+            grep -Fq 'domains = {' topology.nix
+            grep -Fq 'services = {' topology.nix
+            grep -q 'wg-home =' topology.nix
+            grep -Fq 'redirects =' topology.nix
             touch $out
           '';
 
@@ -448,6 +455,12 @@
           '';
 
         module-integration-fixtures = let
+          assertionsModule = {
+            options.assertions = nixpkgs.lib.mkOption {
+              type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs;
+              default = [];
+            };
+          };
           topology = {
             hosts.demo.system = "x86_64-linux";
             links.mesh = {subnet = "10.0.0.0/24";};
@@ -456,18 +469,21 @@
           };
           nixos = nixpkgs.lib.evalModules {
             modules = [
+              assertionsModule
               self.nixosModules.topology
               {fleetix.enable = true; fleetix.value = topology;}
             ];
           };
           integratedHome = nixpkgs.lib.evalModules {
             modules = [
+              assertionsModule
               self.homeModules.topology
               {_module.args.osConfig = nixos.config;}
             ];
           };
           standaloneHome = nixpkgs.lib.evalModules {
             modules = [
+              assertionsModule
               self.homeModules.topology
               {_module.args.osConfig = null;}
               {fleetix.enable = true; fleetix.value = topology;}

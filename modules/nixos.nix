@@ -27,7 +27,6 @@ in {
     topology = mkOption {
       type = topologyType;
       default = {};
-      readOnly = true;
       description = "The selected Fleetix topology.";
     };
   };
