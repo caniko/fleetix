@@ -1,5 +1,6 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(
@@ -12,6 +13,8 @@ pub struct Topology {
     pub hosts: IndexMap<String, Host>,
     pub domains: Domains,
     pub services: Services,
+    #[serde(default)]
+    pub deployment: Deployment,
 }
 
 #[derive(
@@ -80,6 +83,8 @@ pub struct Host {
     pub system: String,
     #[serde(default)]
     pub device_type: Option<DeviceType>,
+    #[serde(default = "default_availability_class")]
+    pub availability_class: String,
     #[serde(default)]
     pub host_pubkey: Option<String>,
     #[serde(default)]
@@ -98,8 +103,20 @@ pub struct Host {
     pub storage: Storage,
 }
 
+fn default_availability_class() -> String {
+    "unknown".to_string()
+}
+
 #[derive(
-    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
 #[rkyv(derive(Debug))]
 pub enum DeviceType {
@@ -296,6 +313,49 @@ pub struct Services {
     pub email_identities: EmailIdentities,
 }
 
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct HealthIntent {
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceIntent {
+    pub name: String,
+    #[serde(default)]
+    pub service_name: Option<String>,
+    #[serde(default)]
+    pub required_hosts: Vec<String>,
+    #[serde(default)]
+    pub preferred_hosts: Vec<String>,
+    #[serde(default)]
+    pub required_availability: Option<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub health: HealthIntent,
+}
+
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct Deployment {
+    #[serde(default)]
+    pub service_intents: Vec<ServiceIntent>,
+}
+
 fn default_ssh_port() -> u16 {
     1337
 }
@@ -392,7 +452,7 @@ pub fn load_topology_from_rkyv(
 }
 
 /// Version marker for the self-describing archive envelope.
-pub const TOPOLOGY_ARCHIVE_VERSION: u16 = 1;
+pub const TOPOLOGY_ARCHIVE_VERSION: u16 = 2;
 
 /// Versioned archive payload for consumers that need to persist topology
 /// archives across process or release boundaries.
@@ -497,6 +557,17 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
             .replace("new S.", "new ")
             .replace("N.names.", "names."),
     );
+    let deployment_path = src_dir.join("Deployment.pkl");
+    if deployment_path.exists() {
+        out.push_str("\n\n");
+        out.push_str(
+            &strip_imports(&read_to_string(deployment_path)?)
+                .replace("new S.", "new ")
+                .replace("N.names.", "names."),
+        );
+    } else {
+        out.push_str("\n\ndeployment = new Deployment {}\n");
+    }
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -608,7 +679,7 @@ fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
 
 /// Evaluate a .pkl topology file and produce a typed Topology value.
 pub async fn load_topology(path: &Path) -> miette::Result<Topology> {
-    crate::pkl::load(path).await
+    load_topology_with_options(path, pklx::pklr::EvalOptions::default()).await
 }
 
 /// Evaluate a .pkl topology file with custom evaluator options.
@@ -616,6 +687,17 @@ pub async fn load_topology_with_options(
     path: &Path,
     options: pklx::pklr::EvalOptions,
 ) -> miette::Result<Topology> {
+    if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
+        let flattened = flatten_modular_topology(path)?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|error| miette::miette!("create temporary topology: {error}"))?;
+        temporary
+            .write_all(flattened.as_bytes())
+            .and_then(|_| temporary.as_file().sync_all())
+            .map_err(|error| miette::miette!("write temporary topology: {error}"))?;
+        return crate::pkl::load_with_options(temporary.path(), options).await;
+    }
     crate::pkl::load_with_options(path, options).await
 }
 
@@ -672,8 +754,8 @@ links = new {
         assert!(body.contains("nested = new { value = \"still { text }\" }"));
     }
 
-    #[test]
-    fn flatten_modular_topology_mirrors_aggregate_import_shape() -> miette::Result<()> {
+    #[tokio::test]
+    async fn flatten_modular_topology_mirrors_aggregate_import_shape() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|e| miette::miette!("create tempdir: {e}"))?;
         let root = temp.path().join("topology");
         fs::create_dir_all(&root).map_err(|e| miette::miette!("create topology dir: {e}"))?;
@@ -784,6 +866,10 @@ services = (import("Services.pkl")).services
         assert!(flattened.contains("services = new"));
         assert!(!flattened.contains("import "));
 
+        let loaded = load_topology(&root.join("Topology.aggregated.pkl")).await?;
+        assert!(loaded.hosts.contains_key("atlas"));
+        assert!(loaded.links.contains_key("wg-home"));
+
         Ok(())
     }
 
@@ -802,6 +888,7 @@ services = (import("Services.pkl")).services
                 redirects: vec![],
             },
             services: Services::default(),
+            deployment: Deployment::default(),
         };
 
         let bytes = archive_topology(&topology).expect("archive topology");

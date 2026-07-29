@@ -1,6 +1,6 @@
 use crate::topology::{LinkRole, Topology};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -75,6 +75,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
 
     validate_identifiers(topology, &mut report);
     validate_domains(topology, &mut report);
+    validate_deployment(topology, &mut report);
 
     // 1. Every link has at most one server
     for (link_name, link) in &topology.links {
@@ -298,7 +299,10 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                 "dns.invalid_hostname",
                 Some(format!("domains.dynamicHosts.{}.fqdn", dynamic_host.fqdn)),
                 Some(dynamic_host.fqdn.clone()),
-                format!("dynamic host '{}' is not a valid hostname", dynamic_host.fqdn),
+                format!(
+                    "dynamic host '{}' is not a valid hostname",
+                    dynamic_host.fqdn
+                ),
             );
         }
         let in_managed = validation_zones
@@ -391,7 +395,10 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                 "redirect.invalid_source",
                 Some(format!("domains.redirects.{}.from", redirect.from)),
                 Some(redirect.from.clone()),
-                format!("redirect source '{}' is not a valid hostname", redirect.from),
+                format!(
+                    "redirect source '{}' is not a valid hostname",
+                    redirect.from
+                ),
             );
         }
         if redirect.to.trim().is_empty() {
@@ -444,31 +451,245 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     report
 }
 
+fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
+    const AVAILABILITY_CLASSES: &[&str] = &["unknown", "always-on", "intermittent", "maintenance"];
+
+    for (host_name, host) in &topology.hosts {
+        if !host.availability_class.is_empty()
+            && !AVAILABILITY_CLASSES.contains(&host.availability_class.as_str())
+        {
+            report.error(
+                "host.invalid_availability_class",
+                Some(format!("hosts.{host_name}.availabilityClass")),
+                Some(host.availability_class.clone()),
+                format!(
+                    "host '{host_name}' uses unsupported availability class '{}'",
+                    host.availability_class
+                ),
+            );
+        }
+    }
+
+    let declared_services: HashSet<&str> = topology
+        .services
+        .reverse_proxy_services
+        .iter()
+        .map(|service| service.name.as_str())
+        .chain(
+            topology
+                .services
+                .static_file_services
+                .iter()
+                .map(|service| service.name.as_str()),
+        )
+        .chain(
+            topology
+                .services
+                .internal_services
+                .iter()
+                .map(|service| service.name.as_str()),
+        )
+        .collect();
+
+    let intents = &topology.deployment.service_intents;
+    let mut intent_indices = HashMap::new();
+    for (index, intent) in intents.iter().enumerate() {
+        if intent.name.trim().is_empty() {
+            report.error(
+                "deployment.empty_intent_name",
+                Some(format!("deployment.serviceIntents[{index}].name")),
+                Some(intent.name.clone()),
+                "service intent names must not be empty",
+            );
+        }
+        if intent_indices.insert(intent.name.clone(), index).is_some() {
+            report.error(
+                "deployment.duplicate_intent",
+                Some(format!("deployment.serviceIntents[{index}].name")),
+                Some(intent.name.clone()),
+                format!(
+                    "service intent '{}' is declared more than once",
+                    intent.name
+                ),
+            );
+        }
+        if let Some(service_name) = &intent.service_name {
+            if !declared_services.contains(service_name.as_str()) {
+                report.error(
+                    "deployment.unknown_service",
+                    Some(format!("deployment.serviceIntents[{index}].serviceName")),
+                    Some(service_name.clone()),
+                    format!(
+                        "service intent '{}' references unknown service '{}',",
+                        intent.name, service_name
+                    ),
+                );
+            }
+        }
+        if let Some(availability) = &intent.required_availability {
+            if !AVAILABILITY_CLASSES.contains(&availability.as_str()) {
+                report.error(
+                    "deployment.invalid_required_availability",
+                    Some(format!(
+                        "deployment.serviceIntents[{index}].requiredAvailability"
+                    )),
+                    Some(availability.clone()),
+                    format!(
+                        "service intent '{}' uses unsupported required availability '{}'",
+                        intent.name, availability
+                    ),
+                );
+            }
+        }
+        for (field, hosts) in [
+            ("requiredHosts", &intent.required_hosts),
+            ("preferredHosts", &intent.preferred_hosts),
+        ] {
+            for host_name in hosts {
+                if !topology.hosts.contains_key(host_name) {
+                    report.error(
+                        "deployment.unknown_host",
+                        Some(format!("deployment.serviceIntents[{index}].{field}")),
+                        Some(host_name.clone()),
+                        format!(
+                            "service intent '{}' references unknown host '{}'",
+                            intent.name, host_name
+                        ),
+                    );
+                }
+            }
+        }
+        if intent.health.required && intent.health.endpoint.as_deref().is_none_or(str::is_empty) {
+            report.error(
+                "deployment.health_endpoint_required",
+                Some(format!(
+                    "deployment.serviceIntents[{index}].health.endpoint"
+                )),
+                None,
+                format!(
+                    "service intent '{}' requires a health endpoint when health.required is true",
+                    intent.name
+                ),
+            );
+        }
+    }
+
+    let mut dependents = vec![Vec::new(); intents.len()];
+    let mut indegree = vec![0usize; intents.len()];
+    for (index, intent) in intents.iter().enumerate() {
+        for dependency in &intent.depends_on {
+            let Some(&dependency_index) = intent_indices.get(dependency) else {
+                report.error(
+                    "deployment.unknown_dependency",
+                    Some(format!("deployment.serviceIntents[{index}].dependsOn")),
+                    Some(dependency.clone()),
+                    format!(
+                        "service intent '{}' depends on unknown intent '{}'",
+                        intent.name, dependency
+                    ),
+                );
+                continue;
+            };
+            if dependency_index == index {
+                report.error(
+                    "deployment.self_dependency",
+                    Some(format!("deployment.serviceIntents[{index}].dependsOn")),
+                    Some(dependency.clone()),
+                    format!("service intent '{}' cannot depend on itself", intent.name),
+                );
+                continue;
+            }
+            dependents[dependency_index].push(index);
+            indegree[index] += 1;
+        }
+    }
+
+    let mut ready = VecDeque::new();
+    for (index, degree) in indegree.iter().enumerate() {
+        if *degree == 0 {
+            ready.push_back(index);
+        }
+    }
+    let mut processed = 0;
+    while let Some(index) = ready.pop_front() {
+        processed += 1;
+        for dependent in &dependents[index] {
+            indegree[*dependent] -= 1;
+            if indegree[*dependent] == 0 {
+                ready.push_back(*dependent);
+            }
+        }
+    }
+    if processed != intents.len() {
+        report.error(
+            "deployment.dependency_cycle",
+            Some("deployment.serviceIntents".to_string()),
+            None,
+            "service intent dependencies must form an acyclic graph",
+        );
+    }
+}
+
 fn validate_identifiers(topology: &Topology, report: &mut ValidationReport) {
     let mut aliases = HashSet::new();
     for (host_name, host) in &topology.hosts {
         if host_name.trim().is_empty() || host_name.contains('.') || host_name.contains('/') {
-            report.error("host.invalid_name", Some(format!("hosts.{host_name}")), Some(host_name.clone()), format!("host identifier '{host_name}' is invalid"));
+            report.error(
+                "host.invalid_name",
+                Some(format!("hosts.{host_name}")),
+                Some(host_name.clone()),
+                format!("host identifier '{host_name}' is invalid"),
+            );
         }
         if host.system.trim().is_empty() {
-            report.error("host.invalid_system", Some(format!("hosts.{host_name}.system")), None, format!("host '{host_name}' must declare system"));
+            report.error(
+                "host.invalid_system",
+                Some(format!("hosts.{host_name}.system")),
+                None,
+                format!("host '{host_name}' must declare system"),
+            );
         }
         for alias in &host.host_names {
             if !valid_hostname(alias) && alias != host_name {
-                report.error("host.invalid_alias", Some(format!("hosts.{host_name}.hostNames")), Some(alias.clone()), format!("host '{host_name}' has invalid alias '{alias}'"));
+                report.error(
+                    "host.invalid_alias",
+                    Some(format!("hosts.{host_name}.hostNames")),
+                    Some(alias.clone()),
+                    format!("host '{host_name}' has invalid alias '{alias}'"),
+                );
             }
             if !aliases.insert(alias) {
-                report.error("host.duplicate_alias", Some(format!("hosts.{host_name}.hostNames")), Some(alias.clone()), format!("host alias '{alias}' is declared more than once"));
+                report.error(
+                    "host.duplicate_alias",
+                    Some(format!("hosts.{host_name}.hostNames")),
+                    Some(alias.clone()),
+                    format!("host alias '{alias}' is declared more than once"),
+                );
             }
         }
     }
     let mut zones = HashSet::new();
-    for zone in topology.domains.zones.iter().chain(topology.domains.managed_zones.iter()) {
+    for zone in topology
+        .domains
+        .zones
+        .iter()
+        .chain(topology.domains.managed_zones.iter())
+    {
         if !valid_hostname(zone) {
-            report.error("dns.invalid_zone", Some("domains.zones".into()), Some(zone.clone()), format!("zone '{zone}' is not a valid hostname"));
+            report.error(
+                "dns.invalid_zone",
+                Some("domains.zones".into()),
+                Some(zone.clone()),
+                format!("zone '{zone}' is not a valid hostname"),
+            );
         }
         if !zones.insert(zone) {
-            report.error("dns.duplicate_zone", Some("domains.zones".into()), Some(zone.clone()), format!("zone '{zone}' is declared more than once"));
+            report.error(
+                "dns.duplicate_zone",
+                Some("domains.zones".into()),
+                Some(zone.clone()),
+                format!("zone '{zone}' is declared more than once"),
+            );
         }
     }
 }
@@ -476,37 +697,96 @@ fn validate_identifiers(topology: &Topology, report: &mut ValidationReport) {
 fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
     for zone in &topology.domains.managed_zones {
         if !topology.domains.zones.contains(zone) {
-            report.error("dns.managed_zone_undeclared", Some("domains.managedZones".into()), Some(zone.clone()), format!("managed zone '{zone}' is not in domains.zones"));
+            report.error(
+                "dns.managed_zone_undeclared",
+                Some("domains.managedZones".into()),
+                Some(zone.clone()),
+                format!("managed zone '{zone}' is not in domains.zones"),
+            );
         }
     }
     let mut fqdns = HashSet::new();
     for host in &topology.domains.dynamic_hosts {
         if !fqdns.insert(&host.fqdn) {
-            report.error("dns.duplicate_dynamic_host", Some("domains.dynamicHosts".into()), Some(host.fqdn.clone()), format!("dynamic host '{}' is declared more than once", host.fqdn));
+            report.error(
+                "dns.duplicate_dynamic_host",
+                Some("domains.dynamicHosts".into()),
+                Some(host.fqdn.clone()),
+                format!("dynamic host '{}' is declared more than once", host.fqdn),
+            );
         }
     }
     for site in &topology.domains.codeberg_pages_sites {
         if !valid_hostname(&site.subdomain) {
-            report.error("pages.invalid_subdomain", Some("domains.codebergPagesSites".into()), Some(site.subdomain.clone()), format!("Codeberg Pages relative hostname '{}' is invalid", site.subdomain));
+            report.error(
+                "pages.invalid_subdomain",
+                Some("domains.codebergPagesSites".into()),
+                Some(site.subdomain.clone()),
+                format!(
+                    "Codeberg Pages relative hostname '{}' is invalid",
+                    site.subdomain
+                ),
+            );
         }
         if !site.target_repo.contains('/') {
-            report.error("pages.invalid_repository", Some("domains.codebergPagesSites".into()), Some(site.target_repo.clone()), format!("Codeberg Pages target '{}' must be owner/repository", site.target_repo));
+            report.error(
+                "pages.invalid_repository",
+                Some("domains.codebergPagesSites".into()),
+                Some(site.target_repo.clone()),
+                format!(
+                    "Codeberg Pages target '{}' must be owner/repository",
+                    site.target_repo
+                ),
+            );
         }
     }
 }
 
-fn validate_service_hostname(topology: &Topology, report: &mut ValidationReport, name: &str, hostname: Option<&str>) {
-    let Some(hostname) = hostname else { return; };
+fn validate_service_hostname(
+    topology: &Topology,
+    report: &mut ValidationReport,
+    name: &str,
+    hostname: Option<&str>,
+) {
+    let Some(hostname) = hostname else {
+        return;
+    };
     if !valid_hostname(hostname) {
-        report.error("service.invalid_hostname", Some(format!("services.{name}.hostname")), Some(hostname.into()), format!("service '{name}' has invalid hostname '{hostname}'"));
-    } else if !topology.domains.zones.is_empty() && !topology.domains.zones.iter().any(|zone| Topology::host_in_zone(hostname, zone)) {
-        report.error("service.hostname_outside_zone", Some(format!("services.{name}.hostname")), Some(hostname.into()), format!("service hostname '{hostname}' is outside declared zones"));
+        report.error(
+            "service.invalid_hostname",
+            Some(format!("services.{name}.hostname")),
+            Some(hostname.into()),
+            format!("service '{name}' has invalid hostname '{hostname}'"),
+        );
+    } else if !topology.domains.zones.is_empty()
+        && !topology
+            .domains
+            .zones
+            .iter()
+            .any(|zone| Topology::host_in_zone(hostname, zone))
+    {
+        report.error(
+            "service.hostname_outside_zone",
+            Some(format!("services.{name}.hostname")),
+            Some(hostname.into()),
+            format!("service hostname '{hostname}' is outside declared zones"),
+        );
     }
 }
 
 fn valid_hostname(value: &str) -> bool {
-    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') { return false; }
-    value.split('.').all(|label| !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-') && label.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))
+    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
 }
 
 fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {
@@ -549,7 +829,10 @@ fn address_in_subnet(address: IpAddr, network: IpAddr, prefix: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topology::{CodebergPagesSite, Domains, DynamicHost, Services};
+    use crate::topology::{
+        CodebergPagesSite, Domains, DynamicHost, HealthIntent, Host, InternalService,
+        ServiceIntent, Services,
+    };
     use indexmap::IndexMap;
 
     #[test]
@@ -581,6 +864,7 @@ mod tests {
                 redirects: vec![],
             },
             services: Services::default(),
+            deployment: Default::default(),
         };
 
         let report = validate(&topology);
@@ -595,5 +879,65 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("api.example.test")));
+    }
+
+    #[test]
+    fn validates_service_intent_placement_and_health() {
+        let mut topology = Topology::default();
+        topology.hosts.insert(
+            "atlas".to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
+                availability_class: "always-on".to_string(),
+                ..Default::default()
+            },
+        );
+        topology.services.internal_services.push(InternalService {
+            name: "pink-raven".to_string(),
+            port: 3000,
+            target_host: Some("atlas".to_string()),
+            description: None,
+        });
+        topology.deployment.service_intents.push(ServiceIntent {
+            name: "pink-raven-runtime".to_string(),
+            service_name: Some("pink-raven".to_string()),
+            required_hosts: vec!["atlas".to_string()],
+            required_availability: Some("always-on".to_string()),
+            health: HealthIntent {
+                required: true,
+                endpoint: Some("/healthz".to_string()),
+            },
+            ..Default::default()
+        });
+
+        assert!(validate(&topology).is_ok());
+    }
+
+    #[test]
+    fn rejects_service_intent_cycles_and_unknown_hosts() {
+        let mut topology = Topology::default();
+        topology.deployment.service_intents = vec![
+            ServiceIntent {
+                name: "first".to_string(),
+                preferred_hosts: vec!["missing".to_string()],
+                depends_on: vec!["second".to_string()],
+                ..Default::default()
+            },
+            ServiceIntent {
+                name: "second".to_string(),
+                depends_on: vec!["first".to_string()],
+                ..Default::default()
+            },
+        ];
+
+        let report = validate(&topology);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "deployment.unknown_host"));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "deployment.dependency_cycle"));
     }
 }

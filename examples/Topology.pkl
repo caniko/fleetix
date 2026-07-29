@@ -72,3 +72,18 @@ services = new S.Services {
     }
   }
 }
+
+deployment = new S.Deployment {
+  serviceIntents = new Listing {
+    new S.ServiceIntent {
+      name = "dashboard"
+      serviceName = "dashboard"
+      requiredHosts = new Listing { "edge" }
+      requiredAvailability = "always-on"
+      health = new S.HealthIntent {
+        required = true
+        endpoint = "/healthz"
+      }
+    }
+  }
+}

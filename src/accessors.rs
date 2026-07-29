@@ -605,6 +605,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
+            deployment: Default::default(),
         }
     }
 
@@ -612,6 +613,7 @@ mod tests {
         Host {
             system: String::new(),
             device_type: None,
+            availability_class: "unknown".to_string(),
             host_pubkey: None,
             host_names: vec![],
             network: Network::default(),

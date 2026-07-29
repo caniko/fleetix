@@ -59,6 +59,7 @@ class Storage {
 class Host {
   system: String
   deviceType: String? = null
+  availabilityClass: String = "unknown"
   hostPubkey: String? = null
   hostNames: Listing<String> = new Listing {}
   network: Network = new Network {}
@@ -144,4 +145,23 @@ class Services {
   staticFileServices: Listing<StaticFileService> = new Listing {}
   internalServices: Listing<InternalService> = new Listing {}
   emailIdentities: EmailIdentities = new EmailIdentities {}
+}
+
+class HealthIntent {
+  required: Boolean = false
+  endpoint: String? = null
+}
+
+class ServiceIntent {
+  name: String
+  serviceName: String? = null
+  requiredHosts: Listing<String> = new Listing {}
+  preferredHosts: Listing<String> = new Listing {}
+  requiredAvailability: String? = null
+  dependsOn: Listing<String> = new Listing {}
+  health: HealthIntent = new HealthIntent {}
+}
+
+class Deployment {
+  serviceIntents: Listing<ServiceIntent> = new Listing {}
 }
