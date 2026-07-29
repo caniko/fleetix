@@ -87,7 +87,10 @@ nested = new {
 
     #[test]
     fn encodes_pkl_string_literals() {
-        assert_eq!(string_literal("a \"quoted\"\nline"), "\"a \\\"quoted\\\"\\nline\"");
+        assert_eq!(
+            string_literal("a \"quoted\"\nline"),
+            "\"a \\\"quoted\\\"\\nline\""
+        );
     }
 
     #[tokio::test]

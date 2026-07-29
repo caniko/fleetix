@@ -298,7 +298,10 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                 "dns.invalid_hostname",
                 Some(format!("domains.dynamicHosts.{}.fqdn", dynamic_host.fqdn)),
                 Some(dynamic_host.fqdn.clone()),
-                format!("dynamic host '{}' is not a valid hostname", dynamic_host.fqdn),
+                format!(
+                    "dynamic host '{}' is not a valid hostname",
+                    dynamic_host.fqdn
+                ),
             );
         }
         let in_managed = validation_zones
@@ -391,7 +394,10 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                 "redirect.invalid_source",
                 Some(format!("domains.redirects.{}.from", redirect.from)),
                 Some(redirect.from.clone()),
-                format!("redirect source '{}' is not a valid hostname", redirect.from),
+                format!(
+                    "redirect source '{}' is not a valid hostname",
+                    redirect.from
+                ),
             );
         }
         if redirect.to.trim().is_empty() {
@@ -448,27 +454,62 @@ fn validate_identifiers(topology: &Topology, report: &mut ValidationReport) {
     let mut aliases = HashSet::new();
     for (host_name, host) in &topology.hosts {
         if host_name.trim().is_empty() || host_name.contains('.') || host_name.contains('/') {
-            report.error("host.invalid_name", Some(format!("hosts.{host_name}")), Some(host_name.clone()), format!("host identifier '{host_name}' is invalid"));
+            report.error(
+                "host.invalid_name",
+                Some(format!("hosts.{host_name}")),
+                Some(host_name.clone()),
+                format!("host identifier '{host_name}' is invalid"),
+            );
         }
         if host.system.trim().is_empty() {
-            report.error("host.invalid_system", Some(format!("hosts.{host_name}.system")), None, format!("host '{host_name}' must declare system"));
+            report.error(
+                "host.invalid_system",
+                Some(format!("hosts.{host_name}.system")),
+                None,
+                format!("host '{host_name}' must declare system"),
+            );
         }
         for alias in &host.host_names {
             if !valid_hostname(alias) && alias != host_name {
-                report.error("host.invalid_alias", Some(format!("hosts.{host_name}.hostNames")), Some(alias.clone()), format!("host '{host_name}' has invalid alias '{alias}'"));
+                report.error(
+                    "host.invalid_alias",
+                    Some(format!("hosts.{host_name}.hostNames")),
+                    Some(alias.clone()),
+                    format!("host '{host_name}' has invalid alias '{alias}'"),
+                );
             }
             if !aliases.insert(alias) {
-                report.error("host.duplicate_alias", Some(format!("hosts.{host_name}.hostNames")), Some(alias.clone()), format!("host alias '{alias}' is declared more than once"));
+                report.error(
+                    "host.duplicate_alias",
+                    Some(format!("hosts.{host_name}.hostNames")),
+                    Some(alias.clone()),
+                    format!("host alias '{alias}' is declared more than once"),
+                );
             }
         }
     }
     let mut zones = HashSet::new();
-    for zone in topology.domains.zones.iter().chain(topology.domains.managed_zones.iter()) {
+    for zone in topology
+        .domains
+        .zones
+        .iter()
+        .chain(topology.domains.managed_zones.iter())
+    {
         if !valid_hostname(zone) {
-            report.error("dns.invalid_zone", Some("domains.zones".into()), Some(zone.clone()), format!("zone '{zone}' is not a valid hostname"));
+            report.error(
+                "dns.invalid_zone",
+                Some("domains.zones".into()),
+                Some(zone.clone()),
+                format!("zone '{zone}' is not a valid hostname"),
+            );
         }
         if !zones.insert(zone) {
-            report.error("dns.duplicate_zone", Some("domains.zones".into()), Some(zone.clone()), format!("zone '{zone}' is declared more than once"));
+            report.error(
+                "dns.duplicate_zone",
+                Some("domains.zones".into()),
+                Some(zone.clone()),
+                format!("zone '{zone}' is declared more than once"),
+            );
         }
     }
 }
@@ -476,37 +517,96 @@ fn validate_identifiers(topology: &Topology, report: &mut ValidationReport) {
 fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
     for zone in &topology.domains.managed_zones {
         if !topology.domains.zones.contains(zone) {
-            report.error("dns.managed_zone_undeclared", Some("domains.managedZones".into()), Some(zone.clone()), format!("managed zone '{zone}' is not in domains.zones"));
+            report.error(
+                "dns.managed_zone_undeclared",
+                Some("domains.managedZones".into()),
+                Some(zone.clone()),
+                format!("managed zone '{zone}' is not in domains.zones"),
+            );
         }
     }
     let mut fqdns = HashSet::new();
     for host in &topology.domains.dynamic_hosts {
         if !fqdns.insert(&host.fqdn) {
-            report.error("dns.duplicate_dynamic_host", Some("domains.dynamicHosts".into()), Some(host.fqdn.clone()), format!("dynamic host '{}' is declared more than once", host.fqdn));
+            report.error(
+                "dns.duplicate_dynamic_host",
+                Some("domains.dynamicHosts".into()),
+                Some(host.fqdn.clone()),
+                format!("dynamic host '{}' is declared more than once", host.fqdn),
+            );
         }
     }
     for site in &topology.domains.codeberg_pages_sites {
         if !valid_hostname(&site.subdomain) {
-            report.error("pages.invalid_subdomain", Some("domains.codebergPagesSites".into()), Some(site.subdomain.clone()), format!("Codeberg Pages relative hostname '{}' is invalid", site.subdomain));
+            report.error(
+                "pages.invalid_subdomain",
+                Some("domains.codebergPagesSites".into()),
+                Some(site.subdomain.clone()),
+                format!(
+                    "Codeberg Pages relative hostname '{}' is invalid",
+                    site.subdomain
+                ),
+            );
         }
         if !site.target_repo.contains('/') {
-            report.error("pages.invalid_repository", Some("domains.codebergPagesSites".into()), Some(site.target_repo.clone()), format!("Codeberg Pages target '{}' must be owner/repository", site.target_repo));
+            report.error(
+                "pages.invalid_repository",
+                Some("domains.codebergPagesSites".into()),
+                Some(site.target_repo.clone()),
+                format!(
+                    "Codeberg Pages target '{}' must be owner/repository",
+                    site.target_repo
+                ),
+            );
         }
     }
 }
 
-fn validate_service_hostname(topology: &Topology, report: &mut ValidationReport, name: &str, hostname: Option<&str>) {
-    let Some(hostname) = hostname else { return; };
+fn validate_service_hostname(
+    topology: &Topology,
+    report: &mut ValidationReport,
+    name: &str,
+    hostname: Option<&str>,
+) {
+    let Some(hostname) = hostname else {
+        return;
+    };
     if !valid_hostname(hostname) {
-        report.error("service.invalid_hostname", Some(format!("services.{name}.hostname")), Some(hostname.into()), format!("service '{name}' has invalid hostname '{hostname}'"));
-    } else if !topology.domains.zones.is_empty() && !topology.domains.zones.iter().any(|zone| Topology::host_in_zone(hostname, zone)) {
-        report.error("service.hostname_outside_zone", Some(format!("services.{name}.hostname")), Some(hostname.into()), format!("service hostname '{hostname}' is outside declared zones"));
+        report.error(
+            "service.invalid_hostname",
+            Some(format!("services.{name}.hostname")),
+            Some(hostname.into()),
+            format!("service '{name}' has invalid hostname '{hostname}'"),
+        );
+    } else if !topology.domains.zones.is_empty()
+        && !topology
+            .domains
+            .zones
+            .iter()
+            .any(|zone| Topology::host_in_zone(hostname, zone))
+    {
+        report.error(
+            "service.hostname_outside_zone",
+            Some(format!("services.{name}.hostname")),
+            Some(hostname.into()),
+            format!("service hostname '{hostname}' is outside declared zones"),
+        );
     }
 }
 
 fn valid_hostname(value: &str) -> bool {
-    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') { return false; }
-    value.split('.').all(|label| !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-') && label.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))
+    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    })
 }
 
 fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {
