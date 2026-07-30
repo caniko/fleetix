@@ -148,7 +148,7 @@ Create checked-in fixtures covering:
 - IPv4 and IPv6 links;
 - nested DNS zones and apex records;
 - public, VPN-only, LAN-exposed, and unpublished services;
-- redirects, static sites, internal services, and Codeberg Pages;
+- redirects, static sites, internal services, and project Pages;
 - malformed references, duplicate identities, invalid roles, invalid ports,
   invalid CIDRs, and hostname/zone boundary cases; and
 - modular and standalone topology entrypoints.

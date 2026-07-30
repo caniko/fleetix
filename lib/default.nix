@@ -94,15 +94,6 @@
     then "@"
     else removeSuffix ".${zone}" fqdn;
 
-  codebergPagesTarget = site: let
-    parts = splitString "/" site.targetRepo;
-    repoName = builtins.elemAt parts (builtins.length parts - 1);
-    ownerName =
-      if builtins.length parts > 1
-      then builtins.elemAt parts (builtins.length parts - 2)
-      else "unknown";
-  in "${repoName}.${ownerName}.codeberg.page";
-
   formatEndpointAddress = address:
     if lib.hasInfix ":" address
     then "[${address}]"
@@ -245,7 +236,7 @@ in rec {
 
       dynamicHosts = tdom.dynamicHosts or [];
       inherit managedZones;
-      codebergPagesSites = tdom.codebergPagesSites or [];
+      pagesSites = tdom.pagesSites or [];
       redirects = tdom.redirects or [];
     };
   };
@@ -353,7 +344,7 @@ in rec {
         ])
       ((topology.services.reverseProxyServices or []) ++ (topology.services.staticFileServices or []));
 
-    codebergPagesCnameIntents = {
+    pagesCnameIntents = {
       topology,
       baseZone ? null,
     }: let
@@ -380,17 +371,52 @@ in rec {
           (cnameIntent {
             inherit zone hostname;
             name = site.subdomain;
-            target = codebergPagesTarget site;
+            target = site.cnameTarget;
             proxied = false;
-            comment = "Codeberg Pages: ${site.targetRepo}";
-            source = "codeberg-pages";
+            comment = "Pages: ${site.cnameTarget}";
+            source = "pages";
           })
         ])
-      (topology.domains.codebergPagesSites or []);
+      (topology.domains.pagesSites or []);
+
+    normalizeReverseProxyRoute = service: route: {
+      paths = route.paths or [];
+      targetHost = firstNonNull [
+        (route.targetHost or null)
+        (service.targetHost or null)
+      ];
+      port = firstNonNull [
+        (route.port or null)
+        service.port
+      ];
+      upstreamScheme = firstNonNull [
+        (route.upstreamScheme or null)
+        (service.upstreamScheme or null)
+        "http"
+      ];
+      tlsServerName = firstNonNull [
+        (route.tlsServerName or null)
+        (service.tlsServerName or null)
+      ];
+      stripPrefix = route.stripPrefix or null;
+      monitoringIdentity = firstNonNull [
+        (route.monitoringIdentity or null)
+        service.name
+      ];
+    };
+
+    normalizeReverseProxyService = service: let
+      declaredRoutes = service.routes or [];
+      routes =
+        if declaredRoutes == []
+        then [services.normalizeReverseProxyRoute service {}]
+        else map (services.normalizeReverseProxyRoute service) declaredRoutes;
+    in
+      service // {inherit routes;};
 
     normalize = {topology}: let
       tsvc = topology.services or {};
-      reverseProxyServices = map stripPklClass (tsvc.reverseProxyServices or []);
+      reverseProxyServices = map services.normalizeReverseProxyService (map stripPklClass (tsvc.reverseProxyServices or []));
       staticFileServices = map stripPklClass (tsvc.staticFileServices or []);
       internalServices = map stripPklClass (tsvc.internalServices or []);
       normalizedTopology =
@@ -484,14 +510,15 @@ in rec {
     lanExposedPorts = {
       topology,
       hostName,
-    }:
-      map (svc: svc.port) (
-        filter (svc: svc.lanExposed or false)
-        (services.reverseProxyServicesForHost {
-          inherit topology hostName;
-          includeVpnOnly = false;
-        })
-      );
+    }: let
+      normalized = services.normalize {inherit topology;};
+      routes = builtins.concatMap (
+        service:
+          map (route: route.port) (
+            builtins.filter (route: (route.targetHost or null) == hostName) service.routes
+          )
+      ) (builtins.filter (service: (service.lanExposed or false) && !(service.vpnOnly or false)) normalized.reverseProxyServices);
+    in
+      lib.unique routes;
   };
-
 }

@@ -1,4 +1,7 @@
-use crate::topology::{DynamicHost, Link, LinkBinding, LinkRole, ReverseProxyService, Topology};
+use crate::topology::{
+    DynamicHost, Link, LinkBinding, LinkRole, NormalizedReverseProxyRoute, ReverseProxyService,
+    Topology,
+};
 use std::net::IpAddr;
 
 /// Accessor methods on Topology — derived from the link schema.
@@ -184,13 +187,36 @@ impl Topology {
             .collect()
     }
 
+    /// Return normalized routes for reverse-proxy services targeting a host.
+    pub fn reverse_proxy_routes_for_host(
+        &self,
+        host_name: &str,
+        include_vpn_only: bool,
+    ) -> Vec<(&ReverseProxyService, NormalizedReverseProxyRoute)> {
+        self.services
+            .reverse_proxy_services
+            .iter()
+            .filter(|svc| include_vpn_only || !svc.vpn_only)
+            .flat_map(|svc| {
+                svc.normalized_routes()
+                    .into_iter()
+                    .map(move |route| (svc, route))
+            })
+            .filter(|(_, route)| route.target_host.as_deref() == Some(host_name))
+            .collect()
+    }
+
     /// LAN-exposed reverse proxy ports targeting a host.
     pub fn lan_exposed_ports(&self, host_name: &str) -> Vec<u16> {
-        self.reverse_proxy_services_for_host(host_name, false)
+        let mut ports = self
+            .reverse_proxy_routes_for_host(host_name, false)
             .into_iter()
-            .filter(|svc| svc.lan_exposed)
-            .map(|svc| svc.port)
-            .collect()
+            .filter(|(svc, _)| svc.lan_exposed)
+            .map(|(_, route)| route.port)
+            .collect::<Vec<_>>();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
     }
 
     /// Whether an FQDN belongs to a DNS zone.
@@ -299,15 +325,15 @@ impl Topology {
             .collect()
     }
 
-    /// Generic CNAME intents for Codeberg Pages sites.
-    pub fn codeberg_pages_cname_intents(&self, base_zone: Option<&str>) -> Vec<CnameIntent> {
+    /// Generic CNAME intents for Pages sites.
+    pub fn pages_cname_intents(&self, base_zone: Option<&str>) -> Vec<CnameIntent> {
         let Some(default_zone) =
             base_zone.or_else(|| self.domains.zones.first().map(String::as_str))
         else {
             return vec![];
         };
         self.domains
-            .codeberg_pages_sites
+            .pages_sites
             .iter()
             .filter_map(|site| {
                 let hostname = format!("{}.{}", site.subdomain, default_zone);
@@ -317,10 +343,10 @@ impl Topology {
                     hostname,
                     zone: zone.to_string(),
                     relative_name: site.subdomain.clone(),
-                    target: codeberg_pages_target(&site.target_repo),
+                    target: site.cname_target.clone(),
                     proxied: false,
                     comment: None,
-                    source: "codeberg-pages",
+                    source: "pages",
                 })
             })
             .collect()
@@ -458,18 +484,11 @@ fn format_endpoint_address(address: &str) -> String {
     }
 }
 
-fn codeberg_pages_target(target_repo: &str) -> String {
-    let mut components = target_repo.rsplit('/');
-    let repo = components.next().unwrap_or(target_repo);
-    let owner = components.next().unwrap_or("unknown");
-    format!("{repo}.{owner}.codeberg.page")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::topology::{
-        CodebergPagesSite, Domains, DynamicHost, Host, Link, Network, Redirect,
+        Domains, DynamicHost, Host, Link, Network, PagesSite, Redirect, ReverseProxyRoute,
         ReverseProxyService, Services,
     };
     use indexmap::IndexMap;
@@ -563,9 +582,10 @@ mod tests {
                         zone: None,
                     },
                 ],
-                codeberg_pages_sites: vec![CodebergPagesSite {
+                pages_sites: vec![PagesSite {
                     subdomain: "docs".to_string(),
-                    target_repo: "example/docs".to_string(),
+                    repository: "example/docs".to_string(),
+                    cname_target: "example.github.io".to_string(),
                 }],
                 redirects: vec![Redirect {
                     from: "example.test".to_string(),
@@ -600,6 +620,34 @@ mod tests {
                         port: 8443,
                         target_host: Some("atlas".to_string()),
                         upstream_scheme: Some("https".to_string()),
+                        ..empty_reverse_proxy_service()
+                    },
+                    ReverseProxyService {
+                        name: "multi".to_string(),
+                        hostname: Some("multi.example.test".to_string()),
+                        port: 8030,
+                        target_host: Some("atlas".to_string()),
+                        lan_exposed: true,
+                        routes: vec![
+                            ReverseProxyRoute {
+                                paths: vec!["/api".to_string(), "/api/*".to_string()],
+                                target_host: Some("atlas".to_string()),
+                                port: Some(8032),
+                                upstream_scheme: None,
+                                tls_server_name: None,
+                                strip_prefix: None,
+                                monitoring_identity: Some("multi-api".to_string()),
+                            },
+                            ReverseProxyRoute {
+                                paths: vec![],
+                                target_host: None,
+                                port: None,
+                                upstream_scheme: None,
+                                tls_server_name: None,
+                                strip_prefix: None,
+                                monitoring_identity: None,
+                            },
+                        ],
                         ..empty_reverse_proxy_service()
                     },
                 ],
@@ -640,6 +688,7 @@ mod tests {
             tls_server_name: None,
             service_host: None,
             zone: None,
+            routes: vec![],
         }
     }
 
@@ -691,12 +740,29 @@ mod tests {
     fn filters_host_services_and_lan_exposed_ports() {
         let topo = test_topology();
         let public_services = topo.reverse_proxy_services_for_host("atlas", false);
-        assert_eq!(public_services.len(), 2);
+        assert_eq!(public_services.len(), 3);
         assert!(public_services.iter().all(|svc| !svc.vpn_only));
 
         let all_services = topo.reverse_proxy_services_for_host("atlas", true);
-        assert_eq!(all_services.len(), 3);
-        assert_eq!(topo.lan_exposed_ports("atlas"), vec![2283]);
+        assert_eq!(all_services.len(), 4);
+        assert_eq!(topo.lan_exposed_ports("atlas"), vec![2283, 8030, 8032]);
+    }
+
+    #[test]
+    fn normalizes_legacy_service_to_one_fallback_route() {
+        let topo = test_topology();
+        let service = topo
+            .services
+            .reverse_proxy_services
+            .iter()
+            .find(|service| service.name == "secure")
+            .expect("secure service");
+        let routes = service.normalized_routes();
+        assert_eq!(routes.len(), 1);
+        assert!(routes[0].paths.is_empty());
+        assert_eq!(routes[0].port, 8443);
+        assert_eq!(routes[0].upstream_scheme, "https");
+        assert_eq!(routes[0].monitoring_identity, "secure");
     }
 
     #[test]
@@ -774,14 +840,14 @@ mod tests {
         }));
         assert!(!service_intents.iter().any(|intent| intent.name == "ollama"));
 
-        let page_intents = topo.codeberg_pages_cname_intents(None);
+        let page_intents = topo.pages_cname_intents(None);
         assert_eq!(page_intents.len(), 1);
         assert_eq!(page_intents[0].relative_name, "docs");
-        assert_eq!(page_intents[0].target, "docs.example.codeberg.page");
+        assert_eq!(page_intents[0].target, "example.github.io");
 
         let mut nested_topo = topo;
-        nested_topo.domains.codeberg_pages_sites[0].subdomain = "apt.modde".to_string();
-        let nested_intents = nested_topo.codeberg_pages_cname_intents(None);
+        nested_topo.domains.pages_sites[0].subdomain = "apt.modde".to_string();
+        let nested_intents = nested_topo.pages_cname_intents(None);
         assert_eq!(nested_intents[0].hostname, "apt.modde.example.test");
         assert_eq!(nested_intents[0].relative_name, "apt.modde");
     }

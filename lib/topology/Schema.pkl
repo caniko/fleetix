@@ -89,7 +89,7 @@ class Domains {
   vpnSubdomain: String? = null
   managedZones: Listing<String> = new Listing {}
   dynamicHosts: Listing<DynamicHost> = new Listing {}
-  codebergPagesSites: Listing<CodebergPagesSite> = new Listing {}
+  pagesSites: Listing<PagesSite> = new Listing {}
   redirects: Listing<Redirect> = new Listing {}
 }
 
@@ -107,6 +107,17 @@ class ReverseProxyService {
   tlsServerName: String? = null
   serviceHost: String? = null
   zone: String? = null
+  routes: Listing<ReverseProxyRoute> = new Listing {}
+}
+
+class ReverseProxyRoute {
+  paths: Listing<String> = new Listing {}
+  targetHost: String? = null
+  port: UInt16? = null
+  upstreamScheme: String? = null
+  tlsServerName: String? = null
+  stripPrefix: String? = null
+  monitoringIdentity: String? = null
 }
 
 class StaticFileService {
@@ -132,9 +143,10 @@ class EmailIdentities {
   postmasterEmail: String? = null
 }
 
-class CodebergPagesSite {
+class PagesSite {
   subdomain: String
-  targetRepo: String
+  repository: String
+  cnameTarget: String
 }
 
 class Services {

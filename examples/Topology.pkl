@@ -45,8 +45,8 @@ domains = new S.Domains {
     new S.DynamicHost { fqdn = "example.test" }
     new S.DynamicHost { fqdn = "mesh.example.test" }
   }
-  codebergPagesSites = new Listing {
-    new S.CodebergPagesSite { subdomain = "docs" targetRepo = "example/docs" }
+  pagesSites = new Listing {
+    new S.PagesSite { subdomain = "docs" repository = "example/docs" cnameTarget = "example.github.io" }
   }
   redirects = new Listing {
     new S.Redirect { from = "example.test" to = "https://docs.example.test" }
@@ -62,6 +62,21 @@ services = new S.Services {
       port = 8443
       targetHost = "edge"
       upstreamScheme = "https"
+    }
+    new S.ReverseProxyService {
+      name = "multi"
+      hostname = "multi.example.test"
+      port = 8030
+      targetHost = "edge"
+      lanExposed = true
+      routes = new Listing {
+        new S.ReverseProxyRoute {
+          paths = new Listing { "/api"; "/api/*" }
+          port = 8032
+          monitoringIdentity = "multi-api"
+        }
+        new S.ReverseProxyRoute {}
+      }
     }
   }
   internalServices = new Listing {

@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     rs-harbor = {
-      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=9bfa8bdb0ecb22d7bc11448665f7fbaebae7a759";
+      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=c26b735eede8078f795651c4a9cbf0be8733b221";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.crane.follows = "crane";
       inputs.rust-overlay.follows = "rust-overlay";
@@ -204,7 +204,7 @@
             cp ${./lib/topology/Schema.pkl} "$fixture/lib/topology/Schema.pkl"
             fleetix eval "$fixture/examples/Topology.pkl" > topology.nix
             grep -q "hosts =" topology.nix
-            grep -q "codebergPagesSites =" topology.nix
+            grep -q "pagesSites =" topology.nix
             grep -q "redirects =" topology.nix
             grep -q "internalServices =" topology.nix
             grep -q "emailIdentities =" topology.nix
@@ -351,10 +351,11 @@
                   proxied = false;
                 }
               ];
-              codebergPagesSites = [
+              pagesSites = [
                 {
                   subdomain = "docs";
-                  targetRepo = "example/docs";
+                  repository = "example/docs";
+                  cnameTarget = "example.github.io";
                 }
               ];
             };
@@ -403,7 +404,7 @@
             zone = "internal.example.test";
           };
           serviceIntents = self.lib.services.serviceCnameIntents {inherit topology;};
-          pagesIntents = self.lib.services.codebergPagesCnameIntents {inherit topology;};
+          pagesIntents = self.lib.services.pagesCnameIntents {inherit topology;};
           normalized = self.lib.projections.normalize {inherit topology;};
         in
           pkgs.runCommand "fleetix-lib-helpers" {} ''
@@ -442,7 +443,7 @@
             test "${(builtins.elemAt serviceIntents 0).target}" = "example.test"
             test "${toString (builtins.elemAt serviceIntents 0).proxied}" = "1"
             test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
-            test "${(builtins.elemAt pagesIntents 0).target}" = "docs.example.codeberg.page"
+            test "${(builtins.elemAt pagesIntents 0).target}" = "example.github.io"
             test "${normalized.hosts.atlas.linkAddresses.mesh}" = "10.123.0.5"
             test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
             test "${normalized.links.mesh.serverAddress}" = "10.123.0.5"
@@ -503,7 +504,7 @@
     devShells = forSystems (
       system: let
         pkgs = pkgsFor system;
-        toolchain = rs-harbor.lib.mkToolchain {inherit pkgs;};
+        toolchain = rs-harbor.lib.mkToolchain {inherit pkgs; toolchainProfile = "nightly";};
         cargoConfig = rs-harbor.lib.mkCargoConfig {inherit pkgs;};
         cross = rs-harbor.lib.mkCross {inherit pkgs system;};
         stableToolchain = pkgs.rust-bin.stable."1.96.1".default;

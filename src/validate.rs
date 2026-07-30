@@ -271,6 +271,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                 );
             }
         }
+        validate_reverse_proxy_routes(topology, svc, &mut report);
     }
     for svc in &topology.services.static_file_services {
         validate_service_hostname(topology, &mut report, &svc.name, svc.hostname.as_deref());
@@ -449,6 +450,110 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     }
 
     report
+}
+
+fn validate_reverse_proxy_routes(
+    topology: &Topology,
+    service: &crate::topology::ReverseProxyService,
+    report: &mut ValidationReport,
+) {
+    if service.routes.is_empty() {
+        return;
+    }
+
+    let base = format!("services.reverseProxyServices.{}.routes", service.name);
+    let mut matchers = HashSet::new();
+    let mut fallback = None;
+
+    for (index, route) in service.routes.iter().enumerate() {
+        let path = format!("{base}.{index}");
+        if route.paths.is_empty() && fallback.replace(index).is_some() {
+            report.error(
+                "service.route_multiple_fallbacks",
+                Some(path.clone()),
+                None,
+                format!(
+                    "service '{}' declares more than one fallback route",
+                    service.name
+                ),
+            );
+        }
+
+        for (path_index, matcher) in route.paths.iter().enumerate() {
+            if !matcher.starts_with('/') {
+                report.error(
+                    "service.route_path_not_absolute",
+                    Some(format!("{path}.paths.{path_index}")),
+                    Some(matcher.clone()),
+                    format!(
+                        "service '{}' route path '{}' must start with '/'",
+                        service.name, matcher
+                    ),
+                );
+            }
+            if !matchers.insert(matcher) {
+                report.error(
+                    "service.route_duplicate_matcher",
+                    Some(format!("{path}.paths.{path_index}")),
+                    Some(matcher.clone()),
+                    format!(
+                        "service '{}' repeats route matcher '{}'; order would be ambiguous",
+                        service.name, matcher
+                    ),
+                );
+            }
+        }
+
+        if let Some(port) = route.port {
+            if port == 0 {
+                report.error(
+                    "service.route_invalid_port",
+                    Some(format!("{path}.port")),
+                    Some("0".into()),
+                    format!("service '{}' route port must be non-zero", service.name),
+                );
+            }
+        }
+
+        if let Some(target) = &route.target_host {
+            if !topology.hosts.contains_key(target) {
+                report.error(
+                    "service.route_invalid_target_host",
+                    Some(format!("{path}.targetHost")),
+                    Some(target.clone()),
+                    format!(
+                        "service '{}' route targetHost '{}' does not exist in hosts",
+                        service.name, target
+                    ),
+                );
+            }
+        }
+
+        if let Some(strip_prefix) = &route.strip_prefix {
+            if !strip_prefix.starts_with('/') {
+                report.error(
+                    "service.route_strip_prefix_not_absolute",
+                    Some(format!("{path}.stripPrefix")),
+                    Some(strip_prefix.clone()),
+                    format!(
+                        "service '{}' route stripPrefix '{}' must start with '/'",
+                        service.name, strip_prefix
+                    ),
+                );
+            }
+        }
+    }
+
+    if let Some(index) = fallback {
+        if index + 1 != service.routes.len() {
+            report.error(
+                "service.route_fallback_not_last",
+                Some(format!("{base}.{index}")),
+                None,
+                format!("service '{}' fallback route must be last", service.name),
+            );
+        }
+    }
 }
 
 fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
@@ -716,26 +821,31 @@ fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
             );
         }
     }
-    for site in &topology.domains.codeberg_pages_sites {
+    for site in &topology.domains.pages_sites {
         if !valid_hostname(&site.subdomain) {
             report.error(
                 "pages.invalid_subdomain",
-                Some("domains.codebergPagesSites".into()),
+                Some("domains.pagesSites".into()),
                 Some(site.subdomain.clone()),
-                format!(
-                    "Codeberg Pages relative hostname '{}' is invalid",
-                    site.subdomain
-                ),
+                format!("Pages relative hostname '{}' is invalid", site.subdomain),
             );
         }
-        if !site.target_repo.contains('/') {
+        if !valid_hostname(&site.cname_target) {
+            report.error(
+                "pages.invalid_cname_target",
+                Some("domains.pagesSites".into()),
+                Some(site.cname_target.clone()),
+                format!("Pages CNAME target '{}' is invalid", site.cname_target),
+            );
+        }
+        if !site.repository.contains('/') {
             report.error(
                 "pages.invalid_repository",
-                Some("domains.codebergPagesSites".into()),
-                Some(site.target_repo.clone()),
+                Some("domains.pagesSites".into()),
+                Some(site.repository.clone()),
                 format!(
-                    "Codeberg Pages target '{}' must be owner/repository",
-                    site.target_repo
+                    "Pages repository '{}' must be owner/repository",
+                    site.repository
                 ),
             );
         }
@@ -830,8 +940,8 @@ fn address_in_subnet(address: IpAddr, network: IpAddr, prefix: u8) -> bool {
 mod tests {
     use super::*;
     use crate::topology::{
-        CodebergPagesSite, Domains, DynamicHost, HealthIntent, Host, InternalService,
-        ServiceIntent, Services,
+        Domains, DynamicHost, HealthIntent, Host, InternalService, PagesSite, ReverseProxyRoute,
+        ReverseProxyService, ServiceIntent, Services,
     };
     use indexmap::IndexMap;
 
@@ -857,9 +967,10 @@ mod tests {
                         zone: None,
                     },
                 ],
-                codeberg_pages_sites: vec![CodebergPagesSite {
+                pages_sites: vec![PagesSite {
                     subdomain: "apt.modde".to_string(),
-                    target_repo: "caniko/apt-modde".to_string(),
+                    repository: "caniko/apt-modde".to_string(),
+                    cname_target: "caniko.github.io".to_string(),
                 }],
                 redirects: vec![],
             },
@@ -939,5 +1050,90 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "deployment.dependency_cycle"));
+    }
+
+    #[test]
+    fn accepts_ordered_routes_with_a_last_fallback() {
+        let mut topology = Topology::default();
+        topology.hosts.insert(
+            "atlas".to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
+                ..Default::default()
+            },
+        );
+        topology
+            .services
+            .reverse_proxy_services
+            .push(ReverseProxyService {
+                name: "foundry".to_string(),
+                hostname: Some("vtt.example.test".to_string()),
+                port: 8030,
+                target_host: Some("atlas".to_string()),
+                routes: vec![
+                    ReverseProxyRoute {
+                        paths: vec!["/api".to_string(), "/api/*".to_string()],
+                        target_host: Some("atlas".to_string()),
+                        port: Some(8032),
+                        ..Default::default()
+                    },
+                    ReverseProxyRoute::default(),
+                ],
+                ..Default::default()
+            });
+
+        assert!(validate(&topology).is_ok());
+    }
+
+    #[test]
+    fn rejects_ambiguous_and_malformed_routes() {
+        let mut topology = Topology::default();
+        topology.hosts.insert(
+            "atlas".to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
+                ..Default::default()
+            },
+        );
+        topology
+            .services
+            .reverse_proxy_services
+            .push(ReverseProxyService {
+                name: "foundry".to_string(),
+                hostname: Some("vtt.example.test".to_string()),
+                port: 8030,
+                target_host: Some("atlas".to_string()),
+                routes: vec![
+                    ReverseProxyRoute::default(),
+                    ReverseProxyRoute {
+                        paths: vec!["api".to_string()],
+                        target_host: Some("missing".to_string()),
+                        port: Some(0),
+                        strip_prefix: Some("api".to_string()),
+                        ..Default::default()
+                    },
+                    ReverseProxyRoute {
+                        paths: vec!["api".to_string()],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            });
+
+        let report = validate(&topology);
+        for code in [
+            "service.route_fallback_not_last",
+            "service.route_path_not_absolute",
+            "service.route_invalid_target_host",
+            "service.route_invalid_port",
+            "service.route_strip_prefix_not_absolute",
+            "service.route_duplicate_matcher",
+        ] {
+            assert!(
+                report.issues.iter().any(|issue| issue.code == code),
+                "missing validation issue {code}: {:?}",
+                report.issues
+            );
+        }
     }
 }

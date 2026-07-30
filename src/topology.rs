@@ -18,7 +18,7 @@ pub struct Topology {
 }
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
@@ -237,7 +237,7 @@ pub struct Domains {
     #[serde(default)]
     pub dynamic_hosts: Vec<DynamicHost>,
     #[serde(default)]
-    pub codeberg_pages_sites: Vec<CodebergPagesSite>,
+    pub pages_sites: Vec<PagesSite>,
     #[serde(default)]
     pub redirects: Vec<Redirect>,
 }
@@ -260,9 +260,10 @@ pub struct DynamicHost {
 )]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
-pub struct CodebergPagesSite {
+pub struct PagesSite {
     pub subdomain: String,
-    pub target_repo: String,
+    pub repository: String,
+    pub cname_target: String,
 }
 
 #[derive(
@@ -361,7 +362,7 @@ fn default_ssh_port() -> u16 {
 }
 
 #[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 #[rkyv(derive(Debug))]
 #[serde(rename_all = "camelCase")]
@@ -390,6 +391,82 @@ pub struct ReverseProxyService {
     pub service_host: Option<String>,
     #[serde(default)]
     pub zone: Option<String>,
+    #[serde(default)]
+    pub routes: Vec<ReverseProxyRoute>,
+}
+
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct ReverseProxyRoute {
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub target_host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub upstream_scheme: Option<String>,
+    #[serde(default)]
+    pub tls_server_name: Option<String>,
+    #[serde(default)]
+    pub strip_prefix: Option<String>,
+    #[serde(default)]
+    pub monitoring_identity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedReverseProxyRoute {
+    pub paths: Vec<String>,
+    pub target_host: Option<String>,
+    pub port: u16,
+    pub upstream_scheme: String,
+    pub tls_server_name: Option<String>,
+    pub strip_prefix: Option<String>,
+    pub monitoring_identity: String,
+}
+
+impl ReverseProxyService {
+    /// Resolve explicit routes while preserving the legacy single-upstream
+    /// shape when no routes are declared.
+    pub fn normalized_routes(&self) -> Vec<NormalizedReverseProxyRoute> {
+        let routes = if self.routes.is_empty() {
+            vec![ReverseProxyRoute {
+                paths: Vec::new(),
+                target_host: None,
+                port: None,
+                upstream_scheme: None,
+                tls_server_name: None,
+                strip_prefix: None,
+                monitoring_identity: None,
+            }]
+        } else {
+            self.routes.clone()
+        };
+
+        routes
+            .into_iter()
+            .map(|route| NormalizedReverseProxyRoute {
+                paths: route.paths,
+                target_host: route.target_host.or_else(|| self.target_host.clone()),
+                port: route.port.unwrap_or(self.port),
+                upstream_scheme: route
+                    .upstream_scheme
+                    .or_else(|| self.upstream_scheme.clone())
+                    .unwrap_or_else(|| "http".to_string()),
+                tls_server_name: route
+                    .tls_server_name
+                    .or_else(|| self.tls_server_name.clone()),
+                strip_prefix: route.strip_prefix,
+                monitoring_identity: route
+                    .monitoring_identity
+                    .unwrap_or_else(|| self.name.clone()),
+            })
+            .collect()
+    }
 }
 
 #[derive(
@@ -884,7 +961,7 @@ services = (import("Services.pkl")).services
                 vpn_subdomain: None,
                 managed_zones: vec![],
                 dynamic_hosts: vec![],
-                codeberg_pages_sites: vec![],
+                pages_sites: vec![],
                 redirects: vec![],
             },
             services: Services::default(),
