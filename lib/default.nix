@@ -36,6 +36,19 @@
   lookupHost = topology: hostName:
     topology.hosts.${hostName} or null;
 
+  hostsOnLinkImpl = topology: linkName:
+    filter
+    (name: builtins.hasAttr linkName (topology.hosts.${name}.links or {}))
+    (builtins.attrNames (topology.hosts or {}));
+
+  hostsShareLinkImpl = {
+    topology,
+    linkName,
+    hostNames,
+  }:
+    builtins.length hostNames > 1
+    && builtins.all (name: builtins.elem name (hostsOnLinkImpl topology linkName)) hostNames;
+
   lookupReverseProxyService = topology: serviceName:
     findFirst (svc: svc.name == serviceName) null (topology.services.reverseProxyServices or []);
 
@@ -442,15 +455,14 @@ in rec {
   };
 
   links = {
+    hostsShareLink = hostsShareLinkImpl;
+
     normalize = {
       topology,
       domains ? null,
     }: let
       baseLinks = builtins.mapAttrs (linkName: link: let
-        hostsOnLink =
-          builtins.filter
-          (name: builtins.hasAttr linkName (topology.hosts.${name}.links or {}))
-          (builtins.attrNames (topology.hosts or {}));
+        hostsOnLink = hostsOnLinkImpl topology linkName;
         serverNames =
           builtins.filter
           (name: (topology.hosts.${name}.links.${linkName} or {}).role or "" == "server")

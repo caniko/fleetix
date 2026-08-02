@@ -322,6 +322,7 @@
                   role = "server";
                   publicKey = "server-key";
                 };
+                links.direct-link.address = "10.10.0.1";
               };
               nomad = {
                 network = {};
@@ -445,6 +446,16 @@
             test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
             test "${(builtins.elemAt pagesIntents 0).target}" = "example.github.io"
             test "${normalized.hosts.atlas.linkAddresses.mesh}" = "10.123.0.5"
+            test "${toString (self.lib.links.hostsShareLink {
+              inherit topology;
+              linkName = "direct-link";
+              hostNames = ["atlas" "nomad"];
+            })}" = "1"
+            test "${toString (self.lib.links.hostsShareLink {
+              inherit topology;
+              linkName = "mesh";
+              hostNames = ["atlas" "nomad"];
+            })}" = ""
             test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
             test "${normalized.links.mesh.serverAddress}" = "10.123.0.5"
             test "${normalized.services.reverseProxyByName.immich.targetHost}" = "atlas"
