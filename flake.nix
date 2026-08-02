@@ -459,6 +459,7 @@
             test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
             test "${normalized.links.mesh.serverAddress}" = "10.123.0.5"
             test "${normalized.services.reverseProxyByName.immich.targetHost}" = "atlas"
+            test "${toString (builtins.head normalized.services.reverseProxyByName.immich.routes).port}" = "2283"
             test "${toString (self.lib.firewall.lanExposedPorts {
               inherit topology;
               hostName = "atlas";

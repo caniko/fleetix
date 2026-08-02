@@ -422,7 +422,7 @@ in rec {
       declaredRoutes = service.routes or [];
       routes =
         if declaredRoutes == []
-        then [services.normalizeReverseProxyRoute service {}]
+        then [(services.normalizeReverseProxyRoute service {})]
         else map (services.normalizeReverseProxyRoute service) declaredRoutes;
     in
       service // {inherit routes;};
