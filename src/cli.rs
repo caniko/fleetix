@@ -167,7 +167,7 @@ pub enum TrustCommand {
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// Offer existing undeclared entries on the first scan.
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         review_existing: bool,
         /// Prompt for each proposal via notify-send actions.
         #[arg(long)]
@@ -186,7 +186,7 @@ pub enum TrustCommand {
         known_hosts: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         review_existing: bool,
         #[arg(long)]
         json: bool,
@@ -776,5 +776,49 @@ pub async fn main_exit(cli: Cli) -> ExitCode {
             eprintln!("{:?}", error.report);
             ExitCode::from(error.code)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trust_commands_accept_explicit_review_existing_values() {
+        let scan = Cli::try_parse_from([
+            "fleetix",
+            "trust",
+            "scan",
+            "--topology",
+            "Topology.pkl",
+            "--review-existing",
+            "false",
+        ])
+        .unwrap();
+        assert!(matches!(
+            scan.command,
+            Command::Trust(TrustCommand::Scan {
+                review_existing: false,
+                ..
+            })
+        ));
+
+        let pending = Cli::try_parse_from([
+            "fleetix",
+            "trust",
+            "pending",
+            "--topology",
+            "Topology.pkl",
+            "--review-existing",
+            "true",
+        ])
+        .unwrap();
+        assert!(matches!(
+            pending.command,
+            Command::Trust(TrustCommand::Pending {
+                review_existing: true,
+                ..
+            })
+        ));
     }
 }
