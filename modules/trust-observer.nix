@@ -2,9 +2,9 @@
 #
 # Daemonless trust integration for desktop sessions: a systemd --user .path
 # unit watches the SSH known_hosts store and triggers a one-shot scan. New
-# host keys not declared in the topology's Trust section are offered via
-# `notify-send` actions — Integrate patches Trust.pkl and regenerates the
-# sidecar, Ignore silences the proposal.
+# host keys not declared in the topology's Trust section are logged. Run
+# `fleetix trust scan --notify` interactively to review them with desktop
+# actions; a user service must not wait indefinitely for UI input.
 {
   config,
   lib,
@@ -20,7 +20,6 @@
     "--known-hosts ${cfg.knownHosts}"
     "--state-dir ${cfg.stateDir}"
     "--review-existing ${if review then "true" else "false"}"
-    "--notify"
   ] + lib.optionalString (cfg.sidecar != null) " --sidecar ${toString cfg.sidecar}";
 in {
   options.fleetix.trustObserver = {
