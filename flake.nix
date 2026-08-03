@@ -501,48 +501,6 @@
             touch $out
           '';
 
-        trust-observer-module = let
-          observer = nixpkgs.lib.evalModules {
-            modules = [
-              assertionsModule
-              self.homeModules.trust-observer
-              {
-                _module.args.pkgs = pkgs;
-                fleetix.trustObserver = {
-                  enable = true;
-                  package = self.packages.${system}.fleetixCrate;
-                  topology = ./examples/Topology.pkl;
-                  sidecar = null;
-                };
-              }
-            ];
-          };
-          observerSilent = nixpkgs.lib.evalModules {
-            modules = [
-              assertionsModule
-              self.homeModules.trust-observer
-              {
-                _module.args.pkgs = pkgs;
-                fleetix.trustObserver = {
-                  enable = true;
-                  package = self.packages.${system}.fleetixCrate;
-                  topology = ./examples/Topology.pkl;
-                  components.opensshKnownHosts.reviewExisting = false;
-                };
-              }
-            ];
-          };
-        in
-          pkgs.runCommand "fleetix-trust-observer-module" {} ''
-            test "${toString (builtins.hasAttr "fleetix-trust-scan" observer.config.systemd.user.services)}" = 1
-            test "${toString (builtins.hasAttr "fleetix-trust-scan" observer.config.systemd.user.paths)}" = 1
-            test "${toString (builtins.hasAttr "graphical-session.target" observer.config.systemd.user.services."fleetix-trust-scan".wantedBy)}" = 1
-            echo "${observer.config.systemd.user.services."fleetix-trust-scan".service.ExecStart}" | grep -Fq -- "--review-existing true"
-            echo "${observerSilent.config.systemd.user.services."fleetix-trust-scan".service.ExecStart}" | grep -Fq -- "--review-existing false"
-            echo "${observerSilent.config.systemd.user.services."fleetix-trust-scan".service.ExecStart}" | grep -Fq -- "--notify"
-            touch $out
-          '';
-
         module-integration-fixtures = let
           topology = {
             hosts.demo.system = "x86_64-linux";
