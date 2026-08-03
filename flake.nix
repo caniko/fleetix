@@ -46,6 +46,7 @@
     # NixOS module for consuming fleetix topology from the sidecar
     nixosModules.topology = import ./modules/nixos.nix {fleetixLib = self.lib;};
     homeModules.topology = import ./modules/home-manager.nix;
+    homeModules.trust-observer = import ./modules/trust-observer.nix;
 
     packages = forSystems (
       system: let
@@ -156,6 +157,12 @@
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+        assertionsModule = {
+          options.assertions = nixpkgs.lib.mkOption {
+            type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs;
+            default = [];
+          };
+        };
       in {
         fleetix-tests = craneLib.cargoTest (
           commonArgs
@@ -213,6 +220,8 @@
             grep -q 'dashboard' topology.nix
             grep -q 'requiredAvailability = "always-on"' topology.nix
             grep -q 'serviceIntents' topology.nix
+            grep -q 'sshKnownHosts' topology.nix
+            grep -q 'git.example.test' topology.nix
             touch $out
           '';
 
@@ -233,6 +242,15 @@
 
             class Host {
               system: String
+            }
+
+            class SshKnownHost {
+              hostNames: Listing<String>
+              publicKeys: Listing<String>
+            }
+
+            class Trust {
+              sshKnownHosts: Listing<SshKnownHost> = new Listing {}
             }
             EOF
 
@@ -278,6 +296,19 @@
             }
             EOF
 
+            cat > "$fixture/Trust.pkl" <<'EOF'
+            import "Schema.pkl" as S
+
+            trust = new S.Trust {
+              sshKnownHosts = new Listing<S.SshKnownHost> {
+                new S.SshKnownHost {
+                  hostNames = new Listing { "git.example.test" }
+                  publicKeys = new Listing { "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleGit" }
+                }
+              }
+            }
+            EOF
+
             cat > "$fixture/Topology.aggregated.pkl" <<'EOF'
             links = new {
               ["wg-home"] = (import("links/WgHome.pkl")).links["wg-home"]
@@ -289,6 +320,7 @@
 
             domains = (import("Domains.pkl")).domains
             services = (import("Services.pkl")).services
+            trust = (import("Trust.pkl")).trust
             EOF
 
             fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix
@@ -298,6 +330,8 @@
             grep -Fq 'services = {' topology.nix
             grep -q 'wg-home =' topology.nix
             grep -Fq 'redirects =' topology.nix
+            grep -Fq 'sshKnownHosts = {' topology.nix
+            grep -Fq 'git.example.test' topology.nix
             touch $out
           '';
 
@@ -467,13 +501,49 @@
             touch $out
           '';
 
-        module-integration-fixtures = let
-          assertionsModule = {
-            options.assertions = nixpkgs.lib.mkOption {
-              type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs;
-              default = [];
-            };
+        trust-observer-module = let
+          observer = nixpkgs.lib.evalModules {
+            modules = [
+              assertionsModule
+              self.homeModules.trust-observer
+              {
+                _module.args.pkgs = pkgs;
+                fleetix.trustObserver = {
+                  enable = true;
+                  package = self.packages.${system}.fleetixCrate;
+                  topology = ./examples/Topology.pkl;
+                  sidecar = null;
+                };
+              }
+            ];
           };
+          observerSilent = nixpkgs.lib.evalModules {
+            modules = [
+              assertionsModule
+              self.homeModules.trust-observer
+              {
+                _module.args.pkgs = pkgs;
+                fleetix.trustObserver = {
+                  enable = true;
+                  package = self.packages.${system}.fleetixCrate;
+                  topology = ./examples/Topology.pkl;
+                  components.opensshKnownHosts.reviewExisting = false;
+                };
+              }
+            ];
+          };
+        in
+          pkgs.runCommand "fleetix-trust-observer-module" {} ''
+            test "${toString (builtins.hasAttr "fleetix-trust-scan" observer.config.systemd.user.services)}" = 1
+            test "${toString (builtins.hasAttr "fleetix-trust-scan" observer.config.systemd.user.paths)}" = 1
+            test "${toString (builtins.hasAttr "graphical-session.target" observer.config.systemd.user.services."fleetix-trust-scan".wantedBy)}" = 1
+            echo "${observer.config.systemd.user.services."fleetix-trust-scan".service.ExecStart}" | grep -Fq -- "--review-existing true"
+            echo "${observerSilent.config.systemd.user.services."fleetix-trust-scan".service.ExecStart}" | grep -Fq -- "--review-existing false"
+            echo "${observerSilent.config.systemd.user.services."fleetix-trust-scan".service.ExecStart}" | grep -Fq -- "--notify"
+            touch $out
+          '';
+
+        module-integration-fixtures = let
           topology = {
             hosts.demo.system = "x86_64-linux";
             links.mesh = {subnet = "10.0.0.0/24";};

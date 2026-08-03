@@ -15,6 +15,8 @@ pub struct Topology {
     pub services: Services,
     #[serde(default)]
     pub deployment: Deployment,
+    #[serde(default)]
+    pub trust: Trust,
 }
 
 #[derive(
@@ -357,6 +359,28 @@ pub struct Deployment {
     pub service_intents: Vec<ServiceIntent>,
 }
 
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct Trust {
+    #[serde(default)]
+    pub ssh_known_hosts: Vec<SshKnownHost>,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "camelCase")]
+pub struct SshKnownHost {
+    pub host_names: Vec<String>,
+    pub public_keys: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<String>,
+}
+
 fn default_ssh_port() -> u16 {
     1337
 }
@@ -645,6 +669,18 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
     } else {
         out.push_str("\n\ndeployment = new Deployment {}\n");
     }
+    let trust_path = src_dir.join("Trust.pkl");
+    if trust_path.exists() {
+        out.push_str("\n\n");
+        out.push_str(
+            &strip_imports(&read_to_string(trust_path)?)
+                .replace("new S.", "new ")
+                .replace("<S.", "<")
+                .replace("N.names.", "names."),
+        );
+    } else {
+        out.push_str("\n\ntrust = new Trust {}\n");
+    }
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -705,7 +741,7 @@ fn unwrap_section(input: &str, section: &str) -> String {
     input[body_start..body_end].to_string()
 }
 
-fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
+pub(crate) fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut escaped = false;
     let mut in_string = false;
@@ -853,6 +889,15 @@ class Link {
 class Host {
   system: String
 }
+
+class SshKnownHost {
+  hostNames: Listing<String>
+  publicKeys: Listing<String>
+}
+
+class Trust {
+  sshKnownHosts: Listing<SshKnownHost> = new Listing {}
+}
 "#,
         )
         .map_err(|e| miette::miette!("write Schema.pkl: {e}"))?;
@@ -929,9 +974,26 @@ hosts = new {
 
 domains = (import("Domains.pkl")).domains
 services = (import("Services.pkl")).services
+trust = (import("Trust.pkl")).trust
 "#,
         )
         .map_err(|e| miette::miette!("write aggregate fixture: {e}"))?;
+        fs::write(
+            root.join("Trust.pkl"),
+            r#"
+import "Schema.pkl" as S
+
+trust = new S.Trust {
+  sshKnownHosts = new Listing<S.SshKnownHost> {
+    new S.SshKnownHost {
+      hostNames = new Listing { "git.example.test" }
+      publicKeys = new Listing { "ssh-ed25519 AAAA" }
+    }
+  }
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write Trust fixture: {e}"))?;
 
         let flattened = flatten_modular_topology(&root.join("Topology.aggregated.pkl"))?;
         assert!(flattened.contains("[\"wg-home\"] = new Link"));
@@ -941,11 +1003,17 @@ services = (import("Services.pkl")).services
         assert!(!flattened.contains("N.names"));
         assert!(flattened.contains("domains = new"));
         assert!(flattened.contains("services = new"));
+        assert!(flattened.contains("sshKnownHosts = new Listing<SshKnownHost>"));
         assert!(!flattened.contains("import "));
 
         let loaded = load_topology(&root.join("Topology.aggregated.pkl")).await?;
         assert!(loaded.hosts.contains_key("atlas"));
         assert!(loaded.links.contains_key("wg-home"));
+        assert_eq!(loaded.trust.ssh_known_hosts.len(), 1);
+        assert_eq!(
+            loaded.trust.ssh_known_hosts[0].host_names,
+            vec!["git.example.test"]
+        );
 
         Ok(())
     }
@@ -966,6 +1034,7 @@ services = (import("Services.pkl")).services
             },
             services: Services::default(),
             deployment: Deployment::default(),
+            trust: Trust::default(),
         };
 
         let bytes = archive_topology(&topology).expect("archive topology");

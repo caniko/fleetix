@@ -102,3 +102,13 @@ deployment = new S.Deployment {
     }
   }
 }
+
+trust = new S.Trust {
+  sshKnownHosts = new Listing {
+    new S.SshKnownHost {
+      hostNames = new Listing { "git.example.test" }
+      publicKeys = new Listing { "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleGit" }
+      provenance = "observed-known-hosts"
+    }
+  }
+}

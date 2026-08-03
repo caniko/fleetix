@@ -10,3 +10,4 @@ hosts = new {}
 domains = new S.Domains {}
 services = new S.Services {}
 deployment = new S.Deployment {}
+trust = new S.Trust {}
