@@ -654,6 +654,7 @@ mod tests {
                 ..Default::default()
             },
             deployment: Default::default(),
+            trust: Default::default(),
         }
     }
 

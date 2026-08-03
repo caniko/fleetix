@@ -976,6 +976,7 @@ mod tests {
             },
             services: Services::default(),
             deployment: Default::default(),
+            trust: Default::default(),
         };
 
         let report = validate(&topology);

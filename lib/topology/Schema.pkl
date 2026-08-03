@@ -177,3 +177,13 @@ class ServiceIntent {
 class Deployment {
   serviceIntents: Listing<ServiceIntent> = new Listing {}
 }
+
+class SshKnownHost {
+  hostNames: Listing<String>
+  publicKeys: Listing<String>
+  provenance: String? = null
+}
+
+class Trust {
+  sshKnownHosts: Listing<SshKnownHost> = new Listing {}
+}

@@ -1,6 +1,7 @@
 pub mod accessors;
 pub mod pkl;
 pub mod topology;
+pub mod trust;
 pub mod validate;
 
 pub use accessors::*;
