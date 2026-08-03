@@ -330,7 +330,7 @@
             grep -Fq 'services = {' topology.nix
             grep -q 'wg-home =' topology.nix
             grep -Fq 'redirects =' topology.nix
-            grep -Fq 'sshKnownHosts = {' topology.nix
+            grep -Fq 'sshKnownHosts = [' topology.nix
             grep -Fq 'git.example.test' topology.nix
             touch $out
           '';
