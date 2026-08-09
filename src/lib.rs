@@ -1,4 +1,5 @@
 pub mod accessors;
+mod fsutil;
 pub mod pkl;
 pub mod topology;
 pub mod trust;

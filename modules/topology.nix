@@ -1,31 +1,38 @@
-{
+# Fleetix topology module: options and assertions shared by the NixOS and
+# Home Manager variants. Integrated (Home Manager with an `osConfig`) mirrors
+# the active NixOS module's topology; standalone usage loads a sidecar or an
+# inline value, exactly like the NixOS module.
+{fleetixLib}: {
   config,
   lib,
-  osConfig ? null,
   ...
 }: let
   inherit (lib) mkIf mkOption types;
-  topologyType = types.attrs;
+  osConfig = config._module.args.osConfig or null;
   integrated = osConfig != null;
+  topologyType = types.attrs;
   hasSource = config.fleetix.source != null;
   hasValue = config.fleetix.value != null;
-  mirrored = if integrated then (osConfig.fleetix.topology or null) else null;
+  mirrored =
+    if integrated
+    then (osConfig.fleetix.topology or null)
+    else null;
 in {
   options.fleetix = {
     enable = mkOption {
       type = types.bool;
       default = integrated;
-      description = "Expose a Fleetix topology to Home Manager consumers.";
+      description = "Expose a Fleetix topology to consumers.";
     };
     source = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "Path to a generated Fleetix Nix sidecar for standalone Home Manager.";
+      description = "Path to a generated Fleetix Nix sidecar.";
     };
     value = mkOption {
       type = types.nullOr topologyType;
       default = null;
-      description = "Inline topology value for standalone Home Manager tests.";
+      description = "Inline topology value, useful for tests and generated modules.";
     };
     topology = mkOption {
       type = topologyType;
@@ -42,7 +49,7 @@ in {
       }
       {
         assertion = integrated || !config.fleetix.enable || hasSource || hasValue;
-        message = "standalone fleetix.enable requires fleetix.source or fleetix.value";
+        message = "fleetix.enable requires an integration (osConfig), source, or value";
       }
       {
         assertion = !hasSource && !hasValue || config.fleetix.enable;
@@ -53,7 +60,7 @@ in {
       if integrated
       then mirrored
       else if hasSource
-      then builtins.import config.fleetix.source
+      then fleetixLib.fromPkl config.fleetix.source
       else config.fleetix.value
     );
   };

@@ -14,13 +14,19 @@
   inherit (lib) mkIf mkOption types;
   cfg = config.fleetix.trustObserver;
   review = cfg.components.opensshKnownHosts.reviewExisting;
-  scanArgs = builtins.concatStringsSep " " [
-    "trust scan"
-    "--topology ${toString cfg.topology}"
-    "--known-hosts ${cfg.knownHosts}"
-    "--state-dir ${cfg.stateDir}"
-    "--review-existing ${if review then "true" else "false"}"
-  ] + lib.optionalString (cfg.sidecar != null) " --sidecar ${toString cfg.sidecar}";
+  scanArgs =
+    builtins.concatStringsSep " " [
+      "trust scan"
+      "--topology ${toString cfg.topology}"
+      "--known-hosts ${cfg.knownHosts}"
+      "--state-dir ${cfg.stateDir}"
+      "--review-existing ${
+        if review
+        then "true"
+        else "false"
+      }"
+    ]
+    + lib.optionalString (cfg.sidecar != null) " --sidecar ${toString cfg.sidecar}";
 in {
   options.fleetix.trustObserver = {
     enable = mkOption {

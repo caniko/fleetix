@@ -31,12 +31,6 @@ derive runtime data from a generated topology sidecar:
   target host, port, upstream scheme, and address policy.
 - `services.reverseProxyServicesForHost` and `firewall.lanExposedPorts` derive
   host-local service/firewall views from reverse-proxy topology.
-- `adapters.infernix.mkFleetNodes` converts fleet host topology plus
-  consumer-owned node overlays into Infernix node definitions.
-
-Adapters stay intentionally thin: Fleetix provides network and service
-derivation, while consumers such as Infernix keep workload semantics, model
-inventory, scheduling policy, and application-specific defaults.
 
 Host `rebuild.buildCache` is backend-neutral fleet policy. It records whether a
 host should use a fleet build cache for selected package attributes, while the
@@ -88,10 +82,6 @@ The Home Manager module has one integration mode: when imported by Home
 Manager with an `osConfig`, it mirrors `osConfig.fleetix.topology`; when used
 standalone it remains an empty, opt-in surface. Fleetix does not own a
 consumer's machine data or deployment policy.
-
-Topology rkyv archives use an explicit schema-version envelope. Consumers
-must reject archive versions they do not understand instead of treating raw
-bytes as a stable interchange format.
 
 The declared Rust MSRV is 1.88, required by the resolved `pklr` dependency.
 CI also checks the pinned current stable Rust 1.96.1 toolchain so the minimum

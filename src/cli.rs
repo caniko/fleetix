@@ -1,9 +1,8 @@
+use crate::fsutil::atomic_write;
 use crate::topology;
 use crate::validate;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -67,20 +66,13 @@ fn build_options(args: &EvaluatorArgs) -> miette::Result<EvalOptions> {
 }
 
 async fn eval_pkl_for_nix(path: &Path, options: EvalOptions) -> miette::Result<String> {
-    if path.file_name().and_then(|name| name.to_str()) != Some("Topology.aggregated.pkl") {
-        return pklx::eval_pkl(path, options).await;
+    if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
+        let temporary = topology::flattened_tempfile(path)?;
+        let nix = pklx::eval_pkl(temporary.path(), options).await?;
+        return Ok(wrap_topology_nix(nix));
     }
 
-    let flattened = topology::flatten_modular_topology(path)?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| miette::miette!("create temporary topology: {error}"))?;
-    temporary
-        .write_all(flattened.as_bytes())
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| miette::miette!("write temporary topology: {error}"))?;
-    let nix = pklx::eval_pkl(temporary.path(), options).await?;
-    Ok(wrap_topology_nix(nix))
+    pklx::eval_pkl(path, options).await
 }
 
 fn wrap_topology_nix(nix: String) -> String {
@@ -126,11 +118,9 @@ pub enum Command {
         #[command(flatten)]
         evaluator: EvaluatorArgs,
     },
-    /// Evaluate a topology and print Nix or an rkyv archive.
+    /// Evaluate a topology and print Nix.
     Eval {
         path: PathBuf,
-        #[arg(long)]
-        rkyv: bool,
         #[command(flatten)]
         evaluator: EvaluatorArgs,
     },
@@ -252,14 +242,21 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
                     ))?
                 );
             } else {
-                for error in &report.errors {
-                    eprintln!("  ERROR: {error}");
-                }
-                for warning in &report.warnings {
-                    eprintln!("  WARN:  {warning}");
+                for issue in report.issues() {
+                    match issue.severity {
+                        validate::ValidationSeverity::Error => {
+                            eprintln!("  ERROR: {}", issue.message);
+                        }
+                        validate::ValidationSeverity::Warning => {
+                            eprintln!("  WARN:  {}", issue.message);
+                        }
+                    }
                 }
                 if report.is_ok() {
-                    println!("Validation passed with {} warnings.", report.warnings.len());
+                    println!(
+                        "Validation passed with {} warnings.",
+                        report.warnings().count()
+                    );
                 }
             }
             if !report.is_ok() {
@@ -267,8 +264,8 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
                     EXIT_VALIDATION,
                     format!(
                         "validation failed with {} errors and {} warnings",
-                        report.errors.len(),
-                        report.warnings.len()
+                        report.errors().count(),
+                        report.warnings().count()
                     ),
                 ));
             }
@@ -367,22 +364,11 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
                 }
             }
         }
-        Command::Eval {
-            path,
-            rkyv,
-            evaluator,
-        } => {
-            let options = build_options(&evaluator)?;
-            if rkyv {
-                let topology = topology::load_topology_with_options(&path, options).await?;
-                let bytes = topology::archive_topology(&topology)
-                    .map_err(|error| miette::miette!("create archive: {error}"))?;
-                std::io::stdout()
-                    .write_all(&bytes)
-                    .map_err(|error| CliError::new(EXIT_IO, format!("write archive: {error}")))?;
-            } else {
-                println!("{}", eval_pkl_for_nix(&path, options).await?);
-            }
+        Command::Eval { path, evaluator } => {
+            println!(
+                "{}",
+                eval_pkl_for_nix(&path, build_options(&evaluator)?).await?
+            );
         }
         Command::Export {
             path,
@@ -397,16 +383,12 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
                     EXIT_VALIDATION,
                     format!(
                         "refusing to export invalid topology: {} errors and {} warnings",
-                        report.errors.len(),
-                        report.warnings.len()
+                        report.errors().count(),
+                        report.warnings().count()
                     ),
                 ));
             }
-            let nix = eval_pkl_for_nix(&path, build_options(&evaluator)?).await?;
-            atomic_write(
-                &output,
-                format!("# Generated by fleetix; do not edit by hand.\n{nix}"),
-            )?;
+            export_topology(&path, &output, &evaluator).await?;
             println!("Wrote {}", output.display());
         }
         Command::PklToNix {
@@ -417,7 +399,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             let nix = eval_pkl_for_nix(&path, build_options(&evaluator)?).await?;
             atomic_write(
                 &output,
-                format!("# Generated by fleetix; do not edit by hand.\n{nix}"),
+                format!("# Generated by fleetix; do not edit by hand.\n{nix}").as_bytes(),
             )?;
             println!("Wrote {}", output.display());
         }
@@ -426,11 +408,11 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
-    use crate::trust::{self, notify, openssh, state, DeclaredTrust};
+    use crate::trust::{notify, openssh, state, DeclaredTrust, Observation};
 
     struct ScanOutcome {
         actionable: Vec<openssh::Entry>,
-        report: trust::Observation,
+        report: Observation,
     }
 
     fn resolve_known_hosts(path: Option<PathBuf>) -> miette::Result<PathBuf> {
@@ -462,7 +444,9 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
             .await
             .map_err(CliError::from)?;
         let declared = DeclaredTrust::from_topology(&topology);
-        let report = trust::scan(known_hosts, &declared).map_err(CliError::from)?;
+        let report = openssh::OpenSshKnownHosts
+            .observe(known_hosts, &declared)
+            .map_err(CliError::from)?;
         let existing = state::State::load(state_dir).map_err(CliError::from)?;
 
         if !review_existing && existing.is_none() {
@@ -662,7 +646,7 @@ async fn run_integrate(
     known_hosts: &Path,
     sidecar: Option<&Path>,
 ) -> Result<(), CliError> {
-    use crate::trust::{self, openssh, patch, DeclaredTrust};
+    use crate::trust::{openssh, patch, DeclaredTrust};
 
     let (entries, _) = openssh::parse_entries(known_hosts).map_err(CliError::from)?;
     let entry = entries
@@ -680,7 +664,9 @@ async fn run_integrate(
         .await
         .map_err(CliError::from)?;
     let declared = DeclaredTrust::from_topology(&topology);
-    let report = trust::scan(known_hosts, &declared).map_err(CliError::from)?;
+    let report = openssh::OpenSshKnownHosts
+        .observe(known_hosts, &declared)
+        .map_err(CliError::from)?;
     if !report
         .proposals
         .iter()
@@ -699,7 +685,8 @@ async fn run_integrate(
     let previous = patch::patch_trust_pkl(&trust_pkl, &entry).map_err(CliError::from)?;
 
     if let Some(sidecar) = sidecar {
-        if let Err(error) = export_topology(topology_path, sidecar).await {
+        if let Err(error) = export_topology(topology_path, sidecar, &EvaluatorArgs::default()).await
+        {
             patch::restore_trust_pkl(&trust_pkl, previous.as_deref()).map_err(CliError::from)?;
             return Err(CliError::new(
                 EXIT_EVALUATION,
@@ -720,53 +707,26 @@ async fn run_integrate(
 }
 
 /// Validate and atomically export a topology sidecar (shared by Export and
-/// trust integrate).
-async fn export_topology(path: &Path, output: &Path) -> miette::Result<()> {
-    let topology = topology::load_topology(path).await?;
+/// trust integrate). `evaluator` are the raw CLI args; options are built
+/// inside so the non-cloneable [`EvalOptions`] can be used twice.
+async fn export_topology(
+    path: &Path,
+    output: &Path,
+    evaluator: &EvaluatorArgs,
+) -> miette::Result<()> {
+    let topology = topology::load_topology_with_options(path, build_options(evaluator)?).await?;
     let report = validate::validate(&topology);
     if !report.is_ok() {
         return Err(miette::miette!(
             "refusing to export invalid topology: {} errors",
-            report.errors.len()
+            report.errors().count()
         ));
     }
-    let nix = eval_pkl_for_nix(path, EvalOptions::default()).await?;
+    let nix = eval_pkl_for_nix(path, build_options(evaluator)?).await?;
     atomic_write(
         output,
-        format!("# Generated by fleetix; do not edit by hand.\n{nix}"),
+        format!("# Generated by fleetix; do not edit by hand.\n{nix}").as_bytes(),
     )
-}
-
-fn atomic_write(path: &Path, contents: String) -> miette::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|error| miette::miette!("create {}: {error}", parent.display()))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| miette::miette!("create temporary output: {error}"))?;
-    if let Ok(metadata) = fs::metadata(path) {
-        temporary
-            .as_file()
-            .set_permissions(metadata.permissions())
-            .map_err(|error| miette::miette!("preserve {} permissions: {error}", path.display()))?;
-    }
-    temporary
-        .write_all(contents.as_bytes())
-        .map_err(|error| miette::miette!("write {}: {error}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| miette::miette!("sync {}: {error}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| miette::miette!("replace {}: {}", path.display(), error.error))?;
-    #[cfg(unix)]
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| miette::miette!("sync output directory {}: {error}", parent.display()))?;
-    Ok(())
 }
 
 pub async fn main_exit(cli: Cli) -> ExitCode {

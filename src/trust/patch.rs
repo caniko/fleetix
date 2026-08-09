@@ -5,10 +5,10 @@
 // rollback (restore the original bytes) when a later topology eval fails.
 
 use super::openssh::Entry;
+use crate::fsutil::atomic_write;
 use crate::pkl::string_literal;
 use crate::topology::matching_brace;
 use miette::{miette, Result};
-use std::io::Write;
 use std::path::Path;
 
 const DEFAULT_TRUST_PKL: &str = r#"// Fleet-level trust declarations.
@@ -49,19 +49,7 @@ pub fn patch_trust_pkl(path: &Path, entry: &Entry) -> Result<Option<Vec<u8>>> {
         .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
         .unwrap_or_else(|| DEFAULT_TRUST_PKL.to_string());
     let patched = insert_entry(&content, entry)?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| miette!("create temporary Trust.pkl: {error}"))?;
-    temporary
-        .write_all(patched.as_bytes())
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| miette!("write {}: {error}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| miette!("replace {}: {}", path.display(), error.error))?;
+    atomic_write(path, patched.as_bytes())?;
     Ok(previous)
 }
 
@@ -75,20 +63,7 @@ pub fn restore_trust_pkl(path: &Path, previous: Option<&[u8]>) -> Result<()> {
             Err(error) => return Err(miette!("remove {}: {error}", path.display())),
         }
     };
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| miette!("create temporary Trust.pkl: {error}"))?;
-    temporary
-        .write_all(previous)
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| miette!("write {}: {error}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| miette!("replace {}: {}", path.display(), error.error))?;
-    Ok(())
+    atomic_write(path, previous)
 }
 
 fn insert_entry(content: &str, entry: &Entry) -> Result<String> {
