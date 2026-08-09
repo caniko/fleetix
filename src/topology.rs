@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Topology {
     pub links: IndexMap<String, Link>,
@@ -19,10 +16,7 @@ pub struct Topology {
     pub trust: Trust,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Link {
     pub subnet: String,
@@ -34,10 +28,7 @@ pub struct Link {
     pub exempt_from_proxy: bool,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkBinding {
     pub address: String,
@@ -55,18 +46,7 @@ fn default_link_role() -> LinkRole {
     LinkRole::Client
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug), compare(PartialEq))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum LinkRole {
     #[serde(rename = "server")]
     Server,
@@ -76,10 +56,7 @@ pub enum LinkRole {
     Peer,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
     pub system: String,
@@ -109,18 +86,8 @@ fn default_availability_class() -> String {
     "unknown".to_string()
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+
 pub enum DeviceType {
     #[serde(rename = "server")]
     Server,
@@ -130,10 +97,7 @@ pub enum DeviceType {
     Laptop,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Network {
     #[serde(default)]
@@ -156,10 +120,7 @@ pub struct Network {
     pub wake_on_lan_interface: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rebuild {
     #[serde(default)]
@@ -170,10 +131,7 @@ pub struct Rebuild {
     pub build_cache: BuildCache,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildCache {
     #[serde(default)]
@@ -184,10 +142,7 @@ pub struct BuildCache {
     pub key_prefix: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
     #[serde(default)]
@@ -200,10 +155,7 @@ pub struct User {
     pub signing_key: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Gpu {
     #[serde(default)]
@@ -212,20 +164,14 @@ pub struct Gpu {
     pub dgpu: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Storage {
     #[serde(default)]
     pub data_root: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Domains {
     #[serde(default)]
@@ -244,10 +190,7 @@ pub struct Domains {
     pub redirects: Vec<Redirect>,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicHost {
     pub fqdn: String,
@@ -257,10 +200,7 @@ pub struct DynamicHost {
     pub zone: Option<String>,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PagesSite {
     pub subdomain: String,
@@ -268,10 +208,7 @@ pub struct PagesSite {
     pub cname_target: String,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Redirect {
     pub from: String,
@@ -294,10 +231,7 @@ fn default_publish_cname() -> bool {
     true
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
     #[serde(default = "default_ssh_port")]
@@ -316,10 +250,7 @@ pub struct Services {
     pub email_identities: EmailIdentities,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthIntent {
     #[serde(default)]
@@ -328,10 +259,7 @@ pub struct HealthIntent {
     pub endpoint: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceIntent {
     pub name: String,
@@ -349,30 +277,21 @@ pub struct ServiceIntent {
     pub health: HealthIntent,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Deployment {
     #[serde(default)]
     pub service_intents: Vec<ServiceIntent>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Trust {
     #[serde(default)]
     pub ssh_known_hosts: Vec<SshKnownHost>,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshKnownHost {
     pub host_names: Vec<String>,
@@ -385,10 +304,7 @@ fn default_ssh_port() -> u16 {
     1337
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReverseProxyService {
     pub name: String,
@@ -419,10 +335,7 @@ pub struct ReverseProxyService {
     pub routes: Vec<ReverseProxyRoute>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReverseProxyRoute {
     #[serde(default)]
@@ -493,10 +406,7 @@ impl ReverseProxyService {
     }
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StaticFileService {
     pub name: String,
@@ -510,10 +420,7 @@ pub struct StaticFileService {
     pub dns_comment: Option<String>,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalService {
     pub name: String,
@@ -524,10 +431,7 @@ pub struct InternalService {
     pub description: Option<String>,
 }
 
-#[derive(
-    Debug, Default, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmailIdentities {
     #[serde(default)]
@@ -540,77 +444,6 @@ pub struct EmailIdentities {
     pub brevo_login: Option<String>,
     #[serde(default)]
     pub postmaster_email: Option<String>,
-}
-
-/// Load a legacy unversioned Topology rkyv archive (zero-copy access).
-///
-/// Prefer [`load_topology_archive_from_rkyv`] for persisted or cross-release
-/// bytes; this function remains for callers of the original raw format.
-pub fn load_topology_from_rkyv(
-    bytes: &[u8],
-) -> Result<&rkyv::Archived<Topology>, rkyv::rancor::Error> {
-    rkyv::access::<rkyv::Archived<Topology>, rkyv::rancor::Error>(bytes)
-}
-
-/// Version marker for the self-describing archive envelope.
-pub const TOPOLOGY_ARCHIVE_VERSION: u16 = 2;
-
-/// Versioned archive payload for consumers that need to persist topology
-/// archives across process or release boundaries.
-#[derive(
-    Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
-#[serde(rename_all = "camelCase")]
-pub struct TopologyArchive {
-    pub schema_version: u16,
-    pub topology: Topology,
-}
-
-/// Serialize a topology with an explicit archive schema version.
-pub fn archive_topology(topology: &Topology) -> Result<Vec<u8>, rkyv::rancor::Error> {
-    rkyv::to_bytes::<rkyv::rancor::Error>(&TopologyArchive {
-        schema_version: TOPOLOGY_ARCHIVE_VERSION,
-        topology: topology.clone(),
-    })
-    .map(|bytes| bytes.to_vec())
-}
-
-#[derive(Debug)]
-pub enum TopologyArchiveError {
-    Archive(rkyv::rancor::Error),
-    UnsupportedVersion(u16),
-}
-
-impl std::fmt::Display for TopologyArchiveError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Archive(error) => write!(formatter, "archive decode failed: {error}"),
-            Self::UnsupportedVersion(version) => {
-                write!(
-                    formatter,
-                    "unsupported topology archive schema version {version}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for TopologyArchiveError {}
-
-/// Load a versioned topology archive and reject versions this library cannot
-/// interpret.
-pub fn load_topology_archive_from_rkyv(
-    bytes: &[u8],
-) -> Result<&rkyv::Archived<TopologyArchive>, TopologyArchiveError> {
-    let archive = rkyv::access::<rkyv::Archived<TopologyArchive>, rkyv::rancor::Error>(bytes)
-        .map_err(TopologyArchiveError::Archive)?;
-    if archive.schema_version != TOPOLOGY_ARCHIVE_VERSION {
-        return Err(TopologyArchiveError::UnsupportedVersion(
-            archive.schema_version.into(),
-        ));
-    }
-    Ok(archive)
 }
 
 /// Render a modular topology entrypoint into a self-contained compatibility
@@ -790,6 +623,20 @@ pub(crate) fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
     None
 }
 
+/// Flatten a modular topology entrypoint into a temporary file the Pkl
+/// evaluator can read.
+pub(crate) fn flattened_tempfile(path: &Path) -> miette::Result<tempfile::NamedTempFile> {
+    let flattened = flatten_modular_topology(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| miette::miette!("create temporary topology: {error}"))?;
+    temporary
+        .write_all(flattened.as_bytes())
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|error| miette::miette!("write temporary topology: {error}"))?;
+    Ok(temporary)
+}
+
 /// Evaluate a .pkl topology file and produce a typed Topology value.
 pub async fn load_topology(path: &Path) -> miette::Result<Topology> {
     load_topology_with_options(path, pklx::pklr::EvalOptions::default()).await
@@ -801,14 +648,7 @@ pub async fn load_topology_with_options(
     options: pklx::pklr::EvalOptions,
 ) -> miette::Result<Topology> {
     if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
-        let flattened = flatten_modular_topology(path)?;
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|error| miette::miette!("create temporary topology: {error}"))?;
-        temporary
-            .write_all(flattened.as_bytes())
-            .and_then(|_| temporary.as_file().sync_all())
-            .map_err(|error| miette::miette!("write temporary topology: {error}"))?;
+        let temporary = flattened_tempfile(path)?;
         return crate::pkl::load_with_options(temporary.path(), options).await;
     }
     crate::pkl::load_with_options(path, options).await
@@ -817,7 +657,6 @@ pub async fn load_topology_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indexmap::IndexMap;
     use std::fs;
 
     #[test]
@@ -1016,31 +855,5 @@ trust = new S.Trust {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn versioned_archive_round_trips_with_schema_marker() {
-        let topology = Topology {
-            links: IndexMap::new(),
-            hosts: IndexMap::new(),
-            domains: Domains {
-                zones: vec!["example.test".to_string()],
-                mail_subdomain: None,
-                vpn_subdomain: None,
-                managed_zones: vec![],
-                dynamic_hosts: vec![],
-                pages_sites: vec![],
-                redirects: vec![],
-            },
-            services: Services::default(),
-            deployment: Deployment::default(),
-            trust: Trust::default(),
-        };
-
-        let bytes = archive_topology(&topology).expect("archive topology");
-        let archived = load_topology_archive_from_rkyv(&bytes).expect("load archive");
-        assert_eq!(archived.schema_version, TOPOLOGY_ARCHIVE_VERSION);
-        assert_eq!(archived.topology.links.len(), 0);
-        assert_eq!(archived.topology.hosts.len(), 0);
     }
 }

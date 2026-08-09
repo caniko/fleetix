@@ -5,11 +5,11 @@
 // not re-prompted on every scan. The first-run baseline with
 // reviewExisting = false also lands here.
 
+use crate::fsutil::atomic_write;
 use miette::{miette, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const STATE_VERSION: u16 = 1;
@@ -56,30 +56,11 @@ impl State {
     }
 
     pub fn save(&self, state_dir: &Path) -> Result<()> {
-        fs::create_dir_all(state_dir)
-            .map_err(|error| miette!("create {}: {error}", state_dir.display()))?;
         let path = state_dir.join("state.json");
         let contents = serde_json::to_string_pretty(self)
             .map_err(|error| miette!("serialize state: {error}"))?;
-        atomic_write(&path, &contents)
+        atomic_write(&path, contents.as_bytes())
     }
-}
-
-fn atomic_write(path: &Path, contents: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| miette!("create temporary state: {error}"))?;
-    temporary
-        .write_all(contents.as_bytes())
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| miette!("write {}: {error}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| miette!("replace {}: {}", path.display(), error.error))?;
-    Ok(())
 }
 
 /// Resolve the observer state directory: `$XDG_STATE_HOME/fleetix/trust` or

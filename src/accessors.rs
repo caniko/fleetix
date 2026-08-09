@@ -2,7 +2,6 @@ use crate::topology::{
     DynamicHost, Link, LinkBinding, LinkRole, NormalizedReverseProxyRoute, ReverseProxyService,
     Topology,
 };
-use std::net::IpAddr;
 
 /// Accessor methods on Topology — derived from the link schema.
 impl Topology {
@@ -56,72 +55,7 @@ impl Topology {
         Some(format!("{}:{}", server_addr, link.port))
     }
 
-    /// Listen address for a given host on a given link (address/subnet).
-    pub fn listen_address(&self, host_name: &str, link_name: &str) -> Option<String> {
-        let host = self.hosts.get(host_name)?;
-        let link = self.links.get(link_name)?;
-        let binding = host.links.get(link_name)?;
-        let prefix = cidr_prefix_len(&link.subnet)?;
-        Some(format!("{}/{}", binding.address, prefix))
-    }
-
-    /// Allowed IPs for a host on a given link ("address/32").
-    pub fn allowed_ips(&self, host_name: &str, link_name: &str) -> Option<Vec<String>> {
-        let host = self.hosts.get(host_name)?;
-        let binding = host.links.get(link_name)?;
-        Some(vec![format!(
-            "{}/{}",
-            binding.address,
-            address_prefix_len(&binding.address)?
-        )])
-    }
-
-    /// Client bindings for a link (all non-server bindings).
-    pub fn link_clients(&self, name: &str) -> Vec<(&str, &LinkBinding)> {
-        self.hosts
-            .iter()
-            .filter_map(|(hname, host)| {
-                host.links
-                    .get(name)
-                    .filter(|b| b.role == LinkRole::Client)
-                    .map(|b| (hname.as_str(), b))
-            })
-            .collect()
-    }
-
-    /// Server's peer list for a link (every client binding as a WireGuard peer).
-    pub fn link_peers(&self, name: &str) -> Vec<PeerEntry<'_>> {
-        let server_host = self.link_server_host(name);
-        self.hosts
-            .iter()
-            .filter(|(hname, _)| Some(hname.as_str()) != server_host)
-            .filter_map(|(hname, host)| {
-                let binding = host.links.get(name)?;
-                let address = binding.address.clone();
-                let prefix = address_prefix_len(&address)?;
-                Some(PeerEntry {
-                    hostname: hname,
-                    public_key: binding.public_key.as_deref().unwrap_or_default(),
-                    allowed_ips: vec![format!("{address}/{prefix}")],
-                    address,
-                })
-            })
-            .collect()
-    }
-
     /// Best SSH address for a host (prefer LAN, then WG, then direct-link).
-    pub fn best_ssh_address(&self, host_name: &str) -> Option<&str> {
-        self.resolve_host_address(
-            host_name,
-            &[
-                AddressKind::Lan,
-                AddressKind::Link("wg-home".to_string()),
-                AddressKind::DirectLink,
-            ],
-        )
-    }
-
-    /// Resolve a host address using an explicit ordered address policy.
     pub fn resolve_host_address<'a>(
         &'a self,
         host_name: &str,
@@ -447,33 +381,6 @@ pub struct CnameIntent {
     pub proxied: bool,
     pub comment: Option<String>,
     pub source: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub struct PeerEntry<'a> {
-    pub hostname: &'a str,
-    pub public_key: &'a str,
-    pub allowed_ips: Vec<String>,
-    pub address: String,
-}
-
-fn cidr_prefix_len(subnet: &str) -> Option<u8> {
-    let (address, prefix) = subnet.split_once('/')?;
-    let ip = address.parse::<IpAddr>().ok()?;
-    let prefix = prefix.parse::<u8>().ok()?;
-    (prefix
-        <= match ip {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        })
-    .then_some(prefix)
-}
-
-fn address_prefix_len(address: &str) -> Option<u8> {
-    Some(match address.parse::<IpAddr>().ok()? {
-        IpAddr::V4(_) => 32,
-        IpAddr::V6(_) => 128,
-    })
 }
 
 fn format_endpoint_address(address: &str) -> String {

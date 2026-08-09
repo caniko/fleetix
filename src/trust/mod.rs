@@ -1,10 +1,9 @@
 // Trust observation framework.
 //
-// A `TrustComponent` watches a local trust store (e.g. OpenSSH known_hosts),
-// classifies its entries against the declared fleet trust, and surfaces
-// proposals that can be integrated into the consumer-owned `Trust.pkl`
-// topology source. Components are registered at compile time; the CLI and the
-// Home Manager observer drive the shared scan/integrate/ignore pipeline.
+// The OpenSSH known_hosts observer classifies store entries against the
+// declared fleet trust and surfaces proposals that can be integrated into the
+// consumer-owned `Trust.pkl` topology source. The CLI and the Home Manager
+// observer drive the shared scan/integrate/ignore pipeline.
 
 pub mod notify;
 pub mod openssh;
@@ -12,10 +11,8 @@ pub mod patch;
 pub mod state;
 
 use crate::topology::Topology;
-use miette::Result;
 use openssh::Entry;
 use std::collections::HashMap;
-use std::path::Path;
 
 /// Index of declared host keys: hostname (lowercased) -> key texts.
 pub struct DeclaredTrust {
@@ -74,7 +71,7 @@ impl DeclaredTrust {
     }
 }
 
-/// One trust component's observation of its store.
+/// One observation of a trust store.
 pub struct Observation {
     /// Undeclared entries that may be integrated.
     pub proposals: Vec<Entry>,
@@ -83,35 +80,4 @@ pub struct Observation {
     pub conflicts: Vec<Entry>,
     /// Lines that can never be declared (hashed hostnames, markers, garbage).
     pub skipped: Vec<String>,
-}
-
-/// A trust store component. Implementations are stateless; scan state lives
-/// in the caller-provided [`state::State`].
-pub trait TrustComponent: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn observe(&self, path: &Path, declared: &DeclaredTrust) -> Result<Observation>;
-}
-
-/// The OpenSSH known_hosts component.
-pub struct OpenSshKnownHosts;
-
-/// Compile-time registry of trust components.
-pub fn components() -> Vec<&'static dyn TrustComponent> {
-    vec![&OpenSshKnownHosts]
-}
-
-/// Full scan pipeline: observe every registered component and merge results.
-pub fn scan(path: &Path, declared: &DeclaredTrust) -> Result<Observation> {
-    let mut merged = Observation {
-        proposals: Vec::new(),
-        conflicts: Vec::new(),
-        skipped: Vec::new(),
-    };
-    for component in components() {
-        let observation = component.observe(path, declared)?;
-        merged.proposals.extend(observation.proposals);
-        merged.conflicts.extend(observation.conflicts);
-        merged.skipped.extend(observation.skipped);
-    }
-    Ok(merged)
 }

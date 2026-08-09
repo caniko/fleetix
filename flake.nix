@@ -43,9 +43,10 @@
 
     formatter = forSystems (system: (pkgsFor system).alejandra);
 
-    # NixOS module for consuming fleetix topology from the sidecar
-    nixosModules.topology = import ./modules/nixos.nix {fleetixLib = self.lib;};
-    homeModules.topology = import ./modules/home-manager.nix;
+    # NixOS and Home Manager modules for consuming fleetix topology from the
+    # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
+    nixosModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
+    homeModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     homeModules.trust-observer = import ./modules/trust-observer.nix;
 
     packages = forSystems (
@@ -62,15 +63,6 @@
           doCheck = true;
           cargoExtraArgs = "--features cli";
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-        };
-
-        # Flake app: evaluate a .pkl topology and produce a Nix expression
-        evalPkl = pkgs.writeShellApplication {
-          name = "fleetix-eval-pkl";
-          runtimeInputs = [fleetixCrate];
-          text = ''
-            fleetix eval "$@"
-          '';
         };
 
         # Export any Pkl file to an importable Nix expression sidecar.
@@ -117,7 +109,7 @@
         };
       in {
         default = fleetixCrate;
-        inherit fleetixCrate evalPkl exportNix pklToNix;
+        inherit fleetixCrate exportNix pklToNix;
       }
     );
 
@@ -126,11 +118,6 @@
         type = "app";
         program = "${self.packages.${system}.fleetixCrate}/bin/fleetix";
         meta.description = "Evaluate and export Fleetix Pkl topology";
-      };
-      eval-pkl = {
-        type = "app";
-        program = "${self.packages.${system}.evalPkl}/bin/fleetix-eval-pkl";
-        meta.description = "Evaluate a Pkl topology through Fleetix";
       };
       export-nix = {
         type = "app";
@@ -512,7 +499,10 @@
             modules = [
               assertionsModule
               self.nixosModules.topology
-              {fleetix.enable = true; fleetix.value = topology;}
+              {
+                fleetix.enable = true;
+                fleetix.value = topology;
+              }
             ];
           };
           integratedHome = nixpkgs.lib.evalModules {
@@ -527,7 +517,10 @@
               assertionsModule
               self.homeModules.topology
               {_module.args.osConfig = null;}
-              {fleetix.enable = true; fleetix.value = topology;}
+              {
+                fleetix.enable = true;
+                fleetix.value = topology;
+              }
             ];
           };
         in
@@ -544,51 +537,39 @@
     devShells = forSystems (
       system: let
         pkgs = pkgsFor system;
-        toolchain = rs-harbor.lib.mkToolchain {inherit pkgs; toolchainProfile = "nightly";};
+        toolchain = rs-harbor.lib.mkToolchain {
+          inherit pkgs;
+          toolchainProfile = "nightly";
+        };
         cargoConfig = rs-harbor.lib.mkCargoConfig {inherit pkgs;};
         cross = rs-harbor.lib.mkCross {inherit pkgs system;};
-        stableToolchain = pkgs.rust-bin.stable."1.96.1".default;
-        stableCargoConfig = rs-harbor.lib.mkCargoConfig {
-          inherit pkgs;
-          channel = "stable";
-        };
-        stableCross = rs-harbor.lib.mkCross {
-          inherit pkgs system;
-          enableOsxcross = false;
-        };
-        msrvToolchain = pkgs.rust-bin.stable."1.88.0".default;
-        msrvCargoConfig = rs-harbor.lib.mkCargoConfig {
-          inherit pkgs;
-          channel = "stable";
-        };
-        msrvCross = rs-harbor.lib.mkCross {
-          inherit pkgs system;
-          enableOsxcross = false;
-        };
+        compatShell = channel: let
+          toolchain = pkgs.rust-bin.stable.${channel}.default;
+          cargoConfig = rs-harbor.lib.mkCargoConfig {
+            inherit pkgs;
+            channel = "stable";
+          };
+          cross = rs-harbor.lib.mkCross {
+            inherit pkgs system;
+            enableOsxcross = false;
+          };
+        in
+          rs-harbor.lib.mkDevShell {
+            inherit pkgs;
+            craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
+            inherit cargoConfig cross;
+            packages = [toolchain];
+            enableWindowsEnv = false;
+            enableOsxcrossEnv = false;
+          };
       in
         (rs-harbor.lib.mkDevShells {
           inherit pkgs cross cargoConfig;
           inherit (toolchain) craneLib;
         })
         // {
-          stable = rs-harbor.lib.mkDevShell {
-            inherit pkgs;
-            craneLib = (crane.mkLib pkgs).overrideToolchain (_: stableToolchain);
-            cargoConfig = stableCargoConfig;
-            cross = stableCross;
-            packages = [stableToolchain];
-            enableWindowsEnv = false;
-            enableOsxcrossEnv = false;
-          };
-          msrv = rs-harbor.lib.mkDevShell {
-            inherit pkgs;
-            craneLib = (crane.mkLib pkgs).overrideToolchain (_: msrvToolchain);
-            cargoConfig = msrvCargoConfig;
-            cross = msrvCross;
-            packages = [msrvToolchain];
-            enableWindowsEnv = false;
-            enableOsxcrossEnv = false;
-          };
+          stable = compatShell "1.96.1";
+          msrv = compatShell "1.88.0";
         }
     );
   };

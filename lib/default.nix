@@ -46,7 +46,8 @@
     linkName,
     hostNames,
   }:
-    builtins.length hostNames > 1
+    builtins.length hostNames
+    > 1
     && builtins.all (name: builtins.elem name (hostsOnLinkImpl topology linkName)) hostNames;
 
   lookupReverseProxyService = topology: serviceName:
@@ -59,22 +60,20 @@
       })
       entries);
 
-  stripPklValue = value:
+  stripPklClass = value:
     if builtins.isAttrs value
     then
       builtins.listToAttrs (
         builtins.filter (entry: entry.value != null) (
           builtins.map (name: {
             inherit name;
-            value = stripPklValue value.${name};
+            value = stripPklClass value.${name};
           }) (builtins.attrNames (removeAttrs value ["__pkl_class"]))
         )
       )
     else if builtins.isList value
-    then map stripPklValue value
+    then map stripPklClass value
     else value;
-
-  stripPklClass = stripPklValue;
 
   hostInZoneImpl = {
     fqdn,
@@ -234,7 +233,10 @@ in rec {
         else if name == ""
         then zone
         else "${name}.${zone}";
-      primaryZone = if zones == [] then null else builtins.head zones;
+      primaryZone =
+        if zones == []
+        then null
+        else builtins.head zones;
       mailDomain = primaryZone;
       mailHostname = hostDomain (tdom.mailSubdomain or "mail") primaryZone;
       vpnDomain = hostDomain (tdom.vpnSubdomain or "vpn") primaryZone;
@@ -369,14 +371,18 @@ in rec {
         else builtins.head topology.domains.zones;
     in
       builtins.concatMap (site: let
-        hostname = if fallbackZone == null then null else "${site.subdomain}.${fallbackZone}";
+        hostname =
+          if fallbackZone == null
+          then null
+          else "${site.subdomain}.${fallbackZone}";
         zone =
           if hostname == null
           then null
-          else domains.zoneForHost {
-            inherit topology;
-            fqdn = hostname;
-          };
+          else
+            domains.zoneForHost {
+              inherit topology;
+              fqdn = hostname;
+            };
       in
         if hostname == null || zone == null
         then []
@@ -457,10 +463,7 @@ in rec {
   links = {
     hostsShareLink = hostsShareLinkImpl;
 
-    normalize = {
-      topology,
-      domains ? null,
-    }: let
+    normalize = {topology}: let
       baseLinks = builtins.mapAttrs (linkName: link: let
         hostsOnLink = hostsOnLinkImpl topology linkName;
         serverNames =

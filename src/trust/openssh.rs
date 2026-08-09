@@ -10,6 +10,9 @@ use miette::{miette, Result};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+/// The OpenSSH known_hosts store.
+pub struct OpenSshKnownHosts;
+
 /// A single host-key line from known_hosts, ready for proposal or declaration.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,12 +57,9 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-impl super::TrustComponent for super::OpenSshKnownHosts {
-    fn name(&self) -> &'static str {
-        "openssh-known-hosts"
-    }
-
-    fn observe(&self, path: &Path, declared: &DeclaredTrust) -> Result<Observation> {
+impl OpenSshKnownHosts {
+    /// Observe a known_hosts store against the declared trust.
+    pub fn observe(&self, path: &Path, declared: &DeclaredTrust) -> Result<Observation> {
         let (entries, skipped) = parse_entries(path)?;
         let mut proposals = Vec::new();
         let mut conflicts = Vec::new();
@@ -222,8 +222,8 @@ fn fingerprint(key_text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::OpenSshKnownHosts;
     use super::*;
-    use crate::trust::TrustComponent;
 
     fn declared() -> DeclaredTrust {
         // Two declared fleet hosts + one declared trust entry.
@@ -253,9 +253,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("known_hosts");
         std::fs::write(&path, "new.example.test ssh-ed25519 AAAANewKey\n").unwrap();
-        let observation = super::super::OpenSshKnownHosts
-            .observe(&path, &declared())
-            .unwrap();
+        let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
         assert_eq!(observation.proposals.len(), 1);
         assert_eq!(observation.conflicts.len(), 0);
         assert_eq!(observation.proposals[0].host_names, ["new.example.test"]);
@@ -271,9 +269,7 @@ mod tests {
             "git.example.test ssh-ed25519 AAAADeclaredGitKey\natlas ssh-ed25519 AAAAtlasKey\n",
         )
         .unwrap();
-        let observation = super::super::OpenSshKnownHosts
-            .observe(&path, &declared())
-            .unwrap();
+        let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
         assert!(observation.proposals.is_empty());
         assert!(observation.conflicts.is_empty());
     }
@@ -308,9 +304,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("known_hosts");
         std::fs::write(&path, "atlas ssh-ed25519 AAAAEvilKey\n").unwrap();
-        let observation = super::super::OpenSshKnownHosts
-            .observe(&path, &declared())
-            .unwrap();
+        let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
         assert!(observation.proposals.is_empty());
         assert_eq!(observation.conflicts.len(), 1);
         assert_eq!(observation.conflicts[0].host_names, ["atlas"]);
@@ -325,9 +319,7 @@ mod tests {
             "|1|abc|def ssh-ed25519 AAAAHashed\n@revoked example.test ssh-ed25519 AAAARevoked\n",
         )
         .unwrap();
-        let observation = super::super::OpenSshKnownHosts
-            .observe(&path, &declared())
-            .unwrap();
+        let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
         assert!(observation.proposals.is_empty());
         assert!(observation.conflicts.is_empty());
         assert_eq!(observation.skipped.len(), 2);
@@ -343,9 +335,7 @@ mod tests {
             "just-two-fields\nok.example.test ssh-ed25519 notbase64!!!\n",
         )
         .unwrap();
-        let observation = super::super::OpenSshKnownHosts
-            .observe(&path, &declared())
-            .unwrap();
+        let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
         assert!(observation.proposals.is_empty());
         assert_eq!(observation.skipped.len(), 2);
     }

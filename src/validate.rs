@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum ValidationSeverity {
@@ -22,14 +22,30 @@ pub struct ValidationIssue {
 
 #[derive(Debug, Default, Serialize)]
 pub struct ValidationReport {
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
     pub issues: Vec<ValidationIssue>,
 }
 
 impl ValidationReport {
     pub fn is_ok(&self) -> bool {
-        self.errors.is_empty()
+        self.issues
+            .iter()
+            .all(|issue| issue.severity != ValidationSeverity::Error)
+    }
+
+    pub fn issues(&self) -> impl Iterator<Item = &ValidationIssue> {
+        self.issues.iter()
+    }
+
+    pub fn errors(&self) -> impl Iterator<Item = &ValidationIssue> {
+        self.issues
+            .iter()
+            .filter(|issue| issue.severity == ValidationSeverity::Error)
+    }
+
+    pub fn warnings(&self) -> impl Iterator<Item = &ValidationIssue> {
+        self.issues
+            .iter()
+            .filter(|issue| issue.severity == ValidationSeverity::Warning)
     }
 
     fn error(
@@ -39,14 +55,12 @@ impl ValidationReport {
         value: Option<String>,
         message: impl Into<String>,
     ) {
-        let message = message.into();
-        self.errors.push(message.clone());
         self.issues.push(ValidationIssue {
             severity: ValidationSeverity::Error,
             code: code.into(),
             path,
             value,
-            message,
+            message: message.into(),
         });
     }
 
@@ -57,14 +71,12 @@ impl ValidationReport {
         value: Option<String>,
         message: impl Into<String>,
     ) {
-        let message = message.into();
-        self.warnings.push(message.clone());
         self.issues.push(ValidationIssue {
             severity: ValidationSeverity::Warning,
             code: code.into(),
             path,
             value,
-            message,
+            message: message.into(),
         });
     }
 }
@@ -980,17 +992,17 @@ mod tests {
         };
 
         let report = validate(&topology);
-        assert!(report.warnings.iter().any(|warning| {
-            warning.contains("example.test.evil") && warning.contains("not in any managed zone")
+        assert!(report.warnings().any(|warning| {
+            warning.message.contains("example.test.evil")
+                && warning.message.contains("not in any managed zone")
         }));
         assert!(report.issues.iter().any(|issue| {
             issue.code == "dns.dynamic_host_outside_managed_zone"
                 && issue.value.as_deref() == Some("example.test.evil")
         }));
         assert!(!report
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("api.example.test")));
+            .warnings()
+            .any(|warning| warning.message.contains("api.example.test")));
     }
 
     #[test]

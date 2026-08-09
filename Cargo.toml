@@ -21,16 +21,11 @@ required-features = ["cli"]
 pklx = { version = "0.1.0", git = "https://codeberg.org/caniko/nix-pklx.git" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 miette = "7"
-thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
-rkyv = { version = "0.8", features = ["indexmap-2"] }
 tempfile = "3"
 sha2 = "0.10"
-
-[dev-dependencies]
-ron = "0.8"
 
 [features]
 default = ["cli"]
