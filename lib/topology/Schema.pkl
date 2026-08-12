@@ -47,13 +47,22 @@ class User {
   signingKey: String? = null
 }
 
+class GpuMedia {
+  vendor: "amd" | "intel" | "nvidia"
+  renderNode: String
+  libvaDriver: String
+}
+
 class Gpu {
   igpu: String? = null
   dgpu: String? = null
+  media: GpuMedia? = null
 }
 
 class Storage {
   dataRoot: String? = null
+  projectStateRoot: String? = null
+  flakeRoot: String? = null
 }
 
 class Host {

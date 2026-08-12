@@ -36,11 +36,28 @@ hosts = new {
       }
     }
   }
+  ["laptop"] = new S.Host {
+    system = "x86_64-linux"
+    deviceType = "laptop"
+    gpu = new S.Gpu {
+      igpu = "amd"
+      dgpu = "nvidia"
+      media = new S.GpuMedia {
+        vendor = "amd"
+        renderNode = "/dev/dri/by-path/pci-0000:65:00.0-render"
+        libvaDriver = "radeonsi"
+      }
+    }
+    storage = new S.Storage {
+      dataRoot = "/data/can"
+      projectStateRoot = "/data/ProjectState"
+      flakeRoot = "/data/can/fleet"
+    }
+  }
 }
 
 domains = new S.Domains {
   zones = new Listing { "example.test" }
-  managedZones = new Listing { "example.test" }
   dynamicHosts = new Listing {
     new S.DynamicHost { fqdn = "example.test" }
     new S.DynamicHost { fqdn = "mesh.example.test" }

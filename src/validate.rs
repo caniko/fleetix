@@ -2,6 +2,7 @@ use crate::topology::{LinkRole, Topology};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -87,6 +88,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
 
     validate_identifiers(topology, &mut report);
     validate_domains(topology, &mut report);
+    validate_host_hardware(topology, &mut report);
     validate_deployment(topology, &mut report);
 
     // 1. Every link has at most one server
@@ -896,6 +898,60 @@ fn validate_service_hostname(
     }
 }
 
+fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
+    for (host_name, host) in &topology.hosts {
+        for (field, value) in [
+            ("dataRoot", host.storage.data_root.as_deref()),
+            (
+                "projectStateRoot",
+                host.storage.project_state_root.as_deref(),
+            ),
+            ("flakeRoot", host.storage.flake_root.as_deref()),
+        ] {
+            if let Some(value) = value {
+                if !Path::new(value).is_absolute() {
+                    report.error(
+                        "host.relative_storage_path",
+                        Some(format!("hosts.{host_name}.storage.{field}")),
+                        Some(value.to_string()),
+                        format!("host '{host_name}' storage.{field} must be an absolute path"),
+                    );
+                }
+            }
+        }
+
+        if let Some(media) = &host.gpu.media {
+            if !matches!(media.vendor.as_str(), "amd" | "intel" | "nvidia") {
+                report.error(
+                    "host.invalid_gpu_media_vendor",
+                    Some(format!("hosts.{host_name}.gpu.media.vendor")),
+                    Some(media.vendor.clone()),
+                    format!(
+                        "host '{host_name}' GPU media vendor '{}' is unsupported",
+                        media.vendor
+                    ),
+                );
+            }
+            if !media.render_node.starts_with("/dev/dri/") {
+                report.error(
+                    "host.invalid_gpu_media_render_node",
+                    Some(format!("hosts.{host_name}.gpu.media.renderNode")),
+                    Some(media.render_node.clone()),
+                    format!("host '{host_name}' GPU media renderNode must be under /dev/dri/"),
+                );
+            }
+            if media.libva_driver.trim().is_empty() {
+                report.error(
+                    "host.empty_gpu_media_driver",
+                    Some(format!("hosts.{host_name}.gpu.media.libvaDriver")),
+                    Some(media.libva_driver.clone()),
+                    format!("host '{host_name}' GPU media libvaDriver must not be empty"),
+                );
+            }
+        }
+    }
+}
+
 fn valid_hostname(value: &str) -> bool {
     if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
         return false;
@@ -1141,6 +1197,45 @@ mod tests {
             "service.route_invalid_port",
             "service.route_strip_prefix_not_absolute",
             "service.route_duplicate_matcher",
+        ] {
+            assert!(
+                report.issues.iter().any(|issue| issue.code == code),
+                "missing validation issue {code}: {:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn validates_laptop_media_route_and_storage_paths() {
+        let mut topology = Topology::default();
+        topology.hosts.insert(
+            "nomad".to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
+                gpu: crate::topology::Gpu {
+                    media: Some(crate::topology::GpuMedia {
+                        vendor: "vulkan".to_string(),
+                        render_node: "/sys/class/drm/renderD128".to_string(),
+                        libva_driver: String::new(),
+                    }),
+                    ..Default::default()
+                },
+                storage: crate::topology::Storage {
+                    project_state_root: Some("ProjectState".to_string()),
+                    flake_root: Some("/data/can/canix".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let report = validate(&topology);
+        for code in [
+            "host.invalid_gpu_media_vendor",
+            "host.invalid_gpu_media_render_node",
+            "host.empty_gpu_media_driver",
+            "host.relative_storage_path",
         ] {
             assert!(
                 report.issues.iter().any(|issue| issue.code == code),
