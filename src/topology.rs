@@ -162,6 +162,16 @@ pub struct Gpu {
     pub igpu: Option<String>,
     #[serde(default)]
     pub dgpu: Option<String>,
+    #[serde(default)]
+    pub media: Option<GpuMedia>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuMedia {
+    pub vendor: String,
+    pub render_node: String,
+    pub libva_driver: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -169,6 +179,10 @@ pub struct Gpu {
 pub struct Storage {
     #[serde(default)]
     pub data_root: Option<String>,
+    #[serde(default)]
+    pub project_state_root: Option<String>,
+    #[serde(default)]
+    pub flake_root: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
