@@ -92,64 +92,121 @@ class Redirect {
   preservePath: Boolean = true
 }
 
+class DnsRecord {
+  name: String
+  type: String
+  data: String? = null
+  secret: String? = null
+  preference: Int? = null
+  proxied: Boolean = false
+  ttlAuto: Boolean = true
+  comment: String? = null
+}
+
+class DnsExclude {
+  name: String
+  type: String
+}
+
+class DnsZone {
+  name: String
+  defaultTtl: Int = 300
+  mode: String = "lenient"
+  records: Listing<DnsRecord> = new Listing {}
+  exclude: Listing<DnsExclude> = new Listing {}
+}
+
 class Domains {
   zones: Listing<String> = new Listing {}
   mailSubdomain: String? = null
   vpnSubdomain: String? = null
   managedZones: Listing<String> = new Listing {}
   dynamicHosts: Listing<DynamicHost> = new Listing {}
+  dnsZones: Listing<DnsZone> = new Listing {}
   pagesSites: Listing<PagesSite> = new Listing {}
   redirects: Listing<Redirect> = new Listing {}
 }
 
-class ReverseProxyService {
-  name: String
-  hostname: String? = null
+typealias EndpointTransport = "tcp" | "http" | "https" | "h2c"
+typealias EndpointBind = "loopback" | "lan"
+
+class Endpoint {
+  targetHost: String
   port: UInt16
-  targetHost: String? = null
-  proxied: Boolean = false
-  cloudflareProxied: Boolean = false
-  publishCname: Boolean = true
-  vpnOnly: Boolean = false
-  lanExposed: Boolean = false
-  upstreamScheme: String? = null
+  transport: EndpointTransport
+  bind: EndpointBind
+  remoteVia: String? = null
   tlsServerName: String? = null
-  serviceHost: String? = null
-  zone: String? = null
-  routes: Listing<ReverseProxyRoute> = new Listing {}
+  tcpProbe: Boolean = true
 }
 
-class ReverseProxyRoute {
-  paths: Listing<String> = new Listing {}
-  targetHost: String? = null
-  port: UInt16? = null
-  upstreamScheme: String? = null
-  tlsServerName: String? = null
+typealias PathMatch = ExactPathMatch | PrefixPathMatch
+
+class ExactPathMatch {
+  type: "exact" = "exact"
+  value: String
+}
+
+class PrefixPathMatch {
+  type: "prefix" = "prefix"
+  value: String
+}
+
+class HttpMatch {
+  paths: Listing<PathMatch> = new Listing {}
+  absentQueryParams: Listing<String> = new Listing {}
+}
+
+typealias HttpAction = ProxyAction | FilesAction | RedirectAction | RespondAction
+
+class ProxyAction {
+  type: "proxy" = "proxy"
+  endpoint: String
   stripPrefix: String? = null
-  monitoringIdentity: String? = null
 }
 
-class StaticFileService {
-  name: String
-  hostname: String? = null
-  kind: String? = null
-  cloudflareProxied: Boolean = false
-  dnsComment: String? = null
+class FilesAction {
+  type: "files" = "files"
+  rootRef: String
+  indexNames: Listing<String> = new Listing { "index.html" }
 }
 
-class InternalService {
-  name: String
-  port: UInt16
-  targetHost: String? = null
-  description: String? = null
+class RedirectAction {
+  type: "redirect" = "redirect"
+  to: String
+  status: UInt16 = 301
+  preserveUri: Boolean = true
 }
 
-class EmailIdentities {
-  adminEmail: String? = null
-  noreplyEmail: String? = null
-  cloudflareContactEmail: String? = null
-  brevoLogin: String? = null
-  postmasterEmail: String? = null
+class RespondAction {
+  type: "respond" = "respond"
+  status: UInt16
+  body: String? = null
+}
+
+class HttpRoute {
+  match: HttpMatch
+  action: HttpAction
+  authPolicy: String? = null
+  responseHeaders: Mapping<String, Listing<String>> = new {}
+}
+
+typealias IngressScope = "public" | "vpn"
+
+class IngressGroup {
+  scope: IngressScope
+  hosts: Listing<String>
+}
+
+typealias HttpAccess = "cloudflare" | "direct" | "vpn"
+typealias DnsPublication = "managed" | "external" | "none"
+
+class HttpSite {
+  hostname: String
+  ingress: String
+  access: HttpAccess
+  dnsPublication: DnsPublication
+  routes: Listing<HttpRoute>
 }
 
 class PagesSite {
@@ -159,13 +216,8 @@ class PagesSite {
 }
 
 class Services {
-  sshPort: UInt16 = 1337
-  hostSshKeyPath: String? = null
-  hostSshPubKeyPath: String? = null
-  reverseProxyServices: Listing<ReverseProxyService> = new Listing {}
-  staticFileServices: Listing<StaticFileService> = new Listing {}
-  internalServices: Listing<InternalService> = new Listing {}
-  emailIdentities: EmailIdentities = new EmailIdentities {}
+  endpoints: Mapping<String, Endpoint> = new {}
+  httpSites: Mapping<String, HttpSite> = new {}
 }
 
 class HealthIntent {
@@ -185,6 +237,7 @@ class ServiceIntent {
 
 class Deployment {
   serviceIntents: Listing<ServiceIntent> = new Listing {}
+  ingressGroups: Mapping<String, IngressGroup> = new {}
 }
 
 class SshKnownHost {

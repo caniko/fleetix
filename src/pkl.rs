@@ -100,6 +100,7 @@ nested = new {
         std::fs::write(
             &path,
             r#"
+schemaVersion = 2
 links = new {
   ["wg-mesh"] = new {
     subnet = "10.44.0.0/24"

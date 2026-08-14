@@ -1,7 +1,8 @@
 use crate::topology::{
-    DynamicHost, Link, LinkBinding, LinkRole, NormalizedReverseProxyRoute, ReverseProxyService,
-    Topology,
+    DnsPublication, DynamicHost, Endpoint, EndpointBind, HttpAccess, HttpSite, Link, LinkBinding,
+    LinkRole, Topology,
 };
+use std::net::IpAddr;
 
 /// Accessor methods on Topology — derived from the link schema.
 impl Topology {
@@ -55,6 +56,72 @@ impl Topology {
         Some(format!("{}:{}", server_addr, link.port))
     }
 
+    /// Listen address for a host on a link (address/subnet).
+    pub fn listen_address(&self, host_name: &str, link_name: &str) -> Option<String> {
+        let host = self.hosts.get(host_name)?;
+        let link = self.links.get(link_name)?;
+        let binding = host.links.get(link_name)?;
+        Some(format!(
+            "{}/{}",
+            binding.address,
+            cidr_prefix_len(&link.subnet)?
+        ))
+    }
+
+    /// Allowed IPs for a host on a link.
+    pub fn allowed_ips(&self, host_name: &str, link_name: &str) -> Option<Vec<String>> {
+        let binding = self.hosts.get(host_name)?.links.get(link_name)?;
+        Some(vec![format!(
+            "{}/{}",
+            binding.address,
+            address_prefix_len(&binding.address)?
+        )])
+    }
+
+    /// Client bindings for a link.
+    pub fn link_clients(&self, name: &str) -> Vec<(&str, &LinkBinding)> {
+        self.hosts
+            .iter()
+            .filter_map(|(host_name, host)| {
+                host.links
+                    .get(name)
+                    .filter(|binding| binding.role == LinkRole::Client)
+                    .map(|binding| (host_name.as_str(), binding))
+            })
+            .collect()
+    }
+
+    /// Server peer entries for a link.
+    pub fn link_peers(&self, name: &str) -> Vec<PeerEntry<'_>> {
+        let server_host = self.link_server_host(name);
+        self.hosts
+            .iter()
+            .filter(|(host_name, _)| Some(host_name.as_str()) != server_host)
+            .filter_map(|(host_name, host)| {
+                let binding = host.links.get(name)?;
+                let address = binding.address.clone();
+                Some(PeerEntry {
+                    hostname: host_name,
+                    public_key: binding.public_key.as_deref().unwrap_or_default(),
+                    allowed_ips: vec![format!("{address}/{}", address_prefix_len(&address)?)],
+                    address,
+                })
+            })
+            .collect()
+    }
+
+    /// Best SSH address for a host: LAN, WireGuard, then direct-link.
+    pub fn best_ssh_address(&self, host_name: &str) -> Option<&str> {
+        self.resolve_host_address(
+            host_name,
+            &[
+                AddressKind::Lan,
+                AddressKind::Link("wg-home".to_string()),
+                AddressKind::DirectLink,
+            ],
+        )
+    }
+
     /// Best SSH address for a host (prefer LAN, then WG, then direct-link).
     pub fn resolve_host_address<'a>(
         &'a self,
@@ -73,84 +140,39 @@ impl Topology {
         })
     }
 
-    /// Build a service endpoint for a reverse proxy service target.
-    pub fn service_endpoint(
-        &self,
-        service_name: &str,
-        policy: &[AddressKind],
-        scheme: Option<&str>,
-    ) -> Option<ServiceEndpoint<'_>> {
-        let service = self
-            .services
-            .reverse_proxy_services
-            .iter()
-            .find(|svc| svc.name == service_name)?;
-        let target_host = service.target_host.as_deref()?;
-        let address = self.resolve_host_address(target_host, policy)?;
-        let scheme = scheme
-            .or(service.upstream_scheme.as_deref())
-            .unwrap_or("http")
-            .to_string();
-        let url = format!(
-            "{scheme}://{}:{}",
-            format_endpoint_address(address),
-            service.port
-        );
-
-        Some(ServiceEndpoint {
-            service: service.name.as_str(),
-            target_host,
-            address,
-            port: service.port,
-            scheme,
-            url,
-        })
+    /// Get an endpoint by name.
+    pub fn endpoint(&self, name: &str) -> Option<&Endpoint> {
+        self.services.endpoints.get(name)
     }
 
-    /// Reverse proxy services targeting a host.
-    pub fn reverse_proxy_services_for_host(
-        &self,
-        host_name: &str,
-        include_vpn_only: bool,
-    ) -> Vec<&ReverseProxyService> {
+    /// Get an HTTP site by name.
+    pub fn http_site(&self, name: &str) -> Option<&HttpSite> {
+        self.services.http_sites.get(name)
+    }
+
+    /// Endpoints targeting a host, preserving declaration order.
+    pub fn endpoints_for_host(&self, host_name: &str) -> Vec<(&str, &Endpoint)> {
         self.services
-            .reverse_proxy_services
+            .endpoints
             .iter()
-            .filter(|svc| svc.target_host.as_deref() == Some(host_name))
-            .filter(|svc| include_vpn_only || !svc.vpn_only)
+            .filter(|(_, endpoint)| endpoint.target_host == host_name)
+            .map(|(name, endpoint)| (name.as_str(), endpoint))
             .collect()
     }
 
-    /// Return normalized routes for reverse-proxy services targeting a host.
-    pub fn reverse_proxy_routes_for_host(
-        &self,
-        host_name: &str,
-        include_vpn_only: bool,
-    ) -> Vec<(&ReverseProxyService, NormalizedReverseProxyRoute)> {
-        self.services
-            .reverse_proxy_services
-            .iter()
-            .filter(|svc| include_vpn_only || !svc.vpn_only)
-            .flat_map(|svc| {
-                svc.normalized_routes()
-                    .into_iter()
-                    .map(move |route| (svc, route))
-            })
-            .filter(|(_, route)| route.target_host.as_deref() == Some(host_name))
-            .collect()
-    }
-
-    /// LAN-exposed reverse proxy ports targeting a host.
-    pub fn lan_exposed_ports(&self, host_name: &str) -> Vec<u16> {
-        let mut ports = self
-            .reverse_proxy_routes_for_host(host_name, false)
-            .into_iter()
-            .filter(|(svc, _)| svc.lan_exposed)
-            .map(|(_, route)| route.port)
-            .collect::<Vec<_>>();
-        ports.sort_unstable();
-        ports.dedup();
-        ports
+    /// Resolve the endpoint an ingress host should dial.
+    pub fn endpoint_for_ingress<'a>(
+        &'a self,
+        endpoint_name: &'a str,
+        ingress_host: &str,
+    ) -> Option<(&'a str, &'a Endpoint)> {
+        let endpoint = self.services.endpoints.get(endpoint_name)?;
+        if endpoint.bind == EndpointBind::Loopback && endpoint.target_host != ingress_host {
+            let remote_name = endpoint.remote_via.as_deref()?;
+            Some((remote_name, self.services.endpoints.get(remote_name)?))
+        } else {
+            Some((endpoint_name, endpoint))
+        }
     }
 
     /// Whether an FQDN belongs to a DNS zone.
@@ -210,49 +232,36 @@ impl Topology {
             .collect()
     }
 
-    /// Reverse-proxy service hostnames keyed by service name.
+    /// HTTP site hostnames keyed by site name.
     pub fn service_hosts(&self) -> indexmap::IndexMap<&str, &str> {
-        let reverse = self
-            .services
-            .reverse_proxy_services
+        self.services
+            .http_sites
             .iter()
-            .map(|svc| (svc.name.as_str(), svc.hostname.as_deref().unwrap_or("")));
-        let static_files = self
-            .services
-            .static_file_services
-            .iter()
-            .map(|svc| (svc.name.as_str(), svc.hostname.as_deref().unwrap_or("")));
-        reverse.chain(static_files).collect()
+            .map(|(name, site)| (name.as_str(), site.hostname.as_str()))
+            .collect()
     }
 
     /// Generic CNAME intents for public service hostnames.
     pub fn service_cname_intents(&self) -> Vec<CnameIntent> {
         self.services
-            .reverse_proxy_services
+            .http_sites
             .iter()
-            .map(ServiceRef::from)
-            .chain(
-                self.services
-                    .static_file_services
-                    .iter()
-                    .map(ServiceRef::from),
-            )
-            .filter_map(|service| {
-                let hostname = service.hostname()?;
-                if service.vpn_only() || !service.publish_cname() {
+            .filter_map(|(name, site)| {
+                if site.dns_publication != DnsPublication::Managed || site.access == HttpAccess::Vpn
+                {
                     return None;
                 }
-                let zone = self.zone_for_host(hostname)?;
+                let zone = self.zone_for_host(&site.hostname)?;
                 Some(CnameIntent {
-                    name: service.name().to_string(),
-                    hostname: hostname.to_string(),
+                    name: name.clone(),
+                    hostname: site.hostname.clone(),
                     zone: zone.to_string(),
-                    relative_name: Self::relative_name(hostname, zone)
-                        .unwrap_or(hostname)
+                    relative_name: Self::relative_name(&site.hostname, zone)
+                        .unwrap_or(&site.hostname)
                         .to_string(),
                     target: zone.to_string(),
-                    proxied: service.cloudflare_proxied(),
-                    comment: service.dns_comment().map(str::to_string),
+                    proxied: site.access == HttpAccess::Cloudflare,
+                    comment: None,
                     source: "service",
                 })
             })
@@ -287,82 +296,11 @@ impl Topology {
     }
 }
 
-enum ServiceRef<'a> {
-    Reverse(&'a ReverseProxyService),
-    Static(&'a crate::topology::StaticFileService),
-}
-
-impl<'a> From<&'a crate::topology::StaticFileService> for ServiceRef<'a> {
-    fn from(service: &'a crate::topology::StaticFileService) -> Self {
-        Self::Static(service)
-    }
-}
-
-impl<'a> ServiceRef<'a> {
-    fn name(&self) -> &'a str {
-        match self {
-            Self::Reverse(service) => service.name.as_str(),
-            Self::Static(service) => service.name.as_str(),
-        }
-    }
-
-    fn hostname(&self) -> Option<&'a str> {
-        match self {
-            Self::Reverse(service) => service.hostname.as_deref(),
-            Self::Static(service) => service.hostname.as_deref(),
-        }
-    }
-
-    fn vpn_only(&self) -> bool {
-        match self {
-            Self::Reverse(service) => service.vpn_only,
-            Self::Static(_) => false,
-        }
-    }
-
-    fn publish_cname(&self) -> bool {
-        match self {
-            Self::Reverse(service) => service.publish_cname,
-            Self::Static(_) => true,
-        }
-    }
-
-    fn cloudflare_proxied(&self) -> bool {
-        match self {
-            Self::Reverse(service) => service.cloudflare_proxied,
-            Self::Static(service) => service.cloudflare_proxied,
-        }
-    }
-
-    fn dns_comment(&self) -> Option<&'a str> {
-        match self {
-            Self::Reverse(_) => None,
-            Self::Static(service) => service.dns_comment.as_deref(),
-        }
-    }
-}
-
-impl<'a> From<&'a ReverseProxyService> for ServiceRef<'a> {
-    fn from(service: &'a ReverseProxyService) -> Self {
-        Self::Reverse(service)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddressKind {
     Lan,
     DirectLink,
     Link(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceEndpoint<'a> {
-    pub service: &'a str,
-    pub target_host: &'a str,
-    pub address: &'a str,
-    pub port: u16,
-    pub scheme: String,
-    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,20 +321,40 @@ pub struct CnameIntent {
     pub source: &'static str,
 }
 
-fn format_endpoint_address(address: &str) -> String {
-    if address.parse::<std::net::Ipv6Addr>().is_ok() {
-        format!("[{address}]")
-    } else {
-        address.to_string()
-    }
+#[derive(Debug, Clone)]
+pub struct PeerEntry<'a> {
+    pub hostname: &'a str,
+    pub public_key: &'a str,
+    pub allowed_ips: Vec<String>,
+    pub address: String,
+}
+
+fn cidr_prefix_len(subnet: &str) -> Option<u8> {
+    let (address, prefix) = subnet.split_once('/')?;
+    let ip = address.parse::<IpAddr>().ok()?;
+    let prefix = prefix.parse::<u8>().ok()?;
+    (prefix
+        <= match ip {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        })
+    .then_some(prefix)
+}
+
+fn address_prefix_len(address: &str) -> Option<u8> {
+    Some(match address.parse::<IpAddr>().ok()? {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::topology::{
-        Domains, DynamicHost, Host, Link, Network, PagesSite, Redirect, ReverseProxyRoute,
-        ReverseProxyService, Services,
+        DnsPublication, Domains, DynamicHost, Endpoint, EndpointBind, EndpointTransport, Host,
+        HttpAccess, HttpAction, HttpMatch, HttpRoute, HttpSite, Link, Network, PagesSite, Redirect,
+        Services,
     };
     use indexmap::IndexMap;
 
@@ -459,6 +417,7 @@ mod tests {
         );
 
         Topology {
+            schema_version: 2,
             links: IndexMap::new(),
             hosts,
             domains: Domains {
@@ -489,6 +448,7 @@ mod tests {
                         zone: None,
                     },
                 ],
+                dns_zones: vec![],
                 pages_sites: vec![PagesSite {
                     subdomain: "docs".to_string(),
                     repository: "example/docs".to_string(),
@@ -502,63 +462,70 @@ mod tests {
                 }],
             },
             services: Services {
-                reverse_proxy_services: vec![
-                    ReverseProxyService {
-                        name: "immich".to_string(),
-                        hostname: Some("immich.example.test".to_string()),
-                        port: 2283,
-                        target_host: Some("atlas".to_string()),
-                        lan_exposed: true,
-                        cloudflare_proxied: true,
-                        publish_cname: true,
-                        ..empty_reverse_proxy_service()
-                    },
-                    ReverseProxyService {
-                        name: "ollama".to_string(),
-                        hostname: Some("ollama.example.test".to_string()),
-                        port: 11434,
-                        target_host: Some("atlas".to_string()),
-                        vpn_only: true,
-                        ..empty_reverse_proxy_service()
-                    },
-                    ReverseProxyService {
-                        name: "secure".to_string(),
-                        hostname: Some("secure.example.test".to_string()),
-                        port: 8443,
-                        target_host: Some("atlas".to_string()),
-                        upstream_scheme: Some("https".to_string()),
-                        ..empty_reverse_proxy_service()
-                    },
-                    ReverseProxyService {
-                        name: "multi".to_string(),
-                        hostname: Some("multi.example.test".to_string()),
-                        port: 8030,
-                        target_host: Some("atlas".to_string()),
-                        lan_exposed: true,
-                        routes: vec![
-                            ReverseProxyRoute {
-                                paths: vec!["/api".to_string(), "/api/*".to_string()],
-                                target_host: Some("atlas".to_string()),
-                                port: Some(8032),
-                                upstream_scheme: None,
-                                tls_server_name: None,
-                                strip_prefix: None,
-                                monitoring_identity: Some("multi-api".to_string()),
-                            },
-                            ReverseProxyRoute {
-                                paths: vec![],
-                                target_host: None,
-                                port: None,
-                                upstream_scheme: None,
-                                tls_server_name: None,
-                                strip_prefix: None,
-                                monitoring_identity: None,
-                            },
-                        ],
-                        ..empty_reverse_proxy_service()
-                    },
-                ],
-                ..Default::default()
+                endpoints: IndexMap::from([
+                    (
+                        "immich".to_string(),
+                        Endpoint {
+                            target_host: "atlas".to_string(),
+                            port: 2283,
+                            transport: EndpointTransport::Http,
+                            bind: EndpointBind::Loopback,
+                            remote_via: Some("immich-lan".to_string()),
+                            tls_server_name: None,
+                            tcp_probe: true,
+                        },
+                    ),
+                    (
+                        "immich-lan".to_string(),
+                        Endpoint {
+                            target_host: "atlas".to_string(),
+                            port: 2283,
+                            transport: EndpointTransport::Http,
+                            bind: EndpointBind::Lan,
+                            remote_via: None,
+                            tls_server_name: None,
+                            tcp_probe: true,
+                        },
+                    ),
+                ]),
+                http_sites: IndexMap::from([
+                    (
+                        "immich".to_string(),
+                        HttpSite {
+                            hostname: "immich.example.test".to_string(),
+                            ingress: "public".to_string(),
+                            access: HttpAccess::Cloudflare,
+                            dns_publication: DnsPublication::Managed,
+                            routes: vec![HttpRoute {
+                                matcher: HttpMatch::default(),
+                                action: HttpAction::Proxy {
+                                    endpoint: "immich".to_string(),
+                                    strip_prefix: None,
+                                },
+                                auth_policy: None,
+                                response_headers: IndexMap::new(),
+                            }],
+                        },
+                    ),
+                    (
+                        "ollama".to_string(),
+                        HttpSite {
+                            hostname: "ollama.internal.example.test".to_string(),
+                            ingress: "vpn".to_string(),
+                            access: HttpAccess::Vpn,
+                            dns_publication: DnsPublication::None,
+                            routes: vec![HttpRoute {
+                                matcher: HttpMatch::default(),
+                                action: HttpAction::Respond {
+                                    status: 404,
+                                    body: None,
+                                },
+                                auth_policy: None,
+                                response_headers: IndexMap::new(),
+                            }],
+                        },
+                    ),
+                ]),
             },
             deployment: Default::default(),
             trust: Default::default(),
@@ -581,25 +548,6 @@ mod tests {
         }
     }
 
-    fn empty_reverse_proxy_service() -> ReverseProxyService {
-        ReverseProxyService {
-            name: String::new(),
-            hostname: None,
-            port: 0,
-            target_host: None,
-            proxied: false,
-            cloudflare_proxied: false,
-            publish_cname: false,
-            vpn_only: false,
-            lan_exposed: false,
-            upstream_scheme: None,
-            tls_server_name: None,
-            service_host: None,
-            zone: None,
-            routes: vec![],
-        }
-    }
-
     #[test]
     fn resolves_host_addresses_by_explicit_policy() {
         let topo = test_topology();
@@ -618,59 +566,23 @@ mod tests {
     }
 
     #[test]
-    fn builds_service_endpoints_from_resolved_targets() {
+    fn resolves_endpoints_for_ingress_hosts() {
         let topo = test_topology();
-        let endpoint = topo
-            .service_endpoint("secure", &[AddressKind::Lan], None)
-            .expect("secure endpoint");
-        assert_eq!(endpoint.scheme, "https");
-        assert_eq!(endpoint.url, "https://192.168.178.88:8443");
-
-        let endpoint = topo
-            .service_endpoint("immich", &[AddressKind::DirectLink], Some("http"))
-            .expect("immich endpoint");
-        assert_eq!(endpoint.url, "http://10.10.0.1:2283");
-
-        let mut ipv6_topology = test_topology();
-        ipv6_topology
-            .hosts
-            .get_mut("atlas")
-            .expect("atlas fixture")
-            .network
-            .lan_ip = Some("2001:db8::10".to_string());
-        let endpoint = ipv6_topology
-            .service_endpoint("secure", &[AddressKind::Lan], None)
-            .expect("IPv6 secure endpoint");
-        assert_eq!(endpoint.url, "https://[2001:db8::10]:8443");
+        assert_eq!(
+            topo.endpoint_for_ingress("immich", "atlas").unwrap().0,
+            "immich"
+        );
+        assert_eq!(
+            topo.endpoint_for_ingress("immich", "nomad").unwrap().0,
+            "immich-lan"
+        );
     }
 
     #[test]
-    fn filters_host_services_and_lan_exposed_ports() {
+    fn filters_endpoints_for_host() {
         let topo = test_topology();
-        let public_services = topo.reverse_proxy_services_for_host("atlas", false);
-        assert_eq!(public_services.len(), 3);
-        assert!(public_services.iter().all(|svc| !svc.vpn_only));
-
-        let all_services = topo.reverse_proxy_services_for_host("atlas", true);
-        assert_eq!(all_services.len(), 4);
-        assert_eq!(topo.lan_exposed_ports("atlas"), vec![2283, 8030, 8032]);
-    }
-
-    #[test]
-    fn normalizes_legacy_service_to_one_fallback_route() {
-        let topo = test_topology();
-        let service = topo
-            .services
-            .reverse_proxy_services
-            .iter()
-            .find(|service| service.name == "secure")
-            .expect("secure service");
-        let routes = service.normalized_routes();
-        assert_eq!(routes.len(), 1);
-        assert!(routes[0].paths.is_empty());
-        assert_eq!(routes[0].port, 8443);
-        assert_eq!(routes[0].upstream_scheme, "https");
-        assert_eq!(routes[0].monitoring_identity, "secure");
+        assert_eq!(topo.endpoints_for_host("atlas").len(), 2);
+        assert!(topo.endpoints_for_host("nomad").is_empty());
     }
 
     #[test]

@@ -197,11 +197,12 @@
             cp ${./examples/Topology.pkl} "$fixture/examples/Topology.pkl"
             cp ${./lib/topology/Schema.pkl} "$fixture/lib/topology/Schema.pkl"
             fleetix eval "$fixture/examples/Topology.pkl" > topology.nix
+            grep -q "schemaVersion = 2" topology.nix
             grep -q "hosts =" topology.nix
             grep -q "pagesSites =" topology.nix
             grep -q "redirects =" topology.nix
-            grep -q "internalServices =" topology.nix
-            grep -q "emailIdentities =" topology.nix
+            grep -q "endpoints =" topology.nix
+            grep -q "httpSites =" topology.nix
             grep -q "buildCache =" topology.nix
             grep -q "packageAttrNames =" topology.nix
             grep -q 'dashboard' topology.nix
@@ -279,7 +280,8 @@
 
             cat > "$fixture/Services.pkl" <<'EOF'
             services = new {
-              reverseProxyServices = new Listing {}
+              endpoints = new {}
+              httpSites = new {}
             }
             EOF
 
@@ -305,6 +307,7 @@
               atlas = (import("hosts/Atlas.pkl")).hosts["atlas"]
             }
 
+            schemaVersion: UInt16 = 2
             domains = (import("Domains.pkl")).domains
             services = (import("Services.pkl")).services
             trust = (import("Trust.pkl")).trust
@@ -324,6 +327,7 @@
 
         fleetix-lib-helpers = let
           topology = {
+            schemaVersion = 2;
             links = {
               mesh = {
                 subnet = "10.123.0.0/24";
@@ -355,6 +359,7 @@
                 "example.test"
                 "internal.example.test"
               ];
+              dnsZones = [];
               managedZones = [
                 "example.test"
                 "internal.example.test"
@@ -381,40 +386,74 @@
                 }
               ];
             };
-            services.reverseProxyServices = [
-              {
-                name = "immich";
-                hostname = "immich.example.test";
+            services.endpoints = {
+              immich = {
                 port = 2283;
                 targetHost = "atlas";
-                lanExposed = true;
-                cloudflareProxied = true;
-              }
-              {
-                name = "ollama";
-                hostname = "ollama.internal.example.test";
+                transport = "http";
+                bind = "loopback";
+                remoteVia = "immich-lan";
+              };
+              immich-lan = {
+                port = 2283;
+                targetHost = "atlas";
+                transport = "http";
+                bind = "lan";
+              };
+              ollama = {
                 port = 11434;
                 targetHost = "atlas";
-                vpnOnly = true;
-              }
-            ];
-            services.staticFileServices = [
-              {
-                name = "docs";
+                transport = "http";
+                bind = "loopback";
+              };
+            };
+            services.httpSites = {
+              immich = {
+                hostname = "immich.example.test";
+                ingress = "public";
+                access = "cloudflare";
+                dnsPublication = "managed";
+                routes = [
+                  {
+                    __pkl_class = "HttpRoute";
+                    match = {
+                      __pkl_class = "HttpMatch";
+                      paths = [];
+                      absentQueryParams = [];
+                    };
+                    action = {
+                      __pkl_class = "ProxyAction";
+                      type = "proxy";
+                      endpoint = "immich";
+                    };
+                    responseHeaders = {};
+                  }
+                ];
+              };
+              ollama = {
+                hostname = "ollama.internal.example.test";
+                ingress = "vpn";
+                access = "vpn";
+                dnsPublication = "none";
+                routes = [];
+              };
+              docs = {
                 hostname = "docs.example.test";
-                cloudflareProxied = false;
-              }
-            ];
+                ingress = "public";
+                access = "direct";
+                dnsPublication = "managed";
+                routes = [];
+              };
+            };
           };
-          endpoint = self.lib.services.serviceEndpoint {
+          endpoint = self.lib.services.resolveEndpoint {
             inherit topology;
-            serviceName = "immich";
-            addressPolicy = ["direct-link" "lan"];
+            endpointName = "immich";
+            ingressHost = "nomad";
           };
-          missingEndpoint = self.lib.services.serviceEndpoint {
+          missingEndpoint = self.lib.services.resolveEndpoint {
             inherit topology;
-            serviceName = "missing";
-            addressPolicy = ["lan"];
+            endpointName = "missing";
             require = false;
           };
           addressExcludes = self.lib.domains.dynamicHostAddressExcludes {
@@ -425,7 +464,7 @@
             inherit topology;
             zone = "internal.example.test";
           };
-          serviceIntents = self.lib.services.serviceCnameIntents {inherit topology;};
+          serviceIntents = self.lib.services.managedDnsCnameIntents {inherit topology;};
           pagesIntents = self.lib.services.pagesCnameIntents {inherit topology;};
           normalized = self.lib.projections.normalize {inherit topology;};
         in
@@ -440,7 +479,8 @@
               hostName = "nomad";
               policy = ["direct-link"];
             }}" = "10.10.0.2"
-            test "${endpoint.url}" = "http://10.10.0.1:2283"
+            test "${endpoint.name}" = "immich-lan"
+            test "${endpoint.targetHost}" = "atlas"
             test "${
               if missingEndpoint == null
               then "null"
@@ -461,9 +501,9 @@
             test "${(builtins.elemAt internalAddressExcludes 0).name}" = "host"
             test "${(self.lib.services.serviceHosts {inherit topology;}).immich}" = "immich.example.test"
             test "${toString (builtins.length serviceIntents)}" = "2"
-            test "${(builtins.elemAt serviceIntents 0).relativeName}" = "immich"
-            test "${(builtins.elemAt serviceIntents 0).target}" = "example.test"
-            test "${toString (builtins.elemAt serviceIntents 0).proxied}" = "1"
+            test "${(builtins.elemAt serviceIntents 1).relativeName}" = "immich"
+            test "${(builtins.elemAt serviceIntents 1).target}" = "example.test"
+            test "${toString (builtins.elemAt serviceIntents 1).proxied}" = "1"
             test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
             test "${(builtins.elemAt pagesIntents 0).target}" = "example.github.io"
             test "${normalized.hosts.atlas.linkAddresses.mesh}" = "10.123.0.5"
@@ -479,12 +519,13 @@
             })}" = ""
             test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
             test "${normalized.links.mesh.serverAddress}" = "10.123.0.5"
-            test "${normalized.services.reverseProxyByName.immich.targetHost}" = "atlas"
-            test "${toString (builtins.head normalized.services.reverseProxyByName.immich.routes).port}" = "2283"
-            test "${toString (self.lib.firewall.lanExposedPorts {
+            test "${normalized.services.endpointByName.immich.targetHost}" = "atlas"
+            test "${(builtins.head normalized.services.siteByName.immich.routes).action.type}" = "proxy"
+            test "${toString (builtins.hasAttr "__pkl_class" (builtins.head normalized.services.siteByName.immich.routes).action)}" = ""
+            test "${(self.lib.services.endpointsForHost {
               inherit topology;
               hostName = "atlas";
-            })}" = "2283"
+            }).immich-lan.bind}" = "lan"
             touch $out
           '';
 

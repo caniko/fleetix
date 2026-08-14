@@ -231,7 +231,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             evaluator,
         } => {
             let topology =
-                topology::load_topology_with_options(&path, build_options(&evaluator)?).await?;
+                topology::evaluate_topology_with_options(&path, build_options(&evaluator)?).await?;
             let report = validate::validate(&topology);
             if format == OutputFormat::Json {
                 println!(

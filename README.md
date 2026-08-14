@@ -27,10 +27,16 @@ derive runtime data from a generated topology sidecar:
 
 - `hosts.resolveHostAddress` resolves a host through an explicit ordered
   address policy such as `[ "lan" "direct-link" "wg-home" ]`.
-- `services.serviceEndpoint` derives a reverse-proxy service URL from its
-  target host, port, upstream scheme, and address policy.
-- `services.reverseProxyServicesForHost` and `firewall.lanExposedPorts` derive
-  host-local service/firewall views from reverse-proxy topology.
+- `services.resolveEndpoint` deterministically resolves a local endpoint or
+  its declared LAN `remoteVia` endpoint for an ingress host.
+- `services.endpointsForHost`, `services.serviceHosts`, and
+  `services.managedDnsCnameIntents` derive host, HTTP-site, and DNS views.
+- `adapters.infernix.mkFleetNodes` converts fleet host topology plus
+  consumer-owned node overlays into Infernix node definitions.
+
+Adapters stay intentionally thin: Fleetix provides network and service
+derivation, while consumers such as Infernix keep workload semantics, model
+inventory, scheduling policy, and application-specific defaults.
 
 Host `rebuild.buildCache` is backend-neutral fleet policy. It records whether a
 host should use a fleet build cache for selected package attributes, while the

@@ -50,16 +50,6 @@
     > 1
     && builtins.all (name: builtins.elem name (hostsOnLinkImpl topology linkName)) hostNames;
 
-  lookupReverseProxyService = topology: serviceName:
-    findFirst (svc: svc.name == serviceName) null (topology.services.reverseProxyServices or []);
-
-  byNameFrom = entries:
-    builtins.listToAttrs (map (entry: {
-        inherit (entry) name;
-        value = entry;
-      })
-      entries);
-
   stripPklClass = value:
     if builtins.isAttrs value
     then
@@ -105,11 +95,6 @@
     if fqdn == zone
     then "@"
     else removeSuffix ".${zone}" fqdn;
-
-  formatEndpointAddress = address:
-    if lib.hasInfix ":" address
-    then "[${address}]"
-    else address;
 
   addressPrefix = address:
     if lib.hasInfix ":" address
@@ -250,114 +235,93 @@ in rec {
       serviceHosts = services.serviceHosts {topology = cleanTopology;};
 
       dynamicHosts = tdom.dynamicHosts or [];
+      dnsZones = tdom.dnsZones or [];
       inherit managedZones;
       pagesSites = tdom.pagesSites or [];
       redirects = tdom.redirects or [];
     };
   };
 
-  services = {
-    byName = {topology}:
-      byNameFrom (topology.services.reverseProxyServices or [])
-      // byNameFrom (topology.services.staticFileServices or [])
-      // byNameFrom (topology.services.internalServices or []);
+  services = rec {
+    endpoints = {topology}:
+      topology.services.endpoints or {};
 
-    reverseProxyByName = {topology}:
-      byNameFrom (topology.services.reverseProxyServices or []);
+    httpSites = {topology}:
+      topology.services.httpSites or {};
 
-    staticFileByName = {topology}:
-      byNameFrom (topology.services.staticFileServices or []);
-
-    internalByName = {topology}:
-      byNameFrom (topology.services.internalServices or []);
+    endpointByName = endpoints;
+    siteByName = httpSites;
 
     serviceHosts = {topology}:
-      builtins.listToAttrs (map (svc: {
-        inherit (svc) name;
-        value = svc.hostname or (builtins.toString svc.port);
-      }) ((topology.services.reverseProxyServices or []) ++ (topology.services.staticFileServices or [])));
+      mapAttrs (_name: site: site.hostname) (siteByName {inherit topology;});
 
-    reverseProxyServicesForHost = {
+    endpointsForHost = {
       topology,
       hostName,
-      includeVpnOnly ? false,
     }:
-      filter (
-        svc:
-          (svc.targetHost or null)
-          == hostName
-          && (includeVpnOnly || !(svc.vpnOnly or false))
-      ) (topology.services.reverseProxyServices or []);
+      builtins.listToAttrs (builtins.concatMap (name: let
+        endpoint = (endpointByName {inherit topology;}).${name};
+      in
+        if endpoint.targetHost == hostName
+        then [
+          {
+            inherit name;
+            value = endpoint;
+          }
+        ]
+        else []) (builtins.attrNames (endpointByName {inherit topology;})));
 
-    serviceEndpoint = {
+    resolveEndpoint = {
       topology,
-      serviceName,
-      addressPolicy,
-      scheme ? null,
+      endpointName,
+      ingressHost ? null,
       require ? true,
     }: let
-      svc = lookupReverseProxyService topology serviceName;
-      targetHost =
-        if svc == null
+      endpoints = endpointByName {inherit topology;};
+      source = endpoints.${endpointName} or null;
+      selectedName =
+        if source == null
         then null
-        else svc.targetHost or null;
-      address =
-        if svc == null || targetHost == null
+        else if ingressHost != null && source.bind == "loopback" && source.targetHost != ingressHost
+        then source.remoteVia or null
+        else endpointName;
+      selected =
+        if selectedName == null
+        then null
+        else endpoints.${selectedName} or null;
+      result =
+        if selected == null
         then null
         else
-          hosts.resolveHostAddress {
-            inherit topology require;
-            hostName = targetHost;
-            policy = addressPolicy;
+          selected
+          // {
+            name = selectedName;
+            sourceEndpoint = endpointName;
           };
-      endpoint =
-        if svc == null || targetHost == null || address == null
-        then null
-        else let
-          endpointScheme =
-            if scheme != null
-            then scheme
-            else svc.upstreamScheme or "http";
-        in {
-          service = svc.name;
-          inherit targetHost address;
-          port = svc.port;
-          scheme = endpointScheme;
-          url = "${endpointScheme}://${formatEndpointAddress address}:${toString svc.port}";
-        };
     in
       if require
-      then
-        requireValue
-        "fleetix.serviceEndpoint: reverse proxy service `${serviceName}` is missing or has no resolvable target"
-        endpoint
-      else endpoint;
+      then requireValue "fleetix.resolveEndpoint: `${endpointName}` is not reachable from `${toString ingressHost}`" result
+      else result;
 
-    serviceCnameIntents = {topology}:
-      builtins.concatMap (service: let
-        hostname = service.hostname or null;
-        zone =
-          if hostname == null
-          then null
-          else
-            domains.zoneForHost {
-              inherit topology;
-              fqdn = hostname;
-            };
+    managedDnsCnameIntents = {topology}:
+      builtins.concatMap (name: let
+        site = (siteByName {inherit topology;}).${name};
+        zone = domains.zoneForHost {
+          inherit topology;
+          fqdn = site.hostname;
+        };
       in
-        if zone == null || (service.vpnOnly or false) || !(service.publishCname or true)
+        if site.dnsPublication != "managed" || site.access == "vpn" || zone == null
         then []
         else [
           (cnameIntent {
-            inherit zone hostname;
-            name = service.name;
+            inherit name zone;
+            hostname = site.hostname;
             target = zone;
-            proxied = service.cloudflareProxied or false;
-            comment = service.dnsComment or null;
+            proxied = site.access == "cloudflare";
             source = "service";
           })
-        ])
-      ((topology.services.reverseProxyServices or []) ++ (topology.services.staticFileServices or []));
+        ]) (builtins.attrNames (siteByName {inherit topology;}));
 
     pagesCnameIntents = {
       topology,
@@ -398,65 +362,21 @@ in rec {
         ])
       (topology.domains.pagesSites or []);
 
-    normalizeReverseProxyRoute = service: route: {
-      paths = route.paths or [];
-      targetHost = firstNonNull [
-        (route.targetHost or null)
-        (service.targetHost or null)
-      ];
-      port = firstNonNull [
-        (route.port or null)
-        service.port
-      ];
-      upstreamScheme = firstNonNull [
-        (route.upstreamScheme or null)
-        (service.upstreamScheme or null)
-        "http"
-      ];
-      tlsServerName = firstNonNull [
-        (route.tlsServerName or null)
-        (service.tlsServerName or null)
-      ];
-      stripPrefix = route.stripPrefix or null;
-      monitoringIdentity = firstNonNull [
-        (route.monitoringIdentity or null)
-        service.name
-      ];
-    };
-
-    normalizeReverseProxyService = service: let
-      declaredRoutes = service.routes or [];
-      routes =
-        if declaredRoutes == []
-        then [(services.normalizeReverseProxyRoute service {})]
-        else map (services.normalizeReverseProxyRoute service) declaredRoutes;
-    in
-      service // {inherit routes;};
-
     normalize = {topology}: let
       tsvc = topology.services or {};
-      reverseProxyServices = map services.normalizeReverseProxyService (map stripPklClass (tsvc.reverseProxyServices or []));
-      staticFileServices = map stripPklClass (tsvc.staticFileServices or []);
-      internalServices = map stripPklClass (tsvc.internalServices or []);
+      endpoints = mapAttrs (_name: stripPklClass) (tsvc.endpoints or {});
+      httpSites = mapAttrs (_name: stripPklClass) (tsvc.httpSites or {});
       normalizedTopology =
         topology
         // {
-          services =
-            (topology.services or {})
-            // {
-              inherit reverseProxyServices staticFileServices internalServices;
-            };
+          services = {inherit endpoints httpSites;};
         };
     in {
-      sshPort = tsvc.sshPort or null;
-      hostSshKeyPath = tsvc.hostSshKeyPath or null;
-      hostSshPubKeyPath = tsvc.hostSshPubKeyPath or null;
-      inherit reverseProxyServices staticFileServices internalServices;
-      byName = services.byName {topology = normalizedTopology;};
-      reverseProxyByName = services.reverseProxyByName {topology = normalizedTopology;};
-      staticFileByName = services.staticFileByName {topology = normalizedTopology;};
-      internalByName = services.internalByName {topology = normalizedTopology;};
-      emailIdentities = stripPklClass (tsvc.emailIdentities or {});
+      inherit endpoints httpSites;
+      endpointByName = endpoints;
+      siteByName = httpSites;
+      serviceHosts = services.serviceHosts {topology = normalizedTopology;};
+      managedDnsCnameIntents = services.managedDnsCnameIntents {topology = normalizedTopology;};
     };
   };
 
@@ -519,21 +439,5 @@ in rec {
       services = normalizedServices;
       links = normalizedLinks;
     };
-  };
-
-  firewall = {
-    lanExposedPorts = {
-      topology,
-      hostName,
-    }: let
-      normalized = services.normalize {inherit topology;};
-      routes = builtins.concatMap (
-        service:
-          map (route: route.port) (
-            builtins.filter (route: (route.targetHost or null) == hostName) service.routes
-          )
-      ) (builtins.filter (service: (service.lanExposed or false) && !(service.vpnOnly or false)) normalized.reverseProxyServices);
-    in
-      lib.unique routes;
   };
 }
