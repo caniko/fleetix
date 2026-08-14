@@ -1,4 +1,7 @@
-use crate::topology::{LinkRole, Topology};
+use crate::topology::{
+    DnsPublication, EndpointBind, HttpAccess, HttpAction, IngressScope, LinkRole, PathMatch,
+    Topology,
+};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
@@ -86,10 +89,23 @@ impl ValidationReport {
 pub fn validate(topology: &Topology) -> ValidationReport {
     let mut report = ValidationReport::default();
 
+    if topology.schema_version != 2 {
+        report.error(
+            "topology.unsupported_schema_version",
+            Some("schemaVersion".into()),
+            Some(topology.schema_version.to_string()),
+            format!(
+                "topology schemaVersion must be 2, got {}",
+                topology.schema_version
+            ),
+        );
+    }
+
     validate_identifiers(topology, &mut report);
     validate_domains(topology, &mut report);
     validate_host_hardware(topology, &mut report);
     validate_deployment(topology, &mut report);
+    validate_services(topology, &mut report);
 
     // 1. Every link has at most one server
     for (link_name, link) in &topology.links {
@@ -232,76 +248,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
         }
     }
 
-    // 3. Every reverseProxyService.target_host references an existing host
-    for svc in &topology.services.reverse_proxy_services {
-        if let Some(ref target) = svc.target_host {
-            if !topology.hosts.contains_key(target) {
-                report.error(
-                    "service.invalid_target_host",
-                    Some(format!("services.reverseProxyServices.{}.targetHost", svc.name)),
-                    Some(target.clone()),
-                    format!(
-                        "reverse proxy service '{}' has targetHost '{}' which does not exist in hosts",
-                        svc.name, target
-                    ),
-                );
-            }
-        }
-    }
-
-    for svc in &topology.services.internal_services {
-        if let Some(ref target) = svc.target_host {
-            if !topology.hosts.contains_key(target) {
-                report.error(
-                    "service.invalid_target_host",
-                    Some(format!("services.internalServices.{}.targetHost", svc.name)),
-                    Some(target.clone()),
-                    format!(
-                        "internal service '{}' has targetHost '{}' which does not exist in hosts",
-                        svc.name, target
-                    ),
-                );
-            }
-        }
-    }
-
-    for svc in &topology.services.reverse_proxy_services {
-        if svc.port == 0 {
-            report.error(
-                "service.invalid_port",
-                Some(format!("services.reverseProxyServices.{}.port", svc.name)),
-                Some("0".into()),
-                format!("service '{}' must use a non-zero port", svc.name),
-            );
-        }
-        validate_service_hostname(topology, &mut report, &svc.name, svc.hostname.as_deref());
-        if let Some(zone) = &svc.zone {
-            if !topology.domains.zones.contains(zone) {
-                report.error(
-                    "service.undeclared_zone",
-                    Some(format!("services.reverseProxyServices.{}.zone", svc.name)),
-                    Some(zone.clone()),
-                    format!("service '{}' references undeclared zone '{zone}'", svc.name),
-                );
-            }
-        }
-        validate_reverse_proxy_routes(topology, svc, &mut report);
-    }
-    for svc in &topology.services.static_file_services {
-        validate_service_hostname(topology, &mut report, &svc.name, svc.hostname.as_deref());
-    }
-    for svc in &topology.services.internal_services {
-        if svc.port == 0 {
-            report.error(
-                "service.invalid_port",
-                Some(format!("services.internalServices.{}.port", svc.name)),
-                Some("0".into()),
-                format!("service '{}' must use a non-zero port", svc.name),
-            );
-        }
-    }
-
-    // 4. Every dynamic host FQDN is in a declared managed zone. An empty
+    // 3. Every dynamic host FQDN is in a declared managed zone. An empty
     // managed-zone list means the general zone list is authoritative.
     let validation_zones = if topology.domains.managed_zones.is_empty() {
         &topology.domains.zones
@@ -360,50 +307,6 @@ pub fn validate(topology: &Topology) -> ValidationReport {
         }
     }
 
-    // Names are used as map keys by consumers; duplicate identities are
-    // ambiguous even when their individual records are otherwise valid.
-    let mut service_names = HashSet::new();
-    let mut service_hostnames = HashSet::new();
-    for service in topology
-        .services
-        .reverse_proxy_services
-        .iter()
-        .map(|service| (&service.name, service.hostname.as_ref()))
-        .chain(
-            topology
-                .services
-                .static_file_services
-                .iter()
-                .map(|service| (&service.name, service.hostname.as_ref())),
-        )
-        .chain(
-            topology
-                .services
-                .internal_services
-                .iter()
-                .map(|service| (&service.name, None)),
-        )
-    {
-        if !service_names.insert(service.0.as_str()) {
-            report.error(
-                "service.duplicate_name",
-                Some(format!("services.{}.name", service.0)),
-                Some(service.0.clone()),
-                format!("duplicate service name '{}'", service.0),
-            );
-        }
-        if let Some(hostname) = service.1 {
-            if !service_hostnames.insert(hostname.as_str()) {
-                report.error(
-                    "service.duplicate_hostname",
-                    Some(format!("services.hostname.{hostname}")),
-                    Some(hostname.clone()),
-                    format!("duplicate service hostname '{hostname}'"),
-                );
-            }
-        }
-    }
-
     for redirect in &topology.domains.redirects {
         if !valid_hostname(&redirect.from) {
             report.error(
@@ -437,7 +340,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
         }
     }
 
-    // 5. Every link client has a public_key if it's not the only link participant
+    // 4. Every link client has a public_key if it's not the only link participant
     for (link_name, _link) in &topology.links {
         let participant_count = topology
             .hosts
@@ -466,107 +369,336 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     report
 }
 
-fn validate_reverse_proxy_routes(
-    topology: &Topology,
-    service: &crate::topology::ReverseProxyService,
-    report: &mut ValidationReport,
-) {
-    if service.routes.is_empty() {
-        return;
+fn validate_services(topology: &Topology, report: &mut ValidationReport) {
+    for (name, endpoint) in &topology.services.endpoints {
+        let base = format!("services.endpoints.{name}");
+        if !topology.hosts.contains_key(&endpoint.target_host) {
+            report.error(
+                "endpoint.unknown_target_host",
+                Some(format!("{base}.targetHost")),
+                Some(endpoint.target_host.clone()),
+                format!(
+                    "endpoint '{name}' references unknown host '{}'",
+                    endpoint.target_host
+                ),
+            );
+        }
+        if endpoint.port == 0 {
+            report.error(
+                "endpoint.invalid_port",
+                Some(format!("{base}.port")),
+                Some("0".into()),
+                format!("endpoint '{name}' must use a non-zero port"),
+            );
+        }
+        if endpoint.tls_server_name.is_some()
+            && endpoint.transport != crate::topology::EndpointTransport::Https
+        {
+            report.error(
+                "endpoint.sni_without_https",
+                Some(format!("{base}.tlsServerName")),
+                endpoint.tls_server_name.clone(),
+                format!("endpoint '{name}' may set tlsServerName only for https transport"),
+            );
+        }
+        if let Some(remote_name) = &endpoint.remote_via {
+            if remote_name == name {
+                report.error(
+                    "endpoint.remote_via_self",
+                    Some(format!("{base}.remoteVia")),
+                    Some(remote_name.clone()),
+                    format!("endpoint '{name}' cannot use itself as remoteVia"),
+                );
+            } else if let Some(remote) = topology.services.endpoints.get(remote_name) {
+                if remote.bind != EndpointBind::Lan || !remote.transport.is_http() {
+                    report.error(
+                        "endpoint.invalid_remote_via",
+                        Some(format!("{base}.remoteVia")),
+                        Some(remote_name.clone()),
+                        format!(
+                            "endpoint '{name}' remoteVia '{remote_name}' must bind to lan with HTTP-capable transport"
+                        ),
+                    );
+                }
+            } else {
+                report.error(
+                    "endpoint.unknown_remote_via",
+                    Some(format!("{base}.remoteVia")),
+                    Some(remote_name.clone()),
+                    format!("endpoint '{name}' references unknown remoteVia '{remote_name}'"),
+                );
+            }
+        }
     }
 
-    let base = format!("services.reverseProxyServices.{}.routes", service.name);
-    let mut matchers = HashSet::new();
-    let mut fallback = None;
-
-    for (index, route) in service.routes.iter().enumerate() {
-        let path = format!("{base}.{index}");
-        if route.paths.is_empty() && fallback.replace(index).is_some() {
+    let mut hostnames = HashSet::new();
+    for (name, site) in &topology.services.http_sites {
+        let base = format!("services.httpSites.{name}");
+        if !valid_hostname(&site.hostname) {
             report.error(
-                "service.route_multiple_fallbacks",
-                Some(path.clone()),
-                None,
+                "site.invalid_hostname",
+                Some(format!("{base}.hostname")),
+                Some(site.hostname.clone()),
                 format!(
-                    "service '{}' declares more than one fallback route",
-                    service.name
+                    "HTTP site '{name}' has invalid hostname '{}'",
+                    site.hostname
+                ),
+            );
+        }
+        if !hostnames.insert(site.hostname.as_str()) {
+            report.error(
+                "site.duplicate_hostname",
+                Some(format!("{base}.hostname")),
+                Some(site.hostname.clone()),
+                format!(
+                    "HTTP site hostname '{}' is declared more than once",
+                    site.hostname
+                ),
+            );
+        }
+        if site.dns_publication == DnsPublication::Managed
+            && topology.zone_for_host(&site.hostname).is_none()
+        {
+            report.error(
+                "site.managed_hostname_outside_zone",
+                Some(format!("{base}.hostname")),
+                Some(site.hostname.clone()),
+                format!(
+                    "managed HTTP site '{}' is outside declared DNS zones",
+                    site.hostname
                 ),
             );
         }
 
-        for (path_index, matcher) in route.paths.iter().enumerate() {
-            if !matcher.starts_with('/') {
+        let ingress = topology.deployment.ingress_groups.get(&site.ingress);
+        if let Some(ingress) = ingress {
+            let expected = match site.access {
+                HttpAccess::Vpn => IngressScope::Vpn,
+                HttpAccess::Cloudflare | HttpAccess::Direct => IngressScope::Public,
+            };
+            if ingress.scope != expected {
                 report.error(
-                    "service.route_path_not_absolute",
-                    Some(format!("{path}.paths.{path_index}")),
-                    Some(matcher.clone()),
-                    format!(
-                        "service '{}' route path '{}' must start with '/'",
-                        service.name, matcher
-                    ),
+                    "site.ingress_scope_mismatch",
+                    Some(format!("{base}.ingress")),
+                    Some(site.ingress.clone()),
+                    format!("HTTP site '{name}' access does not match ingress scope"),
                 );
             }
-            if !matchers.insert(matcher) {
+        } else {
+            report.error(
+                "site.unknown_ingress",
+                Some(format!("{base}.ingress")),
+                Some(site.ingress.clone()),
+                format!(
+                    "HTTP site '{name}' references unknown ingress '{}'",
+                    site.ingress
+                ),
+            );
+        }
+        if site.access == HttpAccess::Vpn && site.dns_publication == DnsPublication::Managed {
+            report.error(
+                "site.vpn_managed_dns",
+                Some(format!("{base}.dnsPublication")),
+                Some("managed".into()),
+                format!("VPN HTTP site '{name}' cannot use managed public DNS"),
+            );
+        }
+
+        validate_http_routes(topology, name, site, ingress, report);
+    }
+}
+
+fn validate_http_routes(
+    topology: &Topology,
+    site_name: &str,
+    site: &crate::topology::HttpSite,
+    ingress: Option<&crate::topology::IngressGroup>,
+    report: &mut ValidationReport,
+) {
+    let base = format!("services.httpSites.{site_name}.routes");
+    if site.routes.is_empty() {
+        report.error(
+            "site.routes_empty",
+            Some(base),
+            None,
+            format!("HTTP site '{site_name}' must declare at least one route"),
+        );
+        return;
+    }
+
+    let mut signatures = HashSet::new();
+    let mut fallbacks = Vec::new();
+    for (index, route) in site.routes.iter().enumerate() {
+        let path = format!("{base}.{index}");
+        if route.matcher.paths.is_empty() && route.matcher.absent_query_params.is_empty() {
+            fallbacks.push(index);
+        }
+
+        let mut path_signature: Vec<_> = route
+            .matcher
+            .paths
+            .iter()
+            .map(|matcher| match matcher {
+                PathMatch::Exact { value } => (0, value.clone()),
+                PathMatch::Prefix { value } => (1, value.clone()),
+            })
+            .collect();
+        path_signature.sort();
+        let mut query_signature = route.matcher.absent_query_params.clone();
+        query_signature.sort();
+        if !signatures.insert((path_signature, query_signature)) {
+            report.error(
+                "site.route_duplicate_match",
+                Some(format!("{path}.match")),
+                None,
+                format!("HTTP site '{site_name}' has duplicate route match signatures"),
+            );
+        }
+
+        for (matcher_index, matcher) in route.matcher.paths.iter().enumerate() {
+            if !matcher.value().starts_with('/') {
                 report.error(
-                    "service.route_duplicate_matcher",
-                    Some(format!("{path}.paths.{path_index}")),
-                    Some(matcher.clone()),
-                    format!(
-                        "service '{}' repeats route matcher '{}'; order would be ambiguous",
-                        service.name, matcher
-                    ),
+                    "site.route_path_not_absolute",
+                    Some(format!("{path}.match.paths.{matcher_index}.value")),
+                    Some(matcher.value().to_string()),
+                    format!("HTTP site '{site_name}' route paths must be absolute"),
+                );
+            }
+        }
+        for (query_index, query) in route.matcher.absent_query_params.iter().enumerate() {
+            if query.trim().is_empty() {
+                report.error(
+                    "site.route_empty_absent_query_param",
+                    Some(format!("{path}.match.absentQueryParams.{query_index}")),
+                    Some(query.clone()),
+                    format!("HTTP site '{site_name}' absent query parameters must not be empty"),
+                );
+            }
+        }
+        if route
+            .auth_policy
+            .as_deref()
+            .is_some_and(|policy| policy.trim().is_empty())
+        {
+            report.error(
+                "site.route_empty_auth_policy",
+                Some(format!("{path}.authPolicy")),
+                route.auth_policy.clone(),
+                format!("HTTP site '{site_name}' authPolicy must not be empty"),
+            );
+        }
+        for header in route.response_headers.keys() {
+            if header.trim().is_empty() {
+                report.error(
+                    "site.route_empty_response_header",
+                    Some(format!("{path}.responseHeaders")),
+                    Some(header.clone()),
+                    format!("HTTP site '{site_name}' response header names must not be empty"),
                 );
             }
         }
 
-        if let Some(port) = route.port {
-            if port == 0 {
-                report.error(
-                    "service.route_invalid_port",
-                    Some(format!("{path}.port")),
-                    Some("0".into()),
-                    format!("service '{}' route port must be non-zero", service.name),
-                );
+        match &route.action {
+            HttpAction::Proxy {
+                endpoint,
+                strip_prefix,
+            } => {
+                if let Some(strip_prefix) = strip_prefix {
+                    if !strip_prefix.starts_with('/') {
+                        report.error(
+                            "site.route_strip_prefix_not_absolute",
+                            Some(format!("{path}.action.stripPrefix")),
+                            Some(strip_prefix.clone()),
+                            format!("HTTP site '{site_name}' stripPrefix must be absolute"),
+                        );
+                    }
+                }
+                if let Some(target) = topology.services.endpoints.get(endpoint) {
+                    if !target.transport.is_http() {
+                        report.error(
+                            "site.route_non_http_endpoint",
+                            Some(format!("{path}.action.endpoint")),
+                            Some(endpoint.clone()),
+                            format!(
+                                "HTTP site '{site_name}' cannot proxy to TCP endpoint '{endpoint}'"
+                            ),
+                        );
+                    }
+                    if target.bind == EndpointBind::Loopback {
+                        if let Some(ingress) = ingress {
+                            for ingress_host in &ingress.hosts {
+                                if ingress_host != &target.target_host
+                                    && target.remote_via.is_none()
+                                {
+                                    report.error(
+                                        "site.route_unreachable_endpoint",
+                                        Some(format!("{path}.action.endpoint")),
+                                        Some(endpoint.clone()),
+                                        format!(
+                                            "HTTP site '{site_name}' ingress host '{ingress_host}' cannot reach loopback endpoint '{endpoint}' without remoteVia"
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    report.error(
+                        "site.route_unknown_endpoint",
+                        Some(format!("{path}.action.endpoint")),
+                        Some(endpoint.clone()),
+                        format!("HTTP site '{site_name}' references unknown endpoint '{endpoint}'"),
+                    );
+                }
             }
-        }
-
-        if let Some(target) = &route.target_host {
-            if !topology.hosts.contains_key(target) {
-                report.error(
-                    "service.route_invalid_target_host",
-                    Some(format!("{path}.targetHost")),
-                    Some(target.clone()),
-                    format!(
-                        "service '{}' route targetHost '{}' does not exist in hosts",
-                        service.name, target
-                    ),
-                );
+            HttpAction::Files { root_ref, .. } if root_ref.trim().is_empty() => report.error(
+                "site.route_empty_root_ref",
+                Some(format!("{path}.action.rootRef")),
+                Some(root_ref.clone()),
+                format!("HTTP site '{site_name}' files rootRef must not be empty"),
+            ),
+            HttpAction::Redirect { to, status, .. } => {
+                if to.trim().is_empty() {
+                    report.error(
+                        "site.route_empty_redirect",
+                        Some(format!("{path}.action.to")),
+                        Some(to.clone()),
+                        format!("HTTP site '{site_name}' redirect target must not be empty"),
+                    );
+                }
+                if !(300..=399).contains(status) {
+                    report.error(
+                        "site.route_invalid_redirect_status",
+                        Some(format!("{path}.action.status")),
+                        Some(status.to_string()),
+                        format!("HTTP site '{site_name}' redirect status must be 300..=399"),
+                    );
+                }
             }
-        }
-
-        if let Some(strip_prefix) = &route.strip_prefix {
-            if !strip_prefix.starts_with('/') {
-                report.error(
-                    "service.route_strip_prefix_not_absolute",
-                    Some(format!("{path}.stripPrefix")),
-                    Some(strip_prefix.clone()),
-                    format!(
-                        "service '{}' route stripPrefix '{}' must start with '/'",
-                        service.name, strip_prefix
-                    ),
-                );
-            }
+            HttpAction::Respond { status, .. } if !(100..=599).contains(status) => report.error(
+                "site.route_invalid_response_status",
+                Some(format!("{path}.action.status")),
+                Some(status.to_string()),
+                format!("HTTP site '{site_name}' response status must be 100..=599"),
+            ),
+            _ => {}
         }
     }
 
-    if let Some(index) = fallback {
-        if index + 1 != service.routes.len() {
-            report.error(
-                "service.route_fallback_not_last",
-                Some(format!("{base}.{index}")),
-                None,
-                format!("service '{}' fallback route must be last", service.name),
-            );
-        }
+    if fallbacks.len() != 1 {
+        report.error(
+            "site.route_fallback_count",
+            Some(base.clone()),
+            Some(fallbacks.len().to_string()),
+            format!("HTTP site '{site_name}' must declare exactly one fallback route"),
+        );
+    } else if fallbacks[0] + 1 != site.routes.len() {
+        report.error(
+            "site.route_fallback_not_last",
+            Some(format!("{base}.{}", fallbacks[0])),
+            None,
+            format!("HTTP site '{site_name}' fallback route must be last"),
+        );
     }
 }
 
@@ -589,25 +721,33 @@ fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
         }
     }
 
+    for (name, group) in &topology.deployment.ingress_groups {
+        if group.hosts.is_empty() {
+            report.error(
+                "ingress.empty_hosts",
+                Some(format!("deployment.ingressGroups.{name}.hosts")),
+                None,
+                format!("ingress group '{name}' must contain at least one host"),
+            );
+        }
+        for host in &group.hosts {
+            if !topology.hosts.contains_key(host) {
+                report.error(
+                    "ingress.unknown_host",
+                    Some(format!("deployment.ingressGroups.{name}.hosts")),
+                    Some(host.clone()),
+                    format!("ingress group '{name}' references unknown host '{host}'"),
+                );
+            }
+        }
+    }
+
     let declared_services: HashSet<&str> = topology
         .services
-        .reverse_proxy_services
-        .iter()
-        .map(|service| service.name.as_str())
-        .chain(
-            topology
-                .services
-                .static_file_services
-                .iter()
-                .map(|service| service.name.as_str()),
-        )
-        .chain(
-            topology
-                .services
-                .internal_services
-                .iter()
-                .map(|service| service.name.as_str()),
-        )
+        .endpoints
+        .keys()
+        .chain(topology.services.http_sites.keys())
+        .map(String::as_str)
         .collect();
 
     let intents = &topology.deployment.service_intents;
@@ -866,38 +1006,6 @@ fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
     }
 }
 
-fn validate_service_hostname(
-    topology: &Topology,
-    report: &mut ValidationReport,
-    name: &str,
-    hostname: Option<&str>,
-) {
-    let Some(hostname) = hostname else {
-        return;
-    };
-    if !valid_hostname(hostname) {
-        report.error(
-            "service.invalid_hostname",
-            Some(format!("services.{name}.hostname")),
-            Some(hostname.into()),
-            format!("service '{name}' has invalid hostname '{hostname}'"),
-        );
-    } else if !topology.domains.zones.is_empty()
-        && !topology
-            .domains
-            .zones
-            .iter()
-            .any(|zone| Topology::host_in_zone(hostname, zone))
-    {
-        report.error(
-            "service.hostname_outside_zone",
-            Some(format!("services.{name}.hostname")),
-            Some(hostname.into()),
-            format!("service hostname '{hostname}' is outside declared zones"),
-        );
-    }
-}
-
 fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
     for (host_name, host) in &topology.hosts {
         for (field, value) in [
@@ -951,7 +1059,6 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
         }
     }
 }
-
 fn valid_hostname(value: &str) -> bool {
     if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
         return false;
@@ -1008,14 +1115,16 @@ fn address_in_subnet(address: IpAddr, network: IpAddr, prefix: u8) -> bool {
 mod tests {
     use super::*;
     use crate::topology::{
-        Domains, DynamicHost, HealthIntent, Host, InternalService, PagesSite, ReverseProxyRoute,
-        ReverseProxyService, ServiceIntent, Services,
+        DnsPublication, Domains, DynamicHost, Endpoint, EndpointBind, EndpointTransport,
+        HealthIntent, Host, HttpAccess, HttpAction, HttpMatch, HttpRoute, HttpSite, IngressGroup,
+        PagesSite, ServiceIntent, Services,
     };
     use indexmap::IndexMap;
 
     #[test]
     fn validates_dynamic_hosts_against_label_boundaries() {
         let topology = Topology {
+            schema_version: 2,
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
@@ -1035,6 +1144,7 @@ mod tests {
                         zone: None,
                     },
                 ],
+                dns_zones: vec![],
                 pages_sites: vec![PagesSite {
                     subdomain: "apt.modde".to_string(),
                     repository: "caniko/apt-modde".to_string(),
@@ -1063,7 +1173,7 @@ mod tests {
 
     #[test]
     fn validates_service_intent_placement_and_health() {
-        let mut topology = Topology::default();
+        let mut topology = v2_topology();
         topology.hosts.insert(
             "atlas".to_string(),
             Host {
@@ -1072,12 +1182,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        topology.services.internal_services.push(InternalService {
-            name: "pink-raven".to_string(),
-            port: 3000,
-            target_host: Some("atlas".to_string()),
-            description: None,
-        });
+        topology.services.endpoints.insert(
+            "pink-raven".to_string(),
+            endpoint("atlas", EndpointBind::Loopback),
+        );
         topology.deployment.service_intents.push(ServiceIntent {
             name: "pink-raven-runtime".to_string(),
             service_name: Some("pink-raven".to_string()),
@@ -1095,7 +1203,7 @@ mod tests {
 
     #[test]
     fn rejects_service_intent_cycles_and_unknown_hosts() {
-        let mut topology = Topology::default();
+        let mut topology = v2_topology();
         topology.deployment.service_intents = vec![
             ServiceIntent {
                 name: "first".to_string(),
@@ -1122,8 +1230,8 @@ mod tests {
     }
 
     #[test]
-    fn accepts_ordered_routes_with_a_last_fallback() {
-        let mut topology = Topology::default();
+    fn accepts_v2_sites_with_ordered_routes_and_last_fallback() {
+        let mut topology = v2_topology();
         topology.hosts.insert(
             "atlas".to_string(),
             Host {
@@ -1131,72 +1239,140 @@ mod tests {
                 ..Default::default()
             },
         );
-        topology
-            .services
-            .reverse_proxy_services
-            .push(ReverseProxyService {
-                name: "foundry".to_string(),
-                hostname: Some("vtt.example.test".to_string()),
-                port: 8030,
-                target_host: Some("atlas".to_string()),
+        topology.deployment.ingress_groups.insert(
+            "public".to_string(),
+            IngressGroup {
+                scope: IngressScope::Public,
+                hosts: vec!["atlas".to_string()],
+            },
+        );
+        topology.services.endpoints.insert(
+            "foundry".to_string(),
+            endpoint("atlas", EndpointBind::Loopback),
+        );
+        topology.services.http_sites.insert(
+            "foundry".to_string(),
+            HttpSite {
+                hostname: "vtt.example.test".to_string(),
+                ingress: "public".to_string(),
+                access: HttpAccess::Direct,
+                dns_publication: DnsPublication::None,
                 routes: vec![
-                    ReverseProxyRoute {
-                        paths: vec!["/api".to_string(), "/api/*".to_string()],
-                        target_host: Some("atlas".to_string()),
-                        port: Some(8032),
-                        ..Default::default()
-                    },
-                    ReverseProxyRoute::default(),
+                    route(
+                        HttpMatch {
+                            paths: vec![PathMatch::Prefix {
+                                value: "/api".to_string(),
+                            }],
+                            absent_query_params: vec![],
+                        },
+                        HttpAction::Proxy {
+                            endpoint: "foundry".to_string(),
+                            strip_prefix: None,
+                        },
+                    ),
+                    route(
+                        HttpMatch::default(),
+                        HttpAction::Respond {
+                            status: 404,
+                            body: None,
+                        },
+                    ),
                 ],
-                ..Default::default()
-            });
+            },
+        );
 
         assert!(validate(&topology).is_ok());
     }
 
     #[test]
-    fn rejects_ambiguous_and_malformed_routes() {
-        let mut topology = Topology::default();
+    fn rejects_invalid_route_refs_and_reachability() {
+        let mut topology = v2_topology();
         topology.hosts.insert(
-            "atlas".to_string(),
+            "ingress".to_string(),
             Host {
                 system: "x86_64-linux".to_string(),
                 ..Default::default()
             },
         );
-        topology
-            .services
-            .reverse_proxy_services
-            .push(ReverseProxyService {
-                name: "foundry".to_string(),
-                hostname: Some("vtt.example.test".to_string()),
-                port: 8030,
-                target_host: Some("atlas".to_string()),
-                routes: vec![
-                    ReverseProxyRoute::default(),
-                    ReverseProxyRoute {
-                        paths: vec!["api".to_string()],
-                        target_host: Some("missing".to_string()),
-                        port: Some(0),
-                        strip_prefix: Some("api".to_string()),
-                        ..Default::default()
-                    },
-                    ReverseProxyRoute {
-                        paths: vec!["api".to_string()],
-                        ..Default::default()
-                    },
-                ],
+        topology.hosts.insert(
+            "target".to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
                 ..Default::default()
-            });
+            },
+        );
+        topology.deployment.ingress_groups.insert(
+            "public".to_string(),
+            IngressGroup {
+                scope: IngressScope::Public,
+                hosts: vec!["ingress".to_string()],
+            },
+        );
+        topology.services.endpoints.insert(
+            "local".to_string(),
+            endpoint("target", EndpointBind::Loopback),
+        );
+        topology.services.endpoints.insert(
+            "bad-remote".to_string(),
+            Endpoint {
+                remote_via: Some("missing-remote".to_string()),
+                ..endpoint("target", EndpointBind::Loopback)
+            },
+        );
+        topology.services.http_sites.insert(
+            "broken".to_string(),
+            HttpSite {
+                hostname: "broken.example.test".to_string(),
+                ingress: "public".to_string(),
+                access: HttpAccess::Direct,
+                dns_publication: DnsPublication::None,
+                routes: vec![
+                    route(
+                        HttpMatch::default(),
+                        HttpAction::Proxy {
+                            endpoint: "local".to_string(),
+                            strip_prefix: None,
+                        },
+                    ),
+                    route(
+                        HttpMatch {
+                            paths: vec![PathMatch::Exact {
+                                value: "api".to_string(),
+                            }],
+                            absent_query_params: vec![String::new()],
+                        },
+                        HttpAction::Proxy {
+                            endpoint: "missing".to_string(),
+                            strip_prefix: Some("api".to_string()),
+                        },
+                    ),
+                    route(
+                        HttpMatch {
+                            paths: vec![PathMatch::Exact {
+                                value: "api".to_string(),
+                            }],
+                            absent_query_params: vec![String::new()],
+                        },
+                        HttpAction::Respond {
+                            status: 700,
+                            body: None,
+                        },
+                    ),
+                ],
+            },
+        );
 
         let report = validate(&topology);
         for code in [
-            "service.route_fallback_not_last",
-            "service.route_path_not_absolute",
-            "service.route_invalid_target_host",
-            "service.route_invalid_port",
-            "service.route_strip_prefix_not_absolute",
-            "service.route_duplicate_matcher",
+            "site.route_fallback_not_last",
+            "site.route_path_not_absolute",
+            "site.route_unknown_endpoint",
+            "site.route_strip_prefix_not_absolute",
+            "site.route_duplicate_match",
+            "site.route_empty_absent_query_param",
+            "site.route_unreachable_endpoint",
+            "site.route_invalid_response_status",
+            "endpoint.unknown_remote_via",
         ] {
             assert!(
                 report.issues.iter().any(|issue| issue.code == code),
@@ -1208,7 +1384,7 @@ mod tests {
 
     #[test]
     fn validates_laptop_media_route_and_storage_paths() {
-        let mut topology = Topology::default();
+        let mut topology = v2_topology();
         topology.hosts.insert(
             "nomad".to_string(),
             Host {
@@ -1242,6 +1418,49 @@ mod tests {
                 "missing validation issue {code}: {:?}",
                 report.issues
             );
+        }
+    }
+
+    #[test]
+    fn rejects_absent_and_old_schema_versions() {
+        let absent = Topology::default();
+        assert_eq!(absent.schema_version, 0);
+        assert!(validate(&absent)
+            .issues
+            .iter()
+            .any(|issue| issue.code == "topology.unsupported_schema_version"));
+
+        let mut old = v2_topology();
+        old.schema_version = 1;
+        assert!(!validate(&old).is_ok());
+        assert!(validate(&v2_topology()).is_ok());
+    }
+
+    fn v2_topology() -> Topology {
+        Topology {
+            schema_version: 2,
+            ..Default::default()
+        }
+    }
+
+    fn endpoint(target_host: &str, bind: EndpointBind) -> Endpoint {
+        Endpoint {
+            target_host: target_host.to_string(),
+            port: 8080,
+            transport: EndpointTransport::Http,
+            bind,
+            remote_via: None,
+            tls_server_name: None,
+            tcp_probe: true,
+        }
+    }
+
+    fn route(matcher: HttpMatch, action: HttpAction) -> HttpRoute {
+        HttpRoute {
+            matcher,
+            action,
+            auth_policy: None,
+            response_headers: IndexMap::new(),
         }
     }
 }

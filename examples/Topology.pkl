@@ -2,6 +2,7 @@
 // Production fleet data should live in the consuming flake.
 import "../lib/topology/Schema.pkl" as S
 
+schemaVersion: UInt16 = 2
 links = new {
   ["mesh"] = new S.Link {
     subnet = "10.44.0.0/24"
@@ -71,41 +72,69 @@ domains = new S.Domains {
 }
 
 services = new S.Services {
-  sshPort = 2222
-  reverseProxyServices = new Listing {
-    new S.ReverseProxyService {
-      name = "dashboard"
-      hostname = "dashboard.example.test"
+  endpoints = new {
+    ["dashboard"] = new S.Endpoint {
+      targetHost = "edge"
       port = 8443
-      targetHost = "edge"
-      upstreamScheme = "https"
+      transport = "https"
+      bind = "loopback"
     }
-    new S.ReverseProxyService {
-      name = "multi"
-      hostname = "multi.example.test"
-      port = 8030
+    ["multi"] = new S.Endpoint {
       targetHost = "edge"
-      lanExposed = true
-      routes = new Listing {
-        new S.ReverseProxyRoute {
-          paths = new Listing { "/api"; "/api/*" }
-          port = 8032
-          monitoringIdentity = "multi-api"
-        }
-        new S.ReverseProxyRoute {}
-      }
+      port = 8032
+      transport = "http"
+      bind = "loopback"
+    }
+    ["metrics"] = new S.Endpoint {
+      targetHost = "edge"
+      port = 9090
+      transport = "tcp"
+      bind = "lan"
     }
   }
-  internalServices = new Listing {
-    new S.InternalService {
-      name = "metrics"
-      port = 9090
-      targetHost = "edge"
+  httpSites = new {
+    ["dashboard"] = new S.HttpSite {
+      hostname = "dashboard.example.test"
+      ingress = "public-edge"
+      access = "direct"
+      dnsPublication = "managed"
+      routes = new Listing {
+        new S.HttpRoute {
+          match = new S.HttpMatch {}
+          action = new S.ProxyAction { endpoint = "dashboard" }
+        }
+      }
+    }
+    ["multi"] = new S.HttpSite {
+      hostname = "multi.example.test"
+      ingress = "public-edge"
+      access = "cloudflare"
+      dnsPublication = "managed"
+      routes = new Listing {
+        new S.HttpRoute {
+          match = new S.HttpMatch {
+            paths = new Listing {
+              new S.PrefixPathMatch { value = "/api" }
+            }
+          }
+          action = new S.ProxyAction { endpoint = "multi" }
+        }
+        new S.HttpRoute {
+          match = new S.HttpMatch {}
+          action = new S.RespondAction { status = 404 }
+        }
+      }
     }
   }
 }
 
 deployment = new S.Deployment {
+  ingressGroups = new {
+    ["public-edge"] = new S.IngressGroup {
+      scope = "public"
+      hosts = new Listing { "edge" }
+    }
+  }
   serviceIntents = new Listing {
     new S.ServiceIntent {
       name = "dashboard"

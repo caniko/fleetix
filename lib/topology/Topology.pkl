@@ -5,6 +5,7 @@
 // this path, but never duplicate schema classes here.
 import "Schema.pkl" as S
 
+schemaVersion: UInt16 = 2
 links = new {}
 hosts = new {}
 domains = new S.Domains {}

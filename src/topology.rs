@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Topology {
+    #[serde(default)]
+    pub schema_version: u16,
     pub links: IndexMap<String, Link>,
     pub hosts: IndexMap<String, Host>,
     pub domains: Domains,
@@ -199,6 +201,8 @@ pub struct Domains {
     #[serde(default)]
     pub dynamic_hosts: Vec<DynamicHost>,
     #[serde(default)]
+    pub dns_zones: Vec<DnsZone>,
+    #[serde(default)]
     pub pages_sites: Vec<PagesSite>,
     #[serde(default)]
     pub redirects: Vec<Redirect>,
@@ -212,6 +216,59 @@ pub struct DynamicHost {
     pub proxied: bool,
     #[serde(default)]
     pub zone: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsRecord {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub record_type: String,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub preference: Option<i64>,
+    #[serde(default)]
+    pub proxied: bool,
+    #[serde(default = "default_true")]
+    pub ttl_auto: bool,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsExclude {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub record_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsZone {
+    pub name: String,
+    #[serde(default = "default_dns_ttl")]
+    pub default_ttl: i64,
+    #[serde(default = "default_dns_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub records: Vec<DnsRecord>,
+    #[serde(default)]
+    pub exclude: Vec<DnsExclude>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_dns_ttl() -> i64 {
+    300
+}
+
+fn default_dns_mode() -> String {
+    "lenient".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,27 +298,144 @@ fn default_redirect_preserve_path() -> bool {
     true
 }
 
-fn default_publish_cname() -> bool {
-    true
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Services {
+    #[serde(default)]
+    pub endpoints: IndexMap<String, Endpoint>,
+    #[serde(default)]
+    pub http_sites: IndexMap<String, HttpSite>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Endpoint {
+    pub target_host: String,
+    pub port: u16,
+    pub transport: EndpointTransport,
+    pub bind: EndpointBind,
+    #[serde(default)]
+    pub remote_via: Option<String>,
+    #[serde(default)]
+    pub tls_server_name: Option<String>,
+    #[serde(default = "default_true")]
+    pub tcp_probe: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EndpointTransport {
+    Tcp,
+    Http,
+    Https,
+    H2c,
+}
+
+impl EndpointTransport {
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Http | Self::Https | Self::H2c)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EndpointBind {
+    Loopback,
+    Lan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpSite {
+    pub hostname: String,
+    pub ingress: String,
+    pub access: HttpAccess,
+    pub dns_publication: DnsPublication,
+    pub routes: Vec<HttpRoute>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpAccess {
+    Cloudflare,
+    Direct,
+    Vpn,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsPublication {
+    Managed,
+    External,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpRoute {
+    #[serde(rename = "match")]
+    pub matcher: HttpMatch,
+    pub action: HttpAction,
+    #[serde(default)]
+    pub auth_policy: Option<String>,
+    #[serde(default)]
+    pub response_headers: IndexMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Services {
-    #[serde(default = "default_ssh_port")]
-    pub ssh_port: u16,
+pub struct HttpMatch {
     #[serde(default)]
-    pub host_ssh_key_path: Option<String>,
+    pub paths: Vec<PathMatch>,
     #[serde(default)]
-    pub host_ssh_pub_key_path: Option<String>,
-    #[serde(default)]
-    pub reverse_proxy_services: Vec<ReverseProxyService>,
-    #[serde(default)]
-    pub static_file_services: Vec<StaticFileService>,
-    #[serde(default)]
-    pub internal_services: Vec<InternalService>,
-    #[serde(default)]
-    pub email_identities: EmailIdentities,
+    pub absent_query_params: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PathMatch {
+    Exact { value: String },
+    Prefix { value: String },
+}
+
+impl PathMatch {
+    pub fn value(&self) -> &str {
+        match self {
+            Self::Exact { value } | Self::Prefix { value } => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum HttpAction {
+    Proxy {
+        endpoint: String,
+        #[serde(default, rename = "stripPrefix")]
+        strip_prefix: Option<String>,
+    },
+    Files {
+        #[serde(rename = "rootRef")]
+        root_ref: String,
+        #[serde(default = "default_index_names", rename = "indexNames")]
+        index_names: Vec<String>,
+    },
+    Redirect {
+        to: String,
+        #[serde(default = "default_redirect_status")]
+        status: u16,
+        #[serde(default = "default_true", rename = "preserveUri")]
+        preserve_uri: bool,
+    },
+    Respond {
+        status: u16,
+        #[serde(default)]
+        body: Option<String>,
+    },
+}
+
+fn default_index_names() -> Vec<String> {
+    vec!["index.html".to_string()]
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -296,6 +470,22 @@ pub struct ServiceIntent {
 pub struct Deployment {
     #[serde(default)]
     pub service_intents: Vec<ServiceIntent>,
+    #[serde(default)]
+    pub ingress_groups: IndexMap<String, IngressGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressGroup {
+    pub scope: IngressScope,
+    pub hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IngressScope {
+    Public,
+    Vpn,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -314,152 +504,6 @@ pub struct SshKnownHost {
     pub provenance: Option<String>,
 }
 
-fn default_ssh_port() -> u16 {
-    1337
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReverseProxyService {
-    pub name: String,
-    #[serde(default)]
-    pub hostname: Option<String>,
-    pub port: u16,
-    #[serde(default)]
-    pub target_host: Option<String>,
-    #[serde(default)]
-    pub proxied: bool,
-    #[serde(default)]
-    pub cloudflare_proxied: bool,
-    #[serde(default = "default_publish_cname")]
-    pub publish_cname: bool,
-    #[serde(default)]
-    pub vpn_only: bool,
-    #[serde(default)]
-    pub lan_exposed: bool,
-    #[serde(default)]
-    pub upstream_scheme: Option<String>,
-    #[serde(default)]
-    pub tls_server_name: Option<String>,
-    #[serde(default)]
-    pub service_host: Option<String>,
-    #[serde(default)]
-    pub zone: Option<String>,
-    #[serde(default)]
-    pub routes: Vec<ReverseProxyRoute>,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReverseProxyRoute {
-    #[serde(default)]
-    pub paths: Vec<String>,
-    #[serde(default)]
-    pub target_host: Option<String>,
-    #[serde(default)]
-    pub port: Option<u16>,
-    #[serde(default)]
-    pub upstream_scheme: Option<String>,
-    #[serde(default)]
-    pub tls_server_name: Option<String>,
-    #[serde(default)]
-    pub strip_prefix: Option<String>,
-    #[serde(default)]
-    pub monitoring_identity: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NormalizedReverseProxyRoute {
-    pub paths: Vec<String>,
-    pub target_host: Option<String>,
-    pub port: u16,
-    pub upstream_scheme: String,
-    pub tls_server_name: Option<String>,
-    pub strip_prefix: Option<String>,
-    pub monitoring_identity: String,
-}
-
-impl ReverseProxyService {
-    /// Resolve explicit routes while preserving the legacy single-upstream
-    /// shape when no routes are declared.
-    pub fn normalized_routes(&self) -> Vec<NormalizedReverseProxyRoute> {
-        let routes = if self.routes.is_empty() {
-            vec![ReverseProxyRoute {
-                paths: Vec::new(),
-                target_host: None,
-                port: None,
-                upstream_scheme: None,
-                tls_server_name: None,
-                strip_prefix: None,
-                monitoring_identity: None,
-            }]
-        } else {
-            self.routes.clone()
-        };
-
-        routes
-            .into_iter()
-            .map(|route| NormalizedReverseProxyRoute {
-                paths: route.paths,
-                target_host: route.target_host.or_else(|| self.target_host.clone()),
-                port: route.port.unwrap_or(self.port),
-                upstream_scheme: route
-                    .upstream_scheme
-                    .or_else(|| self.upstream_scheme.clone())
-                    .unwrap_or_else(|| "http".to_string()),
-                tls_server_name: route
-                    .tls_server_name
-                    .or_else(|| self.tls_server_name.clone()),
-                strip_prefix: route.strip_prefix,
-                monitoring_identity: route
-                    .monitoring_identity
-                    .unwrap_or_else(|| self.name.clone()),
-            })
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StaticFileService {
-    pub name: String,
-    #[serde(default)]
-    pub hostname: Option<String>,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub cloudflare_proxied: bool,
-    #[serde(default)]
-    pub dns_comment: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InternalService {
-    pub name: String,
-    pub port: u16,
-    #[serde(default)]
-    pub target_host: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmailIdentities {
-    #[serde(default)]
-    pub admin_email: Option<String>,
-    #[serde(default)]
-    pub noreply_email: Option<String>,
-    #[serde(default)]
-    pub cloudflare_contact_email: Option<String>,
-    #[serde(default)]
-    pub brevo_login: Option<String>,
-    #[serde(default)]
-    pub postmaster_email: Option<String>,
-}
-
 /// Render a modular topology entrypoint into a self-contained compatibility
 /// Pkl file for consumers whose evaluator cannot resolve local aggregate
 /// imports.
@@ -475,6 +519,13 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
         "// Generated compatibility topology. Edit the modular topology source instead.\n\n",
     );
     out.push_str(&strip_imports(&read_to_string(src_dir.join("Schema.pkl"))?));
+    let schema_version = entrypoint
+        .lines()
+        .find(|line| line.trim_start().starts_with("schemaVersion"))
+        .map(str::trim)
+        .unwrap_or("schemaVersion = 0");
+    out.push_str("\n\n");
+    out.push_str(schema_version);
     let shared_names = strip_imports(&read_to_string(src_dir.join("../shared/Names.pkl"))?);
 
     out.push_str("\n\nlinks = new {\n");
@@ -661,11 +712,33 @@ pub async fn load_topology_with_options(
     path: &Path,
     options: pklx::pklr::EvalOptions,
 ) -> miette::Result<Topology> {
-    if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
-        let temporary = flattened_tempfile(path)?;
-        return crate::pkl::load_with_options(temporary.path(), options).await;
+    let topology = evaluate_topology_with_options(path, options).await?;
+
+    let report = crate::validate::validate(&topology);
+    if report.is_ok() {
+        Ok(topology)
+    } else {
+        let errors = report
+            .errors()
+            .map(|issue| format!("{}: {}", issue.code, issue.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(miette::miette!("invalid topology:\n{errors}"))
     }
-    crate::pkl::load_with_options(path, options).await
+}
+
+pub(crate) async fn evaluate_topology_with_options(
+    path: &Path,
+    options: pklx::pklr::EvalOptions,
+) -> miette::Result<Topology> {
+    let topology =
+        if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
+            let temporary = flattened_tempfile(path)?;
+            crate::pkl::load_with_options(temporary.path(), options).await?
+        } else {
+            crate::pkl::load_with_options(path, options).await?
+        };
+    Ok(topology)
 }
 
 #[cfg(test)]
@@ -737,6 +810,7 @@ links = new {
             r#"
 class Link {
   subnet: String
+  port: UInt16 = 51820
 }
 
 class Host {
@@ -751,6 +825,8 @@ class SshKnownHost {
 class Trust {
   sshKnownHosts: Listing<SshKnownHost> = new Listing {}
 }
+
+class Deployment {}
 "#,
         )
         .map_err(|e| miette::miette!("write Schema.pkl: {e}"))?;
@@ -809,7 +885,8 @@ names = new {
 import "Schema.pkl" as S
 
 services = new {
-  reverseProxyServices = new Listing {}
+  endpoints = new {}
+  httpSites = new {}
 }
 "#,
         )
@@ -827,6 +904,7 @@ hosts = new {
 
 domains = (import("Domains.pkl")).domains
 services = (import("Services.pkl")).services
+schemaVersion: UInt16 = 2
 trust = (import("Trust.pkl")).trust
 "#,
         )
@@ -868,6 +946,84 @@ trust = new S.Trust {
             vec!["git.example.test"]
         );
 
+        Ok(())
+    }
+    #[tokio::test]
+    async fn example_deserializes_tagged_http_actions() -> miette::Result<()> {
+        let temp = tempfile::tempdir().map_err(|error| miette::miette!("tempdir: {error}"))?;
+        let path = temp.path().join("Topology.pkl");
+        std::fs::write(
+            &path,
+            r#"
+schemaVersion = 2
+links = new {}
+hosts = new {
+  ["edge"] = new { system = "x86_64-linux" }
+}
+domains = new {}
+services = new {
+  endpoints = new {
+    ["dashboard"] = new {
+      targetHost = "edge"
+      port = 8080
+      transport = "http"
+      bind = "loopback"
+    }
+  }
+  httpSites = new {
+    ["dashboard"] = new {
+      hostname = "dashboard.example.test"
+      ingress = "public"
+      access = "direct"
+      dnsPublication = "none"
+      routes = new Listing {
+        new {
+          match = new {}
+          action = new { type = "proxy"; endpoint = "dashboard" }
+        }
+      }
+    }
+  }
+}
+deployment = new {
+  ingressGroups = new {
+    ["public"] = new { scope = "public"; hosts = new Listing { "edge" } }
+  }
+}
+"#,
+        )
+        .map_err(|error| miette::miette!("write topology: {error}"))?;
+        let topology = load_topology(&path).await?;
+        let dashboard = &topology.services.http_sites["dashboard"];
+        assert!(matches!(
+            dashboard.routes[0].action,
+            HttpAction::Proxy { ref endpoint, .. } if endpoint == "dashboard"
+        ));
+        assert_eq!(topology.schema_version, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_rejects_absent_and_wrong_schema_versions() -> miette::Result<()> {
+        let temp = tempfile::tempdir().map_err(|error| miette::miette!("tempdir: {error}"))?;
+        for (name, schema) in [("absent", ""), ("wrong", "schemaVersion = 1")] {
+            let path = temp.path().join(format!("{name}.pkl"));
+            fs::write(
+                &path,
+                format!(
+                    "{schema}\nlinks = new {{}}\nhosts = new {{}}\ndomains = new {{}}\nservices = new {{}}\n"
+                ),
+            )
+            .map_err(|error| miette::miette!("write topology: {error}"))?;
+
+            let error = load_topology(&path).await.expect_err("invalid schema");
+            assert!(
+                error
+                    .to_string()
+                    .contains("topology.unsupported_schema_version"),
+                "unexpected error: {error:?}"
+            );
+        }
         Ok(())
     }
 }
