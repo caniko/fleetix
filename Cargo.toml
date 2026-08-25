@@ -5,8 +5,8 @@ edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
 license = "MIT OR Apache-2.0"
-repository = "https://codeberg.org/caniko/fleetix"
-homepage = "https://codeberg.org/caniko/fleetix"
+repository = "https://github.com/caniko/fleetix"
+homepage = "https://github.com/caniko/fleetix"
 keywords = ["fleet", "topology", "nix", "pkl", "nixos"]
 categories = ["config"]
 readme = "README.md"
@@ -18,7 +18,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-pklx = { version = "0.1.0", git = "https://codeberg.org/caniko/nix-pklx.git" }
+pklx = { version = "0.1.0", git = "https://github.com/caniko/nix-pklx.git" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 miette = "7"
 serde = { version = "1", features = ["derive"] }
