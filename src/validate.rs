@@ -1319,6 +1319,17 @@ mod tests {
                 ..endpoint("target", EndpointBind::Loopback)
             },
         );
+        topology
+            .services
+            .endpoints
+            .insert("vpn".to_string(), endpoint("target", EndpointBind::Vpn));
+        topology.services.endpoints.insert(
+            "bad-vpn-remote".to_string(),
+            Endpoint {
+                remote_via: Some("vpn".to_string()),
+                ..endpoint("target", EndpointBind::Loopback)
+            },
+        );
         topology.services.http_sites.insert(
             "broken".to_string(),
             HttpSite {
@@ -1373,6 +1384,7 @@ mod tests {
             "site.route_unreachable_endpoint",
             "site.route_invalid_response_status",
             "endpoint.unknown_remote_via",
+            "endpoint.invalid_remote_via",
         ] {
             assert!(
                 report.issues.iter().any(|issue| issue.code == code),

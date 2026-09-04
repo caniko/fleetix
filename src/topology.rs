@@ -342,6 +342,7 @@ impl EndpointTransport {
 pub enum EndpointBind {
     Loopback,
     Lan,
+    Vpn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -959,15 +960,16 @@ schemaVersion = 2
 links = new {}
 hosts = new {
   ["edge"] = new { system = "x86_64-linux" }
+  ["target"] = new { system = "x86_64-linux" }
 }
 domains = new {}
 services = new {
   endpoints = new {
     ["dashboard"] = new {
-      targetHost = "edge"
+      targetHost = "target"
       port = 8080
       transport = "http"
-      bind = "loopback"
+      bind = "vpn"
     }
   }
   httpSites = new {
@@ -994,6 +996,16 @@ deployment = new {
         )
         .map_err(|error| miette::miette!("write topology: {error}"))?;
         let topology = load_topology(&path).await?;
+        let endpoint = &topology.services.endpoints["dashboard"];
+        assert_eq!(endpoint.bind, EndpointBind::Vpn);
+        assert_eq!(serde_json::to_string(&endpoint.bind).unwrap(), r#""vpn""#);
+        assert_eq!(
+            topology
+                .endpoint_for_ingress("dashboard", "edge")
+                .unwrap()
+                .0,
+            "dashboard"
+        );
         let dashboard = &topology.services.http_sites["dashboard"];
         assert!(matches!(
             dashboard.routes[0].action,

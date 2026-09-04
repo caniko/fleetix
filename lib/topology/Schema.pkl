@@ -128,7 +128,7 @@ class Domains {
 }
 
 typealias EndpointTransport = "tcp" | "http" | "https" | "h2c"
-typealias EndpointBind = "loopback" | "lan"
+typealias EndpointBind = "loopback" | "lan" | "vpn"
 
 class Endpoint {
   targetHost: String

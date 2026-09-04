@@ -9,6 +9,7 @@
 
 ### Added
 
+- VPN-bound service endpoints in the Pkl schema and Rust topology model
 - simit-managed Forgejo CI workflow with fmt, clippy, test, audit, MSRV, docs,
   and package checks on the atlas runner
 - Pre-commit hooks for treefmt, cargo fmt, clippy, audit, MSRV, and nix flake
