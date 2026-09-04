@@ -1,6 +1,6 @@
 use crate::topology::{
     DnsPublication, EndpointBind, HttpAccess, HttpAction, IngressScope, LinkRole, PathMatch,
-    Topology,
+    Topology, VpnConnection, VpnPortForwarding,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -104,6 +104,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     validate_identifiers(topology, &mut report);
     validate_domains(topology, &mut report);
     validate_host_hardware(topology, &mut report);
+    validate_vpn_profiles(topology, &mut report);
     validate_deployment(topology, &mut report);
     validate_services(topology, &mut report);
 
@@ -1059,6 +1060,150 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
         }
     }
 }
+
+fn validate_vpn_profiles(topology: &Topology, report: &mut ValidationReport) {
+    for (host_name, host) in &topology.hosts {
+        for (profile_name, profile) in &host.vpn_profiles {
+            let base = format!("hosts.{host_name}.vpnProfiles.{profile_name}");
+            if profile.provider.trim().is_empty() {
+                report.error(
+                    "vpn.empty_provider",
+                    Some(format!("{base}.provider")),
+                    Some(profile.provider.clone()),
+                    format!(
+                        "VPN profile '{profile_name}' on host '{host_name}' must declare provider"
+                    ),
+                );
+            }
+            if let Some(owner) = &profile.owner {
+                if !host.users.contains_key(owner) {
+                    report.error(
+                        "vpn.unknown_owner",
+                        Some(format!("{base}.owner")),
+                        Some(owner.clone()),
+                        format!(
+                            "VPN profile '{profile_name}' on host '{host_name}' references unknown user '{owner}'"
+                        ),
+                    );
+                }
+            }
+            for (index, server) in profile.dns_servers.iter().enumerate() {
+                if server.parse::<IpAddr>().is_err() {
+                    report.error(
+                        "vpn.invalid_dns_server",
+                        Some(format!("{base}.dnsServers.{index}")),
+                        Some(server.clone()),
+                        format!("VPN profile '{profile_name}' has invalid DNS server '{server}'"),
+                    );
+                }
+            }
+            if profile.dns_servers.is_empty() {
+                report.error(
+                    "vpn.empty_dns_servers",
+                    Some(format!("{base}.dnsServers")),
+                    None,
+                    format!("VPN profile '{profile_name}' must declare at least one DNS server"),
+                );
+            }
+
+            match &profile.connection {
+                VpnConnection::WireGuard(connection) => {
+                    if connection.addresses.is_empty() {
+                        report.error(
+                            "vpn.empty_addresses",
+                            Some(format!("{base}.connection.addresses")),
+                            None,
+                            format!(
+                                "VPN profile '{profile_name}' must declare at least one address"
+                            ),
+                        );
+                    }
+                    for (index, address) in connection.addresses.iter().enumerate() {
+                        if parse_cidr(address).is_none() {
+                            report.error(
+                                "vpn.invalid_address",
+                                Some(format!("{base}.connection.addresses.{index}")),
+                                Some(address.clone()),
+                                format!(
+                                    "VPN profile '{profile_name}' has invalid address '{address}'"
+                                ),
+                            );
+                        }
+                    }
+                    if connection.private_key_ref.trim().is_empty() {
+                        report.error(
+                            "vpn.empty_private_key_ref",
+                            Some(format!("{base}.connection.privateKeyRef")),
+                            Some(connection.private_key_ref.clone()),
+                            format!("VPN profile '{profile_name}' privateKeyRef must not be empty"),
+                        );
+                    }
+                    if connection.peers.is_empty() {
+                        report.error(
+                            "vpn.empty_peers",
+                            Some(format!("{base}.connection.peers")),
+                            None,
+                            format!("VPN profile '{profile_name}' must declare at least one peer"),
+                        );
+                    }
+                    for (index, peer) in connection.peers.iter().enumerate() {
+                        let peer_base = format!("{base}.connection.peers.{index}");
+                        for (field, value) in [
+                            ("publicKey", &peer.public_key),
+                            ("endpoint", &peer.endpoint),
+                        ] {
+                            if value.trim().is_empty() {
+                                report.error(
+                                    "vpn.empty_peer_field",
+                                    Some(format!("{peer_base}.{field}")),
+                                    Some(value.clone()),
+                                    format!("VPN profile '{profile_name}' peer {field} must not be empty"),
+                                );
+                            }
+                        }
+                        if peer.allowed_ips.is_empty() {
+                            report.error(
+                                "vpn.empty_allowed_ips",
+                                Some(format!("{peer_base}.allowedIps")),
+                                None,
+                                format!(
+                                    "VPN profile '{profile_name}' peer must declare allowedIps"
+                                ),
+                            );
+                        }
+                        for (allowed_index, allowed) in peer.allowed_ips.iter().enumerate() {
+                            if parse_cidr(allowed).is_none() {
+                                report.error(
+                                    "vpn.invalid_allowed_ip",
+                                    Some(format!("{peer_base}.allowedIps.{allowed_index}")),
+                                    Some(allowed.clone()),
+                                    format!(
+                                        "VPN profile '{profile_name}' peer has invalid allowed IP '{allowed}'"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(VpnPortForwarding::NatPmp(forwarding)) = &profile.port_forwarding {
+                if forwarding.gateway.parse::<IpAddr>().is_err() {
+                    report.error(
+                        "vpn.invalid_port_forwarding_gateway",
+                        Some(format!("{base}.portForwarding.gateway")),
+                        Some(forwarding.gateway.clone()),
+                        format!(
+                            "VPN profile '{profile_name}' has invalid port-forwarding gateway '{}'",
+                            forwarding.gateway
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn valid_hostname(value: &str) -> bool {
     if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
         return false;
@@ -1120,6 +1265,7 @@ mod tests {
         PagesSite, ServiceIntent, Services,
     };
     use indexmap::IndexMap;
+    use serde_json::json;
 
     #[test]
     fn validates_dynamic_hosts_against_label_boundaries() {
@@ -1431,6 +1577,86 @@ mod tests {
                 report.issues
             );
         }
+    }
+
+    #[test]
+    fn validates_host_local_vpn_profiles() {
+        let topology: Topology = serde_json::from_value(json!({
+            "schemaVersion": 2,
+            "links": {},
+            "hosts": {
+                "edge": {
+                    "system": "x86_64-linux",
+                    "users": { "alice": { "hasAccount": true } },
+                    "vpnProfiles": {
+                        "empty": {
+                            "provider": " ",
+                            "owner": "missing",
+                            "dnsServers": ["not-an-ip"],
+                            "connection": {
+                                "type": "wireguard",
+                                "addresses": ["not-a-cidr"],
+                                "privateKeyRef": "",
+                                "peers": [
+                                    {
+                                        "publicKey": "",
+                                        "endpoint": " ",
+                                        "allowedIps": ["not-a-cidr"]
+                                    },
+                                    {
+                                        "publicKey": "peer-public-key",
+                                        "endpoint": "vpn.example.test:51820",
+                                        "allowedIps": []
+                                    }
+                                ]
+                            },
+                            "portForwarding": {
+                                "type": "nat-pmp",
+                                "gateway": "not-an-ip"
+                            }
+                        },
+                        "missing-network-data": {
+                            "provider": "Example VPN",
+                            "connection": {
+                                "type": "wireguard",
+                                "addresses": ["198.51.100.2/32"],
+                                "privateKeyRef": "vpn/example/private-key",
+                                "peers": []
+                            }
+                        }
+                    }
+                },
+                "empty-profiles": {
+                    "system": "x86_64-linux",
+                    "vpnProfiles": {}
+                }
+            },
+            "domains": {},
+            "services": {}
+        }))
+        .unwrap();
+
+        let report = validate(&topology);
+        for code in [
+            "vpn.empty_provider",
+            "vpn.unknown_owner",
+            "vpn.invalid_dns_server",
+            "vpn.empty_dns_servers",
+            "vpn.invalid_address",
+            "vpn.empty_private_key_ref",
+            "vpn.empty_peers",
+            "vpn.empty_peer_field",
+            "vpn.empty_allowed_ips",
+            "vpn.invalid_allowed_ip",
+            "vpn.invalid_port_forwarding_gateway",
+        ] {
+            assert!(
+                report.issues.iter().any(|issue| issue.code == code),
+                "missing validation issue {code}: {:?}",
+                report.issues
+            );
+        }
+        assert!(topology.hosts["empty-profiles"].vpn_profiles.is_empty());
     }
 
     #[test]

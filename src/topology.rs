@@ -79,6 +79,8 @@ pub struct Host {
     #[serde(default)]
     pub users: IndexMap<String, User>,
     #[serde(default)]
+    pub vpn_profiles: IndexMap<String, VpnProfile>,
+    #[serde(default)]
     pub gpu: Gpu,
     #[serde(default)]
     pub storage: Storage,
@@ -155,6 +157,60 @@ pub struct User {
     pub gpg: Option<String>,
     #[serde(default)]
     pub signing_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnProfile {
+    pub provider: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub dns_servers: Vec<String>,
+    pub connection: VpnConnection,
+    #[serde(default)]
+    pub port_forwarding: Option<VpnPortForwarding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum VpnConnection {
+    #[serde(rename = "wireguard")]
+    WireGuard(WireGuardVpnConnection),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireGuardVpnConnection {
+    pub addresses: Vec<String>,
+    pub private_key_ref: String,
+    pub peers: Vec<WireGuardPeer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireGuardPeer {
+    pub public_key: String,
+    pub endpoint: String,
+    pub allowed_ips: Vec<String>,
+    #[serde(default)]
+    pub persistent_keepalive_seconds: Option<u16>,
+    #[serde(default)]
+    pub dynamic_endpoint_refresh_seconds: Option<u16>,
+    #[serde(default)]
+    pub dynamic_endpoint_refresh_restart_seconds: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum VpnPortForwarding {
+    #[serde(rename = "nat-pmp")]
+    NatPmp(NatPmpPortForwarding),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NatPmpPortForwarding {
+    pub gateway: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -950,7 +1006,7 @@ trust = new S.Trust {
         Ok(())
     }
     #[tokio::test]
-    async fn example_deserializes_tagged_http_actions() -> miette::Result<()> {
+    async fn example_deserializes_tagged_variants() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|error| miette::miette!("tempdir: {error}"))?;
         let path = temp.path().join("Topology.pkl");
         std::fs::write(
@@ -959,7 +1015,30 @@ trust = new S.Trust {
 schemaVersion = 2
 links = new {}
 hosts = new {
-  ["edge"] = new { system = "x86_64-linux" }
+  ["edge"] = new {
+    system = "x86_64-linux"
+    users = new { ["alice"] = new { hasAccount = true } }
+    vpnProfiles = new {
+      ["example"] = new {
+        provider = "Example VPN"
+        owner = "alice"
+        dnsServers = new Listing { "192.0.2.53" }
+        connection = new {
+          type = "wireguard"
+          addresses = new Listing { "198.51.100.2/32" }
+          privateKeyRef = "vpn/example/private-key"
+          peers = new Listing {
+            new {
+              publicKey = "peer-public-key"
+              endpoint = "vpn.example.test:51820"
+              allowedIps = new Listing { "0.0.0.0/0" }
+            }
+          }
+        }
+        portForwarding = new { type = "nat-pmp"; gateway = "192.0.2.1" }
+      }
+    }
+  }
   ["target"] = new { system = "x86_64-linux" }
 }
 domains = new {}
@@ -1012,6 +1091,15 @@ deployment = new {
             HttpAction::Proxy { ref endpoint, .. } if endpoint == "dashboard"
         ));
         assert_eq!(topology.schema_version, 2);
+        let profile = topology.vpn_profile("edge", "example").unwrap();
+        assert!(matches!(profile.connection, VpnConnection::WireGuard(_)));
+        assert!(matches!(
+            profile.port_forwarding,
+            Some(VpnPortForwarding::NatPmp(_))
+        ));
+        let encoded = serde_json::to_value(profile).unwrap();
+        let decoded: VpnProfile = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
         Ok(())
     }
 

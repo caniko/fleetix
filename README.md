@@ -27,6 +27,7 @@ derive runtime data from a generated topology sidecar:
 
 - `hosts.resolveHostAddress` resolves a host through an explicit ordered
   address policy such as `[ "lan" "direct-link" "wg-home" ]`.
+- `hosts.vpnProfile` resolves a host-local VPN profile by host and profile name.
 - `services.resolveEndpoint` deterministically resolves a local endpoint or
   its declared LAN `remoteVia` endpoint for an ingress host.
 - `services.endpointsForHost`, `services.serviceHosts`, and

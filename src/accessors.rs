@@ -1,6 +1,6 @@
 use crate::topology::{
     DnsPublication, DynamicHost, Endpoint, EndpointBind, HttpAccess, HttpSite, Link, LinkBinding,
-    LinkRole, Topology,
+    LinkRole, Topology, VpnProfile,
 };
 use std::net::IpAddr;
 
@@ -148,6 +148,11 @@ impl Topology {
     /// Get an HTTP site by name.
     pub fn http_site(&self, name: &str) -> Option<&HttpSite> {
         self.services.http_sites.get(name)
+    }
+
+    /// Get a host-local VPN profile by host and profile name.
+    pub fn vpn_profile(&self, host_name: &str, profile_name: &str) -> Option<&VpnProfile> {
+        self.hosts.get(host_name)?.vpn_profiles.get(profile_name)
     }
 
     /// Endpoints targeting a host, preserving declaration order.
@@ -543,6 +548,7 @@ mod tests {
             rebuild: Default::default(),
             links: IndexMap::new(),
             users: IndexMap::new(),
+            vpn_profiles: IndexMap::new(),
             gpu: Default::default(),
             storage: Default::default(),
         }

@@ -9,6 +9,8 @@
 
 ### Added
 
+- Host-local generic VPN profiles with tagged WireGuard connection and NAT-PMP
+  port-forwarding models, Rust and Nix accessors, and topology validation
 - VPN-bound service endpoints in the Pkl schema and Rust topology model
 - simit-managed Forgejo CI workflow with fmt, clippy, test, audit, MSRV, docs,
   and package checks on the atlas runner

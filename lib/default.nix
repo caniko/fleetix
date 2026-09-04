@@ -142,6 +142,22 @@ in rec {
   hosts = {
     resolveHostAddress = resolveHostAddressImpl;
 
+    vpnProfile = {
+      topology,
+      hostName,
+      profileName,
+      require ? true,
+    }: let
+      host = lookupHost topology hostName;
+      profile =
+        if host == null
+        then null
+        else (host.vpnProfiles or {}).${profileName} or null;
+    in
+      if require
+      then requireValue "fleetix.vpnProfile: `${hostName}` has no VPN profile `${profileName}`" profile
+      else profile;
+
     normalize = {topology}:
       builtins.mapAttrs (_name: host:
         host

@@ -205,6 +205,10 @@
             grep -q "httpSites =" topology.nix
             grep -q "buildCache =" topology.nix
             grep -q "packageAttrNames =" topology.nix
+            grep -q "vpnProfiles =" topology.nix
+            grep -q 'privateKeyRef = "vpn/example/private-key"' topology.nix
+            grep -q 'type = "wireguard"' topology.nix
+            grep -q 'type = "nat-pmp"' topology.nix
             grep -q 'dashboard' topology.nix
             grep -q 'requiredAvailability = "always-on"' topology.nix
             grep -q 'serviceIntents' topology.nix
@@ -348,6 +352,18 @@
                   publicKey = "server-key";
                 };
                 links.direct-link.address = "10.10.0.1";
+                users.alice.hasAccount = true;
+                vpnProfiles.example = {
+                  provider = "Example VPN";
+                  owner = "alice";
+                  dnsServers = ["192.0.2.53"];
+                  connection = {
+                    type = "wireguard";
+                    addresses = ["198.51.100.2/32"];
+                    privateKeyRef = "vpn/example/private-key";
+                    peers = [];
+                  };
+                };
               };
               nomad = {
                 network = {};
@@ -479,6 +495,11 @@
               hostName = "nomad";
               policy = ["direct-link"];
             }}" = "10.10.0.2"
+            test "${(self.lib.hosts.vpnProfile {
+              inherit topology;
+              hostName = "atlas";
+              profileName = "example";
+            }).connection.type}" = "wireguard"
             test "${endpoint.name}" = "immich-lan"
             test "${endpoint.targetHost}" = "atlas"
             test "${

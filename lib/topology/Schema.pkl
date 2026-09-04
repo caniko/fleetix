@@ -47,6 +47,39 @@ class User {
   signingKey: String? = null
 }
 
+typealias VpnConnection = WireGuardVpnConnection
+
+class WireGuardVpnConnection {
+  type: "wireguard" = "wireguard"
+  addresses: Listing<String>
+  privateKeyRef: String
+  peers: Listing<WireGuardPeer>
+}
+
+class WireGuardPeer {
+  publicKey: String
+  endpoint: String
+  allowedIps: Listing<String>
+  persistentKeepaliveSeconds: UInt16? = null
+  dynamicEndpointRefreshSeconds: UInt16? = null
+  dynamicEndpointRefreshRestartSeconds: UInt16? = null
+}
+
+typealias VpnPortForwarding = NatPmpPortForwarding
+
+class NatPmpPortForwarding {
+  type: "nat-pmp" = "nat-pmp"
+  gateway: String
+}
+
+class VpnProfile {
+  provider: String
+  owner: String? = null
+  dnsServers: Listing<String> = new Listing {}
+  connection: VpnConnection
+  portForwarding: VpnPortForwarding? = null
+}
+
 class GpuMedia {
   vendor: "amd" | "intel" | "nvidia"
   renderNode: String
@@ -75,6 +108,7 @@ class Host {
   rebuild: Rebuild = new Rebuild {}
   links: Mapping<String, LinkBinding> = new {}
   users: Mapping<String, User> = new {}
+  vpnProfiles: Mapping<String, VpnProfile> = new {}
   gpu: Gpu = new Gpu {}
   storage: Storage = new Storage {}
 }

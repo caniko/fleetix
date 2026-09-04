@@ -40,6 +40,31 @@ hosts = new {
   ["laptop"] = new S.Host {
     system = "x86_64-linux"
     deviceType = "laptop"
+    users = new {
+      ["alice"] = new S.User { hasAccount = true personalPc = true }
+    }
+    vpnProfiles = new {
+      ["example-vpn"] = new S.VpnProfile {
+        provider = "Example VPN"
+        owner = "alice"
+        dnsServers = new Listing { "192.0.2.53"; "2001:db8::53" }
+        connection = new S.WireGuardVpnConnection {
+          addresses = new Listing { "198.51.100.2/32"; "2001:db8:1::2/128" }
+          privateKeyRef = "vpn/example/private-key"
+          peers = new Listing {
+            new S.WireGuardPeer {
+              publicKey = "example-vpn-peer-public-key"
+              endpoint = "vpn.example.test:51820"
+              allowedIps = new Listing { "0.0.0.0/0"; "::/0" }
+              persistentKeepaliveSeconds = 25
+              dynamicEndpointRefreshSeconds = 30
+              dynamicEndpointRefreshRestartSeconds = 5
+            }
+          }
+        }
+        portForwarding = new S.NatPmpPortForwarding { gateway = "192.0.2.1" }
+      }
+    }
     gpu = new S.Gpu {
       igpu = "amd"
       dgpu = "nvidia"
