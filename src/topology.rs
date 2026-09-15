@@ -529,6 +529,35 @@ pub struct Deployment {
     pub service_intents: Vec<ServiceIntent>,
     #[serde(default)]
     pub ingress_groups: IndexMap<String, IngressGroup>,
+    #[serde(default)]
+    pub local_access: IndexMap<String, LocalAccessPolicy>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAccessPolicy {
+    #[serde(default)]
+    pub clients: Vec<String>,
+    #[serde(default)]
+    pub target_host: String,
+    #[serde(default = "default_local_access_preferred_link")]
+    pub preferred_link: String,
+    #[serde(default = "default_local_access_fallback_link")]
+    pub fallback_link: String,
+    #[serde(default)]
+    pub destination: Option<String>,
+    #[serde(default)]
+    pub tcp_ports: Vec<u16>,
+    #[serde(default)]
+    pub udp_ports: Vec<u16>,
+}
+
+fn default_local_access_preferred_link() -> String {
+    "lan".to_string()
+}
+
+fn default_local_access_fallback_link() -> String {
+    "wg-home".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1030,7 +1059,7 @@ hosts = new {
           peers = new Listing {
             new {
               publicKey = "peer-public-key"
-              endpoint = "vpn.example.test:51820"
+              endpoint = "192.0.2.2:51820"
               allowedIps = new Listing { "0.0.0.0/0" }
             }
           }

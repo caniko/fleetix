@@ -46,6 +46,7 @@
     # NixOS and Home Manager modules for consuming fleetix topology from the
     # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
     nixosModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
+    nixosModules.local-access = import ./modules/local-access.nix;
     homeModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     homeModules.trust-observer = import ./modules/trust-observer.nix;
 
@@ -554,8 +555,16 @@
           topology = {
             hosts.demo.system = "x86_64-linux";
             links.mesh = {subnet = "10.0.0.0/24";};
+            links.lan = {subnet = "192.0.2.0/24";};
             domains.zones = ["example.test"];
             services = {};
+            deployment.localAccess.edge-lan = {
+              clients = ["demo"];
+              targetHost = "edge";
+              preferredLink = "lan";
+              fallbackLink = "mesh";
+              tcpPorts = [443];
+            };
           };
           nixos = nixpkgs.lib.evalModules {
             modules = [
@@ -585,12 +594,78 @@
               }
             ];
           };
+          localAccessFixture = {
+            hosts = {
+              edge = {
+                system = "x86_64-linux";
+                network.lanIp = "192.0.2.1";
+                links.mesh.address = "10.0.0.1";
+              };
+              demo = {
+                system = "x86_64-linux";
+                network.lanIp = "192.0.2.2";
+                links.mesh.address = "10.0.0.2";
+              };
+            };
+            links = {
+              mesh.subnet = "10.0.0.0/24";
+              lan.subnet = "192.0.2.0/24";
+            };
+            domains.zones = ["example.test"];
+            services = {};
+            deployment.localAccess.edge-lan = {
+              clients = ["demo"];
+              targetHost = "edge";
+              preferredLink = "lan";
+              fallbackLink = "mesh";
+              tcpPorts = [443];
+            };
+          };
+          localAccessStubs = {
+            options.networking.hostName = nixpkgs.lib.mkOption {
+              type = nixpkgs.lib.types.str;
+              default = "";
+            };
+            options.networking.firewall.checkReversePath = nixpkgs.lib.mkOption {
+              type = nixpkgs.lib.types.str;
+              default = "strict";
+            };
+            options.networking.networkmanager.dispatcherScripts = nixpkgs.lib.mkOption {
+              type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs;
+              default = [];
+            };
+            options.systemd.services = nixpkgs.lib.mkOption {
+              type = nixpkgs.lib.types.attrsOf nixpkgs.lib.types.attrs;
+              default = {};
+            };
+            options.systemd.timers = nixpkgs.lib.mkOption {
+              type = nixpkgs.lib.types.attrsOf nixpkgs.lib.types.attrs;
+              default = {};
+            };
+          };
+          localAccess = nixpkgs.lib.evalModules {
+            modules = [
+              assertionsModule
+              localAccessStubs
+              {_module.args.pkgs = pkgs;}
+              self.nixosModules.topology
+              self.nixosModules.local-access
+              {
+                networking.hostName = "demo";
+                fleetix.enable = true;
+                fleetix.value = localAccessFixture;
+                fleetix.localAccess.enable = true;
+              }
+            ];
+          };
         in
           pkgs.runCommand "fleetix-module-integration-fixtures" {} ''
             test "${toString (builtins.hasAttr "fleetix" nixos.config)}" = 1
             test "${nixos.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
             test "${integratedHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
             test "${standaloneHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
+            test "${toString localAccess.config.networking.firewall.checkReversePath}" = loose
+            grep -q "fleetix-local-access" "${localAccess.config.systemd.services.fleetix-local-access.serviceConfig.ExecStart}"
             touch $out
           '';
       }

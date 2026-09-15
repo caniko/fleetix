@@ -9,6 +9,10 @@ links = new {
     port = 51820
     endpointSubdomain = "mesh"
   }
+  ["lan"] = new S.Link {
+    subnet = "192.0.2.0/24"
+    port = 22
+  }
 }
 
 hosts = new {
@@ -54,7 +58,7 @@ hosts = new {
           peers = new Listing {
             new S.WireGuardPeer {
               publicKey = "example-vpn-peer-public-key"
-              endpoint = "vpn.example.test:51820"
+              endpoint = "192.0.2.2:51820"
               allowedIps = new Listing { "0.0.0.0/0"; "::/0" }
               persistentKeepaliveSeconds = 25
               dynamicEndpointRefreshSeconds = 30
@@ -170,6 +174,15 @@ deployment = new S.Deployment {
         required = true
         endpoint = "/healthz"
       }
+    }
+  }
+  localAccess = new {
+    ["edge-lan"] = new S.LocalAccessPolicy {
+      clients = new Listing { "builder" }
+      targetHost = "edge"
+      preferredLink = "lan"
+      fallbackLink = "mesh"
+      tcpPorts = new Listing { 443 }
     }
   }
 }

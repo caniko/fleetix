@@ -4,7 +4,7 @@ use crate::topology::{
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -106,6 +106,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     validate_host_hardware(topology, &mut report);
     validate_vpn_profiles(topology, &mut report);
     validate_deployment(topology, &mut report);
+    validate_local_access(topology, &mut report);
     validate_services(topology, &mut report);
 
     // 1. Every link has at most one server
@@ -890,6 +891,187 @@ fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
     }
 }
 
+fn validate_local_access(topology: &Topology, report: &mut ValidationReport) {
+    use std::collections::HashSet;
+    // (client, destination, proto, port) must be claimed by at most one policy.
+    let mut claimed: HashSet<(String, String, String, u16)> = HashSet::new();
+    for (name, policy) in &topology.deployment.local_access {
+        let base = format!("deployment.localAccess.{name}");
+        if name.trim().is_empty() {
+            report.error(
+                "local_access.empty_name",
+                Some("deployment.localAccess".into()),
+                Some(name.clone()),
+                "local-access policy names must not be empty",
+            );
+        }
+        if policy.clients.is_empty() {
+            report.error(
+                "local_access.empty_clients",
+                Some(format!("{base}.clients")),
+                None,
+                format!("local-access policy '{name}' must list at least one client host"),
+            );
+        }
+        let mut seen_clients = HashSet::new();
+        for client in &policy.clients {
+            if !seen_clients.insert(client) {
+                report.error(
+                    "local_access.duplicate_client",
+                    Some(format!("{base}.clients")),
+                    Some(client.clone()),
+                    format!("local-access policy '{name}' lists client '{client}' more than once"),
+                );
+            }
+            if !topology.hosts.contains_key(client) {
+                report.error(
+                    "local_access.unknown_client",
+                    Some(format!("{base}.clients")),
+                    Some(client.clone()),
+                    format!("local-access policy '{name}' references unknown client host '{client}'"),
+                );
+            }
+            if client == &policy.target_host {
+                report.error(
+                    "local_access.client_is_target",
+                    Some(format!("{base}.clients")),
+                    Some(client.clone()),
+                    format!("local-access policy '{name}' must not list its target as a client"),
+                );
+            }
+        }
+        let Some(target) = topology.hosts.get(&policy.target_host) else {
+            report.error(
+                "local_access.unknown_target",
+                Some(format!("{base}.targetHost")),
+                Some(policy.target_host.clone()),
+                format!(
+                    "local-access policy '{name}' references unknown target host '{}'",
+                    policy.target_host
+                ),
+            );
+            continue;
+        };
+        for (field, link_name) in [
+            ("preferredLink", &policy.preferred_link),
+            ("fallbackLink", &policy.fallback_link),
+        ] {
+            if !topology.links.contains_key(link_name) {
+                report.error(
+                    "local_access.unknown_link",
+                    Some(format!("{base}.{field}")),
+                    Some(link_name.clone()),
+                    format!("local-access policy '{name}' references unknown link '{link_name}'"),
+                );
+            }
+        }
+        if policy.preferred_link == policy.fallback_link {
+            report.error(
+                "local_access.same_links",
+                Some(format!("{base}.preferredLink")),
+                Some(policy.preferred_link.clone()),
+                format!(
+                    "local-access policy '{name}' must use different preferred and fallback links"
+                ),
+            );
+        }
+        // Default destination is the target's fallback-link address.
+        let destination = match &policy.destination {
+            Some(destination) => {
+                if destination.parse::<IpAddr>().is_err() {
+                    report.error(
+                        "local_access.invalid_destination",
+                        Some(format!("{base}.destination")),
+                        Some(destination.clone()),
+                        format!(
+                            "local-access policy '{name}' destination must be a literal IP address"
+                        ),
+                    );
+                }
+                destination.clone()
+            }
+            None => match target.links.get(&policy.fallback_link) {
+                Some(binding) => binding.address.clone(),
+                None => {
+                    report.error(
+                        "local_access.target_missing_fallback_binding",
+                        Some(format!("{base}.fallbackLink")),
+                        Some(policy.fallback_link.clone()),
+                        format!(
+                            "local-access policy '{name}' target '{}' has no '{}' link binding",
+                            policy.target_host, policy.fallback_link
+                        ),
+                    );
+                    continue;
+                }
+            },
+        };
+        if policy.tcp_ports.is_empty() && policy.udp_ports.is_empty() {
+            report.error(
+                "local_access.empty_ports",
+                Some(base.clone()),
+                None,
+                format!("local-access policy '{name}' must select at least one TCP or UDP port"),
+            );
+        }
+        for (proto, ports) in [("tcp", &policy.tcp_ports), ("udp", &policy.udp_ports)] {
+            let mut seen_ports = HashSet::new();
+            for port in ports {
+                if *port == 0 {
+                    report.error(
+                        "local_access.invalid_port",
+                        Some(format!("{base}.{proto}Ports")),
+                        Some(port.to_string()),
+                        format!("local-access policy '{name}' ports must be non-zero"),
+                    );
+                }
+                if !seen_ports.insert(port) {
+                    report.error(
+                        "local_access.duplicate_port",
+                        Some(format!("{base}.{proto}Ports")),
+                        Some(port.to_string()),
+                        format!(
+                            "local-access policy '{name}' lists {proto} port {port} more than once"
+                        ),
+                    );
+                }
+                let key = (
+                    // Per-client claim so two clients may share a destination.
+                    String::new(),
+                    destination.clone(),
+                    proto.to_string(),
+                    *port,
+                );
+                for client in &policy.clients {
+                    let mut claim = key.clone();
+                    claim.0 = client.clone();
+                    if !claimed.insert(claim) {
+                        report.error(
+                            "local_access.overlapping_policy",
+                            Some(format!("{base}.{proto}Ports")),
+                            Some(port.to_string()),
+                            format!(
+                                "local-access policy '{name}' overlaps another policy for client '{client}' {proto}/{port} to {destination}"
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        if target.network.lan_ip.is_none() {
+            report.warning(
+                "local_access.target_missing_lan_ip",
+                Some(format!("{base}.preferredLink")),
+                None,
+                format!(
+                    "local-access policy '{name}' target '{}' has no LAN IP; on-link verification may fail",
+                    policy.target_host
+                ),
+            );
+        }
+    }
+}
+
 fn validate_identifiers(topology: &Topology, report: &mut ValidationReport) {
     let mut aliases = HashSet::new();
     for (host_name, host) in &topology.hosts {
@@ -1161,6 +1343,21 @@ fn validate_vpn_profiles(topology: &Topology, report: &mut ValidationReport) {
                                 );
                             }
                         }
+                        if !peer.endpoint.trim().is_empty()
+                            && !peer
+                                .endpoint
+                                .parse::<SocketAddr>()
+                                .is_ok_and(|endpoint| endpoint.port() != 0)
+                        {
+                            report.error(
+                                "vpn.invalid_peer_endpoint",
+                                Some(format!("{peer_base}.endpoint")),
+                                Some(peer.endpoint.clone()),
+                                format!(
+                                    "VPN profile '{profile_name}' peer endpoint must be a literal IP address and port"
+                                ),
+                            );
+                        }
                         if peer.allowed_ips.is_empty() {
                             report.error(
                                 "vpn.empty_allowed_ips",
@@ -1188,7 +1385,7 @@ fn validate_vpn_profiles(topology: &Topology, report: &mut ValidationReport) {
             }
 
             if let Some(VpnPortForwarding::NatPmp(forwarding)) = &profile.port_forwarding {
-                if forwarding.gateway.parse::<IpAddr>().is_err() {
+                if forwarding.gateway.parse::<Ipv4Addr>().is_err() {
                     report.error(
                         "vpn.invalid_port_forwarding_gateway",
                         Some(format!("{base}.portForwarding.gateway")),
@@ -1612,7 +1809,7 @@ mod tests {
                             },
                             "portForwarding": {
                                 "type": "nat-pmp",
-                                "gateway": "not-an-ip"
+                                "gateway": "2001:db8::1"
                             }
                         },
                         "missing-network-data": {
@@ -1646,6 +1843,7 @@ mod tests {
             "vpn.empty_private_key_ref",
             "vpn.empty_peers",
             "vpn.empty_peer_field",
+            "vpn.invalid_peer_endpoint",
             "vpn.empty_allowed_ips",
             "vpn.invalid_allowed_ip",
             "vpn.invalid_port_forwarding_gateway",
@@ -1657,6 +1855,117 @@ mod tests {
             );
         }
         assert!(topology.hosts["empty-profiles"].vpn_profiles.is_empty());
+    }
+
+    #[test]
+    fn validates_local_access_policies() {
+        use crate::topology::{Link, LinkBinding, LocalAccessPolicy, Network};
+        let mut topology = v2_topology();
+        for (name, subnet) in [("lan", "192.0.2.0/24"), ("wg-home", "10.44.0.0/24")] {
+            topology.links.insert(
+                name.to_string(),
+                Link {
+                    subnet: subnet.to_string(),
+                    port: 51820,
+                    endpoint_subdomain: None,
+                    exempt_from_proxy: false,
+                },
+            );
+        }
+        for (name, lan_ip, wg_ip) in [
+            ("hub", Some("192.0.2.1"), Some("10.44.0.1")),
+            ("desk", Some("192.0.2.2"), Some("10.44.0.2")),
+        ] {
+            let mut links = IndexMap::new();
+            if let Some(wg_ip) = wg_ip {
+                links.insert(
+                    "wg-home".to_string(),
+                    LinkBinding {
+                        address: wg_ip.to_string(),
+                        public_key: None,
+                        role: crate::topology::LinkRole::Client,
+                        external_interface: None,
+                        mac_address: None,
+                    },
+                );
+            }
+            topology.hosts.insert(
+                name.to_string(),
+                Host {
+                    system: "x86_64-linux".to_string(),
+                    network: Network {
+                        lan_ip: lan_ip.map(str::to_string),
+                        ..Default::default()
+                    },
+                    links,
+                    ..Default::default()
+                },
+            );
+        }
+        topology.deployment.local_access.insert(
+            "hub-lan".to_string(),
+            LocalAccessPolicy {
+                clients: vec!["desk".to_string()],
+                target_host: "hub".to_string(),
+                preferred_link: "lan".to_string(),
+                fallback_link: "wg-home".to_string(),
+                destination: None,
+                tcp_ports: vec![80, 443],
+                udp_ports: vec![],
+            },
+        );
+        assert!(validate(&topology).is_ok());
+
+        // Overlapping claim on the same client/destination/port must fail.
+        topology.deployment.local_access.insert(
+            "hub-lan-dup".to_string(),
+            LocalAccessPolicy {
+                clients: vec!["desk".to_string()],
+                target_host: "hub".to_string(),
+                preferred_link: "lan".to_string(),
+                fallback_link: "wg-home".to_string(),
+                destination: None,
+                tcp_ports: vec![443],
+                udp_ports: vec![],
+            },
+        );
+        let report = validate(&topology);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "local_access.overlapping_policy"),
+            "missing overlapping policy issue: {:?}",
+            report.issues
+        );
+
+        // Unknown client, same links, and empty ports must fail.
+        topology.deployment.local_access.remove("hub-lan-dup");
+        topology.deployment.local_access.insert(
+            "broken".to_string(),
+            LocalAccessPolicy {
+                clients: vec!["ghost".to_string()],
+                target_host: "hub".to_string(),
+                preferred_link: "wg-home".to_string(),
+                fallback_link: "wg-home".to_string(),
+                destination: Some("not-an-ip".to_string()),
+                tcp_ports: vec![],
+                udp_ports: vec![],
+            },
+        );
+        let report = validate(&topology);
+        for code in [
+            "local_access.unknown_client",
+            "local_access.same_links",
+            "local_access.invalid_destination",
+            "local_access.empty_ports",
+        ] {
+            assert!(
+                report.issues.iter().any(|issue| issue.code == code),
+                "missing validation issue {code}: {:?}",
+                report.issues
+            );
+        }
     }
 
     #[test]

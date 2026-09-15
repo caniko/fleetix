@@ -269,9 +269,20 @@ class ServiceIntent {
   health: HealthIntent = new HealthIntent {}
 }
 
+class LocalAccessPolicy {
+  clients: Listing<String>
+  targetHost: String
+  preferredLink: String = "lan"
+  fallbackLink: String = "wg-home"
+  destination: String? = null
+  tcpPorts: Listing<UInt16> = new Listing {}
+  udpPorts: Listing<UInt16> = new Listing {}
+}
+
 class Deployment {
   serviceIntents: Listing<ServiceIntent> = new Listing {}
   ingressGroups: Mapping<String, IngressGroup> = new {}
+  localAccess: Mapping<String, LocalAccessPolicy> = new {}
 }
 
 class SshKnownHost {

@@ -396,6 +396,35 @@ in rec {
     };
   };
 
+  localAccess = {
+    normalize = {topology}:
+      builtins.mapAttrs (_name: stripPklClass) ((topology.deployment or {}).localAccess or {});
+
+    # Policies applying to a client host, with the effective destination
+    # resolved (explicit destination, else the target's fallback-link address).
+    policiesForHost = {
+      topology,
+      hostName,
+    }: let
+      policies = localAccess.normalize {inherit topology;};
+      names = builtins.filter (name: builtins.elem hostName (policies.${name}.clients or [])) (builtins.attrNames policies);
+    in
+      map (name: let
+        policy = policies.${name};
+        target = lookupHost topology policy.targetHost;
+        destination =
+          if (policy.destination or null) != null
+          then policy.destination
+          else if target == null
+          then null
+          else target.links.${policy.fallbackLink or "wg-home"}.address or null;
+      in {
+        inherit name destination;
+        policy = policy // {inherit destination;};
+      })
+      names;
+  };
+
   links = {
     hostsShareLink = hostsShareLinkImpl;
 
