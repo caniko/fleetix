@@ -837,12 +837,12 @@ mod tests {
         let input = r#"
 import "hosts/Hub.pkl"
 import "links/WgHome.pkl"
-import "hosts/Nomad.pkl"
+import "hosts/Spoke.pkl"
 "#;
 
         assert_eq!(
             imported_paths(input, "hosts/"),
-            vec!["hosts/Hub.pkl", "hosts/Nomad.pkl"]
+            vec!["hosts/Hub.pkl", "hosts/Spoke.pkl"]
         );
     }
 
