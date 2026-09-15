@@ -1518,7 +1518,7 @@ mod tests {
     fn validates_service_intent_placement_and_health() {
         let mut topology = v2_topology();
         topology.hosts.insert(
-            "atlas".to_string(),
+            "hub".to_string(),
             Host {
                 system: "x86_64-linux".to_string(),
                 availability_class: "always-on".to_string(),
@@ -1527,12 +1527,12 @@ mod tests {
         );
         topology.services.endpoints.insert(
             "pink-raven".to_string(),
-            endpoint("atlas", EndpointBind::Loopback),
+            endpoint("hub", EndpointBind::Loopback),
         );
         topology.deployment.service_intents.push(ServiceIntent {
             name: "pink-raven-runtime".to_string(),
             service_name: Some("pink-raven".to_string()),
-            required_hosts: vec!["atlas".to_string()],
+            required_hosts: vec!["hub".to_string()],
             required_availability: Some("always-on".to_string()),
             health: HealthIntent {
                 required: true,
@@ -1576,7 +1576,7 @@ mod tests {
     fn accepts_v2_sites_with_ordered_routes_and_last_fallback() {
         let mut topology = v2_topology();
         topology.hosts.insert(
-            "atlas".to_string(),
+            "hub".to_string(),
             Host {
                 system: "x86_64-linux".to_string(),
                 ..Default::default()
@@ -1586,12 +1586,12 @@ mod tests {
             "public".to_string(),
             IngressGroup {
                 scope: IngressScope::Public,
-                hosts: vec!["atlas".to_string()],
+                hosts: vec!["hub".to_string()],
             },
         );
         topology.services.endpoints.insert(
             "foundry".to_string(),
-            endpoint("atlas", EndpointBind::Loopback),
+            endpoint("hub", EndpointBind::Loopback),
         );
         topology.services.http_sites.insert(
             "foundry".to_string(),
@@ -1741,7 +1741,7 @@ mod tests {
     fn validates_laptop_media_route_and_storage_paths() {
         let mut topology = v2_topology();
         topology.hosts.insert(
-            "nomad".to_string(),
+            "spoke".to_string(),
             Host {
                 system: "x86_64-linux".to_string(),
                 gpu: crate::topology::Gpu {
@@ -1940,7 +1940,7 @@ mod tests {
         );
 
         // Unknown client, same links, and empty ports must fail.
-        topology.deployment.local_access.remove("hub-lan-dup");
+        topology.deployment.local_access.shift_remove("hub-lan-dup");
         topology.deployment.local_access.insert(
             "broken".to_string(),
             LocalAccessPolicy {

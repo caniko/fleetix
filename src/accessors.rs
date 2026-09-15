@@ -44,7 +44,7 @@ impl Topology {
         })
     }
 
-    /// The server address for a link (e.g., "10.123.0.1").
+    /// The server address for a link (e.g., "198.51.100.1").
     pub fn link_server_address(&self, name: &str) -> Option<&str> {
         self.link_server(name).map(|b| b.address.as_str())
     }
@@ -364,21 +364,21 @@ mod tests {
     use indexmap::IndexMap;
 
     fn test_topology() -> Topology {
-        let mut atlas_links = IndexMap::new();
-        atlas_links.insert(
+        let mut hub_links = IndexMap::new();
+        hub_links.insert(
             "wg-home".to_string(),
             LinkBinding {
-                address: "10.123.0.5".to_string(),
+                address: "198.51.100.5".to_string(),
                 public_key: None,
                 role: LinkRole::Client,
                 external_interface: None,
                 mac_address: None,
             },
         );
-        atlas_links.insert(
+        hub_links.insert(
             "direct-link".to_string(),
             LinkBinding {
-                address: "10.10.0.1".to_string(),
+                address: "203.0.113.1".to_string(),
                 public_key: None,
                 role: LinkRole::Client,
                 external_interface: None,
@@ -388,24 +388,24 @@ mod tests {
 
         let mut hosts = IndexMap::new();
         hosts.insert(
-            "atlas".to_string(),
+            "hub".to_string(),
             Host {
                 system: "x86_64-linux".to_string(),
                 network: Network {
-                    lan_ip: Some("192.168.178.88".to_string()),
-                    direct_link_ip: Some("10.10.0.1".to_string()),
+                    lan_ip: Some("192.0.2.10".to_string()),
+                    direct_link_ip: Some("203.0.113.1".to_string()),
                     ..Default::default()
                 },
-                links: atlas_links,
+                links: hub_links,
                 ..empty_host()
             },
         );
 
-        let mut nomad_links = IndexMap::new();
-        nomad_links.insert(
+        let mut spoke_links = IndexMap::new();
+        spoke_links.insert(
             "direct-link".to_string(),
             LinkBinding {
-                address: "10.10.0.2".to_string(),
+                address: "203.0.113.2".to_string(),
                 public_key: None,
                 role: LinkRole::Client,
                 external_interface: None,
@@ -413,10 +413,10 @@ mod tests {
             },
         );
         hosts.insert(
-            "nomad".to_string(),
+            "spoke".to_string(),
             Host {
                 system: "x86_64-linux".to_string(),
-                links: nomad_links,
+                links: spoke_links,
                 ..empty_host()
             },
         );
@@ -469,21 +469,21 @@ mod tests {
             services: Services {
                 endpoints: IndexMap::from([
                     (
-                        "immich".to_string(),
+                        "photos".to_string(),
                         Endpoint {
-                            target_host: "atlas".to_string(),
+                            target_host: "hub".to_string(),
                             port: 2283,
                             transport: EndpointTransport::Http,
                             bind: EndpointBind::Loopback,
-                            remote_via: Some("immich-lan".to_string()),
+                            remote_via: Some("photos-lan".to_string()),
                             tls_server_name: None,
                             tcp_probe: true,
                         },
                     ),
                     (
-                        "immich-lan".to_string(),
+                        "photos-lan".to_string(),
                         Endpoint {
-                            target_host: "atlas".to_string(),
+                            target_host: "hub".to_string(),
                             port: 2283,
                             transport: EndpointTransport::Http,
                             bind: EndpointBind::Lan,
@@ -495,16 +495,16 @@ mod tests {
                 ]),
                 http_sites: IndexMap::from([
                     (
-                        "immich".to_string(),
+                        "photos".to_string(),
                         HttpSite {
-                            hostname: "immich.example.test".to_string(),
+                            hostname: "photos.example.test".to_string(),
                             ingress: "public".to_string(),
                             access: HttpAccess::Cloudflare,
                             dns_publication: DnsPublication::Managed,
                             routes: vec![HttpRoute {
                                 matcher: HttpMatch::default(),
                                 action: HttpAction::Proxy {
-                                    endpoint: "immich".to_string(),
+                                    endpoint: "photos".to_string(),
                                     strip_prefix: None,
                                 },
                                 auth_policy: None,
@@ -513,9 +513,9 @@ mod tests {
                         },
                     ),
                     (
-                        "ollama".to_string(),
+                        "models".to_string(),
                         HttpSite {
-                            hostname: "ollama.internal.example.test".to_string(),
+                            hostname: "models.internal.example.test".to_string(),
                             ingress: "vpn".to_string(),
                             access: HttpAccess::Vpn,
                             dns_publication: DnsPublication::None,
@@ -558,16 +558,16 @@ mod tests {
     fn resolves_host_addresses_by_explicit_policy() {
         let topo = test_topology();
         assert_eq!(
-            topo.resolve_host_address("atlas", &[AddressKind::Lan]),
-            Some("192.168.178.88")
+            topo.resolve_host_address("hub", &[AddressKind::Lan]),
+            Some("192.0.2.10")
         );
         assert_eq!(
-            topo.resolve_host_address("nomad", &[AddressKind::DirectLink]),
-            Some("10.10.0.2")
+            topo.resolve_host_address("spoke", &[AddressKind::DirectLink]),
+            Some("203.0.113.2")
         );
         assert_eq!(
-            topo.resolve_host_address("atlas", &[AddressKind::Link("wg-home".to_string())]),
-            Some("10.123.0.5")
+            topo.resolve_host_address("hub", &[AddressKind::Link("wg-home".to_string())]),
+            Some("198.51.100.5")
         );
     }
 
@@ -575,20 +575,20 @@ mod tests {
     fn resolves_endpoints_for_ingress_hosts() {
         let topo = test_topology();
         assert_eq!(
-            topo.endpoint_for_ingress("immich", "atlas").unwrap().0,
-            "immich"
+            topo.endpoint_for_ingress("photos", "hub").unwrap().0,
+            "photos"
         );
         assert_eq!(
-            topo.endpoint_for_ingress("immich", "nomad").unwrap().0,
-            "immich-lan"
+            topo.endpoint_for_ingress("photos", "spoke").unwrap().0,
+            "photos-lan"
         );
     }
 
     #[test]
     fn filters_endpoints_for_host() {
         let topo = test_topology();
-        assert_eq!(topo.endpoints_for_host("atlas").len(), 2);
-        assert!(topo.endpoints_for_host("nomad").is_empty());
+        assert_eq!(topo.endpoints_for_host("hub").len(), 2);
+        assert!(topo.endpoints_for_host("spoke").is_empty());
     }
 
     #[test]
@@ -655,16 +655,16 @@ mod tests {
     fn exposes_redirects_service_hosts_and_cname_intents() {
         let topo = test_topology();
         assert_eq!(topo.domains.redirects[0].from, "example.test");
-        assert_eq!(topo.service_hosts()["immich"], "immich.example.test");
+        assert_eq!(topo.service_hosts()["photos"], "photos.example.test");
 
         let service_intents = topo.service_cname_intents();
         assert!(service_intents.iter().any(|intent| {
-            intent.name == "immich"
-                && intent.relative_name == "immich"
+            intent.name == "photos"
+                && intent.relative_name == "photos"
                 && intent.target == "example.test"
                 && intent.proxied
         }));
-        assert!(!service_intents.iter().any(|intent| intent.name == "ollama"));
+        assert!(!service_intents.iter().any(|intent| intent.name == "models"));
 
         let page_intents = topo.pages_cname_intents(None);
         assert_eq!(page_intents.len(), 1);
@@ -684,31 +684,31 @@ mod tests {
         topo.links.insert(
             "wg-home".to_string(),
             Link {
-                subnet: "10.123.0.0/24".to_string(),
+                subnet: "198.51.100.0/24".to_string(),
                 port: 54321,
                 endpoint_subdomain: None,
                 exempt_from_proxy: false,
             },
         );
         topo.hosts
-            .get_mut("atlas")
-            .expect("atlas fixture")
+            .get_mut("hub")
+            .expect("hub fixture")
             .links
             .get_mut("wg-home")
-            .expect("atlas link fixture")
+            .expect("hub link fixture")
             .role = LinkRole::Server;
 
-        assert_eq!(topo.link_server_host("wg-home"), Some("atlas"));
-        assert_eq!(topo.link_server_address("wg-home"), Some("10.123.0.5"));
+        assert_eq!(topo.link_server_host("wg-home"), Some("hub"));
+        assert_eq!(topo.link_server_address("wg-home"), Some("198.51.100.5"));
 
         topo.hosts
-            .get_mut("nomad")
-            .expect("nomad fixture")
+            .get_mut("spoke")
+            .expect("spoke fixture")
             .links
             .insert(
                 "wg-home".to_string(),
                 LinkBinding {
-                    address: "10.123.0.6".to_string(),
+                    address: "198.51.100.6".to_string(),
                     public_key: None,
                     role: LinkRole::Server,
                     external_interface: None,

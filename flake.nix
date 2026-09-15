@@ -252,16 +252,16 @@
 
             links = new {
               ["wg-home"] = new S.Link {
-                subnet = "10.123.0.0/24"
+                subnet = "198.51.100.0/24"
               }
             }
             EOF
 
-            cat > "$fixture/hosts/Atlas.pkl" <<'EOF'
+            cat > "$fixture/hosts/Hub.pkl" <<'EOF'
             import "../Schema.pkl" as S
 
             hosts = new {
-              ["atlas"] = new S.Host {
+              ["hub"] = new S.Host {
                 system = "x86_64-linux"
               }
             }
@@ -309,7 +309,7 @@
             }
 
             hosts = new {
-              atlas = (import("hosts/Atlas.pkl")).hosts["atlas"]
+              hub = (import("hosts/Hub.pkl")).hosts["hub"]
             }
 
             schemaVersion: UInt16 = 2
@@ -335,24 +335,24 @@
             schemaVersion = 2;
             links = {
               mesh = {
-                subnet = "10.123.0.0/24";
+                subnet = "198.51.100.0/24";
                 port = 51820;
                 endpointSubdomain = "mesh";
               };
-              direct-link.subnet = "10.10.0.0/24";
+              direct-link.subnet = "203.0.113.0/24";
             };
             hosts = {
-              atlas = {
+              hub = {
                 network = {
-                  lanIp = "192.168.178.88";
-                  directLinkIp = "10.10.0.1";
+                  lanIp = "192.0.2.10";
+                  directLinkIp = "203.0.113.1";
                 };
                 links.mesh = {
-                  address = "10.123.0.5";
+                  address = "198.51.100.5";
                   role = "server";
                   publicKey = "server-key";
                 };
-                links.direct-link.address = "10.10.0.1";
+                links.direct-link.address = "203.0.113.1";
                 users.alice.hasAccount = true;
                 vpnProfiles.example = {
                   provider = "Example VPN";
@@ -366,9 +366,9 @@
                   };
                 };
               };
-              nomad = {
+              spoke = {
                 network = {};
-                links.direct-link.address = "10.10.0.2";
+                links.direct-link.address = "203.0.113.2";
               };
             };
             domains = {
@@ -404,29 +404,29 @@
               ];
             };
             services.endpoints = {
-              immich = {
+              photos = {
                 port = 2283;
-                targetHost = "atlas";
+                targetHost = "hub";
                 transport = "http";
                 bind = "loopback";
-                remoteVia = "immich-lan";
+                remoteVia = "photos-lan";
               };
-              immich-lan = {
+              photos-lan = {
                 port = 2283;
-                targetHost = "atlas";
+                targetHost = "hub";
                 transport = "http";
                 bind = "lan";
               };
-              ollama = {
+              models = {
                 port = 11434;
-                targetHost = "atlas";
+                targetHost = "hub";
                 transport = "http";
                 bind = "loopback";
               };
             };
             services.httpSites = {
-              immich = {
-                hostname = "immich.example.test";
+              photos = {
+                hostname = "photos.example.test";
                 ingress = "public";
                 access = "cloudflare";
                 dnsPublication = "managed";
@@ -441,14 +441,14 @@
                     action = {
                       __pkl_class = "ProxyAction";
                       type = "proxy";
-                      endpoint = "immich";
+                      endpoint = "photos";
                     };
                     responseHeaders = {};
                   }
                 ];
               };
-              ollama = {
-                hostname = "ollama.internal.example.test";
+              models = {
+                hostname = "models.internal.example.test";
                 ingress = "vpn";
                 access = "vpn";
                 dnsPublication = "none";
@@ -465,8 +465,8 @@
           };
           endpoint = self.lib.services.resolveEndpoint {
             inherit topology;
-            endpointName = "immich";
-            ingressHost = "nomad";
+            endpointName = "photos";
+            ingressHost = "spoke";
           };
           missingEndpoint = self.lib.services.resolveEndpoint {
             inherit topology;
@@ -488,21 +488,21 @@
           pkgs.runCommand "fleetix-lib-helpers" {} ''
             test "${self.lib.hosts.resolveHostAddress {
               inherit topology;
-              hostName = "atlas";
+              hostName = "hub";
               policy = ["lan"];
-            }}" = "192.168.178.88"
+            }}" = "192.0.2.10"
             test "${self.lib.hosts.resolveHostAddress {
               inherit topology;
-              hostName = "nomad";
+              hostName = "spoke";
               policy = ["direct-link"];
-            }}" = "10.10.0.2"
+            }}" = "203.0.113.2"
             test "${(self.lib.hosts.vpnProfile {
               inherit topology;
-              hostName = "atlas";
+              hostName = "hub";
               profileName = "example";
             }).connection.type}" = "wireguard"
-            test "${endpoint.name}" = "immich-lan"
-            test "${endpoint.targetHost}" = "atlas"
+            test "${endpoint.name}" = "photos-lan"
+            test "${endpoint.targetHost}" = "hub"
             test "${
               if missingEndpoint == null
               then "null"
@@ -521,33 +521,33 @@
             test "${(builtins.elemAt addressExcludes 2).name}" = "wg"
             test "${toString (builtins.length internalAddressExcludes)}" = "2"
             test "${(builtins.elemAt internalAddressExcludes 0).name}" = "host"
-            test "${(self.lib.services.serviceHosts {inherit topology;}).immich}" = "immich.example.test"
+            test "${(self.lib.services.serviceHosts {inherit topology;}).photos}" = "photos.example.test"
             test "${toString (builtins.length serviceIntents)}" = "2"
-            test "${(builtins.elemAt serviceIntents 1).relativeName}" = "immich"
+            test "${(builtins.elemAt serviceIntents 1).relativeName}" = "photos"
             test "${(builtins.elemAt serviceIntents 1).target}" = "example.test"
             test "${toString (builtins.elemAt serviceIntents 1).proxied}" = "1"
             test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
             test "${(builtins.elemAt pagesIntents 0).target}" = "example.github.io"
-            test "${normalized.hosts.atlas.linkAddresses.mesh}" = "10.123.0.5"
+            test "${normalized.hosts.hub.linkAddresses.mesh}" = "198.51.100.5"
             test "${toString (self.lib.links.hostsShareLink {
               inherit topology;
               linkName = "direct-link";
-              hostNames = ["atlas" "nomad"];
+              hostNames = ["hub" "spoke"];
             })}" = "1"
             test "${toString (self.lib.links.hostsShareLink {
               inherit topology;
               linkName = "mesh";
-              hostNames = ["atlas" "nomad"];
+              hostNames = ["hub" "spoke"];
             })}" = ""
-            test "${normalized.domains.serviceHosts.immich}" = "immich.example.test"
-            test "${normalized.links.mesh.serverAddress}" = "10.123.0.5"
-            test "${normalized.services.endpointByName.immich.targetHost}" = "atlas"
-            test "${(builtins.head normalized.services.siteByName.immich.routes).action.type}" = "proxy"
-            test "${toString (builtins.hasAttr "__pkl_class" (builtins.head normalized.services.siteByName.immich.routes).action)}" = ""
+            test "${normalized.domains.serviceHosts.photos}" = "photos.example.test"
+            test "${normalized.links.mesh.serverAddress}" = "198.51.100.5"
+            test "${normalized.services.endpointByName.photos.targetHost}" = "hub"
+            test "${(builtins.head normalized.services.siteByName.photos.routes).action.type}" = "proxy"
+            test "${toString (builtins.hasAttr "__pkl_class" (builtins.head normalized.services.siteByName.photos.routes).action)}" = ""
             test "${(self.lib.services.endpointsForHost {
               inherit topology;
-              hostName = "atlas";
-            }).immich-lan.bind}" = "lan"
+              hostName = "hub";
+            }).photos-lan.bind}" = "lan"
             touch $out
           '';
 

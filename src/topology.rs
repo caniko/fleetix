@@ -835,14 +835,14 @@ mod tests {
     #[test]
     fn imported_paths_keep_entrypoint_order() {
         let input = r#"
-import "hosts/Atlas.pkl"
+import "hosts/Hub.pkl"
 import "links/WgHome.pkl"
 import "hosts/Nomad.pkl"
 "#;
 
         assert_eq!(
             imported_paths(input, "hosts/"),
-            vec!["hosts/Atlas.pkl", "hosts/Nomad.pkl"]
+            vec!["hosts/Hub.pkl", "hosts/Nomad.pkl"]
         );
     }
 
@@ -851,7 +851,7 @@ import "hosts/Nomad.pkl"
         let input = r#"
 links = new {
   wg-home = new Link {
-    subnet = "10.123.0.0/24"
+    subnet = "198.51.100.0/24"
   }
 }
 "#;
@@ -859,7 +859,7 @@ links = new {
         let body = unwrap_section(input, "links");
         assert!(body.contains("wg-home = new Link"));
         assert!(!body.contains("links = new"));
-        assert!(body.contains("subnet = \"10.123.0.0/24\""));
+        assert!(body.contains("subnet = \"198.51.100.0/24\""));
     }
 
     #[test]
@@ -923,19 +923,19 @@ import "../Schema.pkl" as S
 
 links = new {
   ["wg-home"] = new S.Link {
-    subnet = "10.123.0.0/24"
+    subnet = "198.51.100.0/24"
   }
 }
 "#,
         )
         .map_err(|e| miette::miette!("write link fixture: {e}"))?;
         fs::write(
-            root.join("hosts/Atlas.pkl"),
+            root.join("hosts/Hub.pkl"),
             r#"
 import "../Schema.pkl" as S
 
 hosts = new {
-  ["atlas"] = new S.Host {
+  ["hub"] = new S.Host {
     system = "x86_64-linux"
   }
 }
@@ -985,7 +985,7 @@ links = new {
 }
 
 hosts = new {
-  atlas = (import("hosts/Atlas.pkl")).hosts["atlas"]
+  hub = (import("hosts/Hub.pkl")).hosts["hub"]
 }
 
 domains = (import("Domains.pkl")).domains
@@ -1014,7 +1014,7 @@ trust = new S.Trust {
 
         let flattened = flatten_modular_topology(&root.join("Topology.aggregated.pkl"))?;
         assert!(flattened.contains("[\"wg-home\"] = new Link"));
-        assert!(flattened.contains("[\"atlas\"] = new Host"));
+        assert!(flattened.contains("[\"hub\"] = new Host"));
         assert!(flattened.contains("names = new"));
         assert!(flattened.contains("names.zone"));
         assert!(!flattened.contains("N.names"));
@@ -1024,7 +1024,7 @@ trust = new S.Trust {
         assert!(!flattened.contains("import "));
 
         let loaded = load_topology(&root.join("Topology.aggregated.pkl")).await?;
-        assert!(loaded.hosts.contains_key("atlas"));
+        assert!(loaded.hosts.contains_key("hub"));
         assert!(loaded.links.contains_key("wg-home"));
         assert_eq!(loaded.trust.ssh_known_hosts.len(), 1);
         assert_eq!(

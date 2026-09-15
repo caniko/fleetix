@@ -6,7 +6,7 @@
 
 - Reject DNS-dependent WireGuard endpoints and non-IPv4 NAT-PMP gateways before
   isolated namespace deployment
-- Quote dynamic host keys in Pkl attribute syntax (`atlas` -> `["atlas"]`) in
+- Quote dynamic host keys in Pkl attribute syntax (`hub` -> `["hub"]`) in
   topology fixtures and Nix checks
 
 ### Added
@@ -18,7 +18,7 @@
   port-forwarding models, Rust and Nix accessors, and topology validation
 - VPN-bound service endpoints in the Pkl schema and Rust topology model
 - simit-managed Forgejo CI workflow with fmt, clippy, test, audit, MSRV, docs,
-  and package checks on the atlas runner
+  and package checks on the self-hosted runner
 - Pre-commit hooks for treefmt, cargo fmt, clippy, audit, MSRV, and nix flake
   check
 - simit project metadata configuration

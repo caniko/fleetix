@@ -229,11 +229,11 @@ mod tests {
         // Two declared fleet hosts + one declared trust entry.
         let mut topology = crate::topology::Topology::default();
         topology.hosts.insert(
-            "atlas".to_string(),
+            "hub".to_string(),
             crate::topology::Host {
                 system: "x86_64-linux".to_string(),
-                host_pubkey: Some("ssh-ed25519 AAAAtlasKey".to_string()),
-                host_names: vec!["atlas.local".to_string()],
+                host_pubkey: Some("ssh-ed25519 AAAHubKey".to_string()),
+                host_names: vec!["hub.local".to_string()],
                 ..Default::default()
             },
         );
@@ -266,7 +266,7 @@ mod tests {
         let path = directory.path().join("known_hosts");
         std::fs::write(
             &path,
-            "git.example.test ssh-ed25519 AAAADeclaredGitKey\natlas ssh-ed25519 AAAAtlasKey\n",
+            "git.example.test ssh-ed25519 AAAADeclaredGitKey\nhub ssh-ed25519 AAAHubKey\n",
         )
         .unwrap();
         let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
@@ -278,13 +278,13 @@ mod tests {
     fn ip_aliases_and_bracket_port_forms_match_declared_hosts() {
         let mut topology = crate::topology::Topology::default();
         topology.hosts.insert(
-            "atlas".to_string(),
+            "hub".to_string(),
             crate::topology::Host {
                 system: "x86_64-linux".to_string(),
-                host_pubkey: Some("ssh-ed25519 AAAAtlasKey".to_string()),
+                host_pubkey: Some("ssh-ed25519 AAAHubKey".to_string()),
                 network: crate::topology::Network {
-                    lan_ip: Some("192.168.178.88".to_string()),
-                    direct_link_ip: Some("10.10.0.1".to_string()),
+                    lan_ip: Some("192.0.2.10".to_string()),
+                    direct_link_ip: Some("203.0.113.1".to_string()),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -292,22 +292,22 @@ mod tests {
         );
         let declared = DeclaredTrust::from_topology(&topology);
         assert!(declared
-            .keys_for("192.168.178.88")
-            .contains(&"ssh-ed25519 AAAAtlasKey".to_string()));
+            .keys_for("192.0.2.10")
+            .contains(&"ssh-ed25519 AAAHubKey".to_string()));
         assert!(declared
-            .keys_for("[10.10.0.1]:1337")
-            .contains(&"ssh-ed25519 AAAAtlasKey".to_string()));
+            .keys_for("[203.0.113.1]:1337")
+            .contains(&"ssh-ed25519 AAAHubKey".to_string()));
     }
 
     #[test]
     fn different_key_for_declared_hostname_is_a_conflict() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("known_hosts");
-        std::fs::write(&path, "atlas ssh-ed25519 AAAAEvilKey\n").unwrap();
+        std::fs::write(&path, "hub ssh-ed25519 AAAAEvilKey\n").unwrap();
         let observation = OpenSshKnownHosts.observe(&path, &declared()).unwrap();
         assert!(observation.proposals.is_empty());
         assert_eq!(observation.conflicts.len(), 1);
-        assert_eq!(observation.conflicts[0].host_names, ["atlas"]);
+        assert_eq!(observation.conflicts[0].host_names, ["hub"]);
     }
 
     #[test]
