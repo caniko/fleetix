@@ -8,7 +8,7 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    rs-harbor = {
+    harbor-rs = {
       url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=fac8049316846e0ef1c1e6acd92aed7a337b333a";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.crane.follows = "crane";
@@ -21,7 +21,7 @@
     nixpkgs,
     crane,
     rust-overlay,
-    rs-harbor,
+    harbor-rs,
     ...
   }: let
     supportedSystems = [
@@ -674,24 +674,24 @@
     devShells = forSystems (
       system: let
         pkgs = pkgsFor system;
-        toolchain = rs-harbor.lib.mkToolchain {
+        toolchain = harbor-rs.lib.mkToolchain {
           inherit pkgs;
           toolchainProfile = "nightly";
         };
-        cargoConfig = rs-harbor.lib.mkCargoConfig {inherit pkgs;};
-        cross = rs-harbor.lib.mkCross {inherit pkgs system;};
+        cargoConfig = harbor-rs.lib.mkCargoConfig {inherit pkgs;};
+        cross = harbor-rs.lib.mkCross {inherit pkgs system;};
         compatShell = channel: let
           toolchain = pkgs.rust-bin.stable.${channel}.default;
-          cargoConfig = rs-harbor.lib.mkCargoConfig {
+          cargoConfig = harbor-rs.lib.mkCargoConfig {
             inherit pkgs;
             channel = "stable";
           };
-          cross = rs-harbor.lib.mkCross {
+          cross = harbor-rs.lib.mkCross {
             inherit pkgs system;
             enableOsxcross = false;
           };
         in
-          rs-harbor.lib.mkDevShell {
+          harbor-rs.lib.mkDevShell {
             inherit pkgs;
             craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
             inherit cargoConfig cross;
@@ -700,7 +700,7 @@
             enableOsxcrossEnv = false;
           };
       in
-        (rs-harbor.lib.mkDevShells {
+        (harbor-rs.lib.mkDevShells {
           inherit pkgs cross cargoConfig;
           inherit (toolchain) craneLib;
         })
