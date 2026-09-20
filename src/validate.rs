@@ -892,7 +892,6 @@ fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
 }
 
 fn validate_local_access(topology: &Topology, report: &mut ValidationReport) {
-    use std::collections::HashSet;
     // (client, destination, proto, port) must be claimed by at most one policy.
     let mut claimed: HashSet<(String, String, String, u16)> = HashSet::new();
     for (name, policy) in &topology.deployment.local_access {
@@ -928,7 +927,9 @@ fn validate_local_access(topology: &Topology, report: &mut ValidationReport) {
                     "local_access.unknown_client",
                     Some(format!("{base}.clients")),
                     Some(client.clone()),
-                    format!("local-access policy '{name}' references unknown client host '{client}'"),
+                    format!(
+                        "local-access policy '{name}' references unknown client host '{client}'"
+                    ),
                 );
             }
             if client == &policy.target_host {
@@ -1035,16 +1036,13 @@ fn validate_local_access(topology: &Topology, report: &mut ValidationReport) {
                         ),
                     );
                 }
-                let key = (
-                    // Per-client claim so two clients may share a destination.
-                    String::new(),
-                    destination.clone(),
-                    proto.to_string(),
-                    *port,
-                );
                 for client in &policy.clients {
-                    let mut claim = key.clone();
-                    claim.0 = client.clone();
+                    let claim = (
+                        client.clone(),
+                        destination.clone(),
+                        proto.to_string(),
+                        *port,
+                    );
                     if !claimed.insert(claim) {
                         report.error(
                             "local_access.overlapping_policy",
@@ -1402,7 +1400,7 @@ fn validate_vpn_profiles(topology: &Topology, report: &mut ValidationReport) {
 }
 
 fn valid_hostname(value: &str) -> bool {
-    if value.is_empty() || value.len() > 253 || value.starts_with('.') || value.ends_with('.') {
+    if value.len() > 253 {
         return false;
     }
     value.split('.').all(|label| {
@@ -1416,7 +1414,7 @@ fn valid_hostname(value: &str) -> bool {
     })
 }
 
-fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {
+pub(crate) fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {
     let (address, prefix) = cidr.split_once('/')?;
     let address = address.parse::<IpAddr>().ok()?;
     let prefix = prefix.parse::<u8>().ok()?;
@@ -1463,6 +1461,39 @@ mod tests {
     };
     use indexmap::IndexMap;
     use serde_json::json;
+
+    #[test]
+    fn hostname_and_cidr_boundaries() {
+        for name in ["", ".", ".example", "example.", "a..b", "-a", "a-", "a_b"] {
+            assert!(!valid_hostname(name), "{name:?}");
+        }
+        assert!(valid_hostname("a.example"));
+        assert!(valid_hostname(&"a".repeat(63)));
+        assert!(!valid_hostname(&"a".repeat(64)));
+        let longest = format!("{}.com", vec!["a".repeat(62); 4].join("."));
+        assert!(!valid_hostname(&longest));
+        assert!(valid_hostname(&longest[..253]));
+
+        for (cidr, prefix) in [
+            ("192.0.2.1/0", 0),
+            ("192.0.2.1/32", 32),
+            ("::/0", 0),
+            ("::1/128", 128),
+        ] {
+            assert_eq!(parse_cidr(cidr).unwrap().1, prefix);
+        }
+        for cidr in [
+            "192.0.2.1/33",
+            "::1/129",
+            "::1/256",
+            "invalid/24",
+            "::1",
+            "::1/",
+            "::1/64/64",
+        ] {
+            assert!(parse_cidr(cidr).is_none(), "{cidr}");
+        }
+    }
 
     #[test]
     fn validates_dynamic_hosts_against_label_boundaries() {

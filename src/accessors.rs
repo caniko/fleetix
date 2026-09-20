@@ -64,7 +64,7 @@ impl Topology {
         Some(format!(
             "{}/{}",
             binding.address,
-            cidr_prefix_len(&link.subnet)?
+            crate::validate::parse_cidr(&link.subnet)?.1
         ))
     }
 
@@ -332,18 +332,6 @@ pub struct PeerEntry<'a> {
     pub public_key: &'a str,
     pub allowed_ips: Vec<String>,
     pub address: String,
-}
-
-fn cidr_prefix_len(subnet: &str) -> Option<u8> {
-    let (address, prefix) = subnet.split_once('/')?;
-    let ip = address.parse::<IpAddr>().ok()?;
-    let prefix = prefix.parse::<u8>().ok()?;
-    (prefix
-        <= match ip {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        })
-    .then_some(prefix)
 }
 
 fn address_prefix_len(address: &str) -> Option<u8> {
