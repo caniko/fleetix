@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Lock `rustls` at 0.23.45 to address RUSTSEC-2026-0285 before the first release.
 - Reject DNS-dependent WireGuard endpoints and non-IPv4 NAT-PMP gateways before
   isolated namespace deployment
 - Quote dynamic host keys in Pkl attribute syntax (`hub` -> `["hub"]`) in
