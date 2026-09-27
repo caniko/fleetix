@@ -71,16 +71,6 @@
           name = "fleetix-pkl-to-nix";
           runtimeInputs = [fleetixCrate];
           text = ''
-            if [ "$#" -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
-              echo "Usage: fleetix-pkl-to-nix <input.pkl> <output.nix>"
-              exit 0
-            fi
-
-            if [ $# -ne 2 ]; then
-              echo "Usage: fleetix-pkl-to-nix <input.pkl> <output.nix>" >&2
-              exit 1
-            fi
-
             exec fleetix pkl-to-nix "$@"
           '';
         };
@@ -318,7 +308,7 @@
             trust = (import("Trust.pkl")).trust
             EOF
 
-            fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix
+            fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix --no-cache
             grep -Fq 'links = {' topology.nix
             grep -Fq 'hosts = {' topology.nix
             grep -Fq 'domains = {' topology.nix

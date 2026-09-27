@@ -59,7 +59,17 @@ sidecar:
 
 ```bash
 nix run .#pkl-to-nix -- examples/Topology.pkl /tmp/topology.nix
+# Or call the standalone CLI directly:
+fleetix pkl-to-nix examples/Topology.pkl /tmp/topology.nix
 ```
+
+`fleetix::pkl_to_nix::{render, write, write_sync}` provides the same generator
+to Rust consumers. Writes preserve unchanged files and reuse a private,
+dependency-checked cache under `$XDG_CACHE_HOME/fleetix/pkl-to-nix` (or
+`~/.cache/fleetix/pkl-to-nix`). Imported files and the modular topology's
+flattened sources invalidate the cache by content. Evaluations that read
+environment or remote resources are never cached. Pass `--no-cache` to force
+reevaluation, for example in a reproducibility check.
 
 Topology-specific consumers should keep using `export-nix` when they need
 Fleetix's normalized topology rendering.

@@ -778,6 +778,13 @@ pub(crate) fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
 /// evaluator can read.
 pub(crate) fn flattened_tempfile(path: &Path) -> miette::Result<tempfile::NamedTempFile> {
     let flattened = flatten_modular_topology(path)?;
+    tempfile_from_flattened(path, &flattened)
+}
+
+pub(crate) fn tempfile_from_flattened(
+    path: &Path,
+    flattened: &str,
+) -> miette::Result<tempfile::NamedTempFile> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| miette::miette!("create temporary topology: {error}"))?;
