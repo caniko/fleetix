@@ -2,7 +2,7 @@
 
 use crate::{fsutil::atomic_write, topology};
 use miette::{IntoDiagnostic, Result};
-use pklx::pklr::EvalOptions;
+pub use pklx::pklr::EvalOptions;
 use std::path::{Path, PathBuf};
 
 mod cache;
@@ -105,13 +105,23 @@ pub async fn write_with_cache(
 
 /// Synchronous entry point for embedding in command-line tools.
 pub fn write_sync(path: &Path, output: &Path, options: EvalOptions) -> Result<WriteOutcome> {
+    write_with_cache_sync(path, output, options, CacheOptions::persistent())
+}
+
+/// Synchronous sidecar generation with explicit cache policy.
+pub fn write_with_cache_sync(
+    path: &Path,
+    output: &Path,
+    options: EvalOptions,
+    cache_options: CacheOptions,
+) -> Result<WriteOutcome> {
     if tokio::runtime::Handle::try_current().is_ok() {
         return Err(miette::miette!(
-            "write_sync cannot run inside a Tokio runtime; use write(path, output, options).await"
+            "synchronous Pkl generation cannot run inside a Tokio runtime; use write_with_cache(...).await"
         ));
     }
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
-    runtime.block_on(write(path, output, options))
+    runtime.block_on(write_with_cache(path, output, options, cache_options))
 }
 
 fn write_rendered(output: &Path, nix: &str) -> Result<bool> {
