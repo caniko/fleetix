@@ -7,6 +7,29 @@ use std::path::{Path, PathBuf};
 
 mod cache;
 
+/// Configure HTTP access for Pkl imports. Non-default HTTP settings bypass
+/// the persistent cache because their response content may change remotely.
+pub fn options_with_http(
+    http_rewrites: Vec<String>,
+    http_proxy: Option<&str>,
+) -> Result<EvalOptions> {
+    let mut options = EvalOptions {
+        http_rewrites,
+        ..EvalOptions::default()
+    };
+    if let Some(proxy_url) = http_proxy {
+        let proxy = pklx::pklr::reqwest::Proxy::all(proxy_url)
+            .map_err(|error| miette::miette!("invalid proxy URL '{proxy_url}': {error}"))?;
+        options.client = Some(
+            pklx::pklr::reqwest::Client::builder()
+                .proxy(proxy)
+                .build()
+                .map_err(|error| miette::miette!("failed to build HTTP client: {error}"))?,
+        );
+    }
+    Ok(options)
+}
+
 /// Cache policy for a sidecar write. Cache failures fall back to evaluation.
 #[derive(Default)]
 pub struct CacheOptions {

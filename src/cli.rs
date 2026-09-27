@@ -49,21 +49,7 @@ pub struct EvaluatorArgs {
 }
 
 fn build_options(args: &EvaluatorArgs) -> miette::Result<EvalOptions> {
-    let mut options = EvalOptions::default();
-    if !args.http_rewrite.is_empty() {
-        options.http_rewrites.clone_from(&args.http_rewrite);
-    }
-    if let Some(proxy_url) = &args.http_proxy {
-        let proxy = pklx::pklr::reqwest::Proxy::all(proxy_url)
-            .map_err(|error| miette::miette!("invalid proxy URL '{proxy_url}': {error}"))?;
-        options.client = Some(
-            pklx::pklr::reqwest::Client::builder()
-                .proxy(proxy)
-                .build()
-                .map_err(|error| miette::miette!("failed to build HTTP client: {error}"))?,
-        );
-    }
-    Ok(options)
+    pkl_to_nix::options_with_http(args.http_rewrite.clone(), args.http_proxy.as_deref())
 }
 
 async fn eval_pkl_for_nix(path: &Path, options: EvalOptions) -> miette::Result<String> {
