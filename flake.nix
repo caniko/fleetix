@@ -168,7 +168,8 @@
           }
         );
 
-        fleetix-publication-policy = assert (cargoToml.package.publish or true) == false;
+        fleetix-publication-policy = assert !(cargoToml.dependencies.pklx ? git);
+        assert cargoToml.package.documentation == "https://docs.rs/fleetix";
           pkgs.runCommand "fleetix-publication-policy" {} ''
             touch $out
           '';
@@ -695,6 +696,7 @@
           inherit (toolchain) craneLib;
         })
         // {
+          docs = compatShell "1.96.1";
           stable = compatShell "1.96.1";
           msrv = compatShell "1.88.0";
         }

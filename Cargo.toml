@@ -10,7 +10,14 @@ homepage = "https://github.com/caniko/fleetix"
 keywords = ["fleet", "topology", "nix", "pkl", "nixos"]
 categories = ["config"]
 readme = "README.md"
-publish = false
+documentation = "https://docs.rs/fleetix"
+include = [
+  "/src/**", "/examples/**", "/lib/**", "/modules/**",
+  "/README.md", "/CHANGELOG.md", "/LICENSE*", "/Cargo.toml", "/Cargo.lock",
+]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [[bin]]
 name = "fleetix"
@@ -18,7 +25,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-pklx = { version = "0.1.0", git = "https://github.com/caniko/nix-pklx.git" }
+pklx = "0.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 miette = "7"
 serde = { version = "1", features = ["derive"] }

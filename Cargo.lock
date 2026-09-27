@@ -907,7 +907,8 @@ dependencies = [
 [[package]]
 name = "pklx"
 version = "0.1.0"
-source = "git+https://github.com/caniko/nix-pklx.git#19179a0a6446c544b8333ce21b16f019acfb4f0e"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "078900f0f360565b4a07856a40dd98394223c5bdade0cf35200afbf33acc6db5"
 dependencies = [
  "clap",
  "indexmap",

@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-drift-2088ff)](.forgejo/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix)
+[![CI](https://img.shields.io/badge/CI-drift-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
 
 <!-- simit:badges:end -->
 
@@ -44,6 +44,12 @@ host should use a fleet build cache for selected package attributes, while the
 consuming flake chooses the concrete cache implementation.
 
 ## Pkl Helpers
+
+Rust consumers can add `fleetix = "0.1.0"` to their Cargo dependencies and
+call `fleetix::pkl_to_nix::write_with_cache_sync` or its async counterpart.
+The library evaluates Pkl through the published `pklx` crate; a Fleetix Nix
+flake input is not needed to run the Rust generator. The Fleetix flake remains
+available for NixOS/Home Manager modules and Nix helper functions.
 
 `fleetix::pkl` exposes generic Rust helpers for downstream crates that keep
 their canonical config in Pkl:
@@ -107,5 +113,4 @@ compatibility promise and modern compiler behavior are tested separately.
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
-your option. The crate is currently marked non-publishable because its git
-dependency on `pklx` does not yet have a crates.io release.
+your option.
