@@ -94,10 +94,15 @@ pub fn verify_fetch_plan(plan: &str, expected_output: &str) -> Result<(), Review
     let mut found = false;
     let mut building = false;
     for line in plan.lines().map(str::trim) {
-        if line.starts_with("these derivations will be built:") {
+        if line.starts_with("these derivations will be built:")
+            || line.starts_with("don't know how to build these paths:")
+        {
             building = true;
             fetching = false;
-        } else if line.starts_with("these paths will be fetched") && line.ends_with(':') {
+        } else if line.starts_with("these ")
+            && line.contains(" paths will be fetched")
+            && line.ends_with(':')
+        {
             fetching = true;
         } else if line.ends_with(':') && !line.starts_with("/nix/store/") {
             fetching = false;
@@ -164,6 +169,10 @@ mod tests {
         let fetched = format!("these paths will be fetched (99 MiB download):\n  {OUT}\n");
         assert_eq!(verify_fetch_plan(&fetched, OUT), Ok(()));
         assert_eq!(
+            verify_fetch_plan(&fetched.replacen("these paths", "these 2 paths", 1), OUT),
+            Ok(())
+        );
+        assert_eq!(
             verify_fetch_plan("", OUT),
             Err(ReviewPinError::FetchNotProven)
         );
@@ -177,6 +186,13 @@ mod tests {
         assert_eq!(
             verify_fetch_plan(
                 &format!("these derivations will be built:\n  /nix/store/abc.drv\n{fetched}"),
+                OUT,
+            ),
+            Err(ReviewPinError::BuildRequired)
+        );
+        assert_eq!(
+            verify_fetch_plan(
+                &format!("{fetched}don't know how to build these paths:\n  /nix/store/missing"),
                 OUT,
             ),
             Err(ReviewPinError::BuildRequired)
