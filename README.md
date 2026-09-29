@@ -22,6 +22,10 @@ Nix modules that expose a generated topology to NixOS and Home Manager.
 
 ## Nix Helpers
 
+For shared MCP server declarations and client configuration, see
+[MCP adapters](MCP.md): `fleetix.lib.mcp`, `fleetix.homeModules.mcp`, and the
+`fleetix mcp` managed-entry reconciler.
+
 `fleetix.lib` exposes pure helper functions for downstream flakes that need to
 derive runtime data from a generated topology sidecar:
 

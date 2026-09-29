@@ -65,6 +65,16 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Reconcile managed MCP entries into harness configuration files.
+    Mcp {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+        /// Inspect changes without writing configuration or state.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate a topology file for cross-reference invariants.
     Validate {
         path: PathBuf,
@@ -202,6 +212,22 @@ struct LinkView {
 
 pub async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
+        Command::Mcp {
+            manifest,
+            state,
+            dry_run,
+        } => {
+            let bytes = std::fs::read(&manifest)
+                .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?;
+            let manifest = serde_json::from_slice(&bytes)
+                .map_err(|error| CliError::new(EXIT_VALIDATION, error.to_string()))?;
+            let report = crate::mcp::reconcile(&manifest, &state, dry_run)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?
+            );
+        }
         Command::Trust(subcommand) => run_trust(subcommand).await?,
         Command::Validate {
             path,
@@ -269,7 +295,25 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
                         ))?
                     );
                 } else {
-                    println!("Host '{host_name}':\n  system: {}\n  deviceType: {:?}\n  lanIp: {:?}\n  links: {}\n  users: {}\n  rebuild.buildHost: {:?}", host_data.system, host_data.device_type, host_data.network.lan_ip, host_data.links.keys().cloned().collect::<Vec<_>>().join(", "), host_data.users.keys().cloned().collect::<Vec<_>>().join(", "), host_data.rebuild.build_host);
+                    println!(
+                        "Host '{host_name}':\n  system: {}\n  deviceType: {:?}\n  lanIp: {:?}\n  links: {}\n  users: {}\n  rebuild.buildHost: {:?}",
+                        host_data.system,
+                        host_data.device_type,
+                        host_data.network.lan_ip,
+                        host_data
+                            .links
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        host_data
+                            .users
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        host_data.rebuild.build_host
+                    );
                 }
             } else if format == OutputFormat::Json {
                 println!(
@@ -392,7 +436,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
-    use crate::trust::{notify, openssh, state, DeclaredTrust, Observation};
+    use crate::trust::{DeclaredTrust, Observation, notify, openssh, state};
 
     struct ScanOutcome {
         actionable: Vec<openssh::Entry>,
@@ -630,7 +674,7 @@ async fn run_integrate(
     known_hosts: &Path,
     sidecar: Option<&Path>,
 ) -> Result<(), CliError> {
-    use crate::trust::{openssh, patch, DeclaredTrust};
+    use crate::trust::{DeclaredTrust, openssh, patch};
 
     let (entries, _) = openssh::parse_entries(known_hosts).map_err(CliError::from)?;
     let entry = entries

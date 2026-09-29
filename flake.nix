@@ -65,6 +65,15 @@
     nixosModules.local-access = import ./modules/local-access.nix;
     homeModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     homeModules.trust-observer = import ./modules/trust-observer.nix;
+    homeModules.mcp = {
+      lib,
+      pkgs,
+      ...
+    }: {
+      key = "fleetix.homeModules.mcp";
+      imports = [(import ./modules/mcp.nix {fleetixLib = self.lib;})];
+      fleetix.mcp.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.fleetixCrate;
+    };
 
     packages = forSystems (
       system: let
@@ -148,6 +157,9 @@
           };
         };
       in {
+        mcp-adapters = assert import ./tests/mcp.nix {inherit (nixpkgs) lib;};
+          pkgs.runCommand "fleetix-mcp-adapters" {} ''touch $out'';
+
         fleetix-tests = craneLib.cargoTest (
           commonArgs
           // {

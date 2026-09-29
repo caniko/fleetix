@@ -1,0 +1,52 @@
+// Portable MCP destinations. Fleet-specific enablement and packages are consumers' data.
+class Harness {
+  format: "json"|"toml"|"native" = "json"
+  path: String
+  root: Listing<String> = new Listing { "mcpServers" }
+  commands: Listing<String>
+}
+
+harnesses: Mapping<String, Harness> = new Mapping {
+  ["opencode"] = new Harness {
+    path = "$XDG_CONFIG_HOME/opencode/opencode.json"
+    root = new Listing { "mcp"; "servers" }
+    commands = new Listing { "opencode" }
+  }
+  ["codex"] = new Harness {
+    format = "toml"
+    path = "$HOME/.codex/config.toml"
+    root = new Listing { "mcp_servers" }
+    commands = new Listing { "codex" }
+  }
+  ["claude"] = new Harness {
+    path = "$HOME/.claude.json"
+    commands = new Listing { "claude" }
+  }
+  ["omp"] = new Harness {
+    path = "$HOME/.omp/agent/mcp.json"
+    commands = new Listing { "omp" }
+  }
+  ["gemini"] = new Harness {
+    path = "$HOME/.gemini/settings.json"
+    commands = new Listing { "gemini" }
+  }
+  ["kiro"] = new Harness {
+    path = "$HOME/.kiro/settings/mcp.json"
+    commands = new Listing { "kiro-cli" }
+  }
+  ["copilot"] = new Harness {
+    path = "$HOME/.copilot/mcp-config.json"
+    commands = new Listing { "copilot" }
+  }
+  ["zed"] = new Harness {
+    path = "$XDG_CONFIG_HOME/zed/settings.json"
+    root = new Listing { "context_servers" }
+    commands = new Listing { "zeditor"; "zed" }
+  }
+  ["hermes"] = new Harness {
+    format = "native"
+    path = ""
+    root = new Listing { "mcp_servers" }
+    commands = new Listing { "hermes" }
+  }
+}
