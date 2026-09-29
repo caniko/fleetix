@@ -25,7 +25,19 @@
         servers.bad = server;
       })
       true)).success;
+  hermesTimeout = ms:
+    (mcp.renderServers {
+      harness = "hermes";
+      servers.tool = {
+        command = "/bin/tool";
+        timeoutMs = ms;
+      };
+    }).tool.timeout;
 in
+  assert builtins.isInt (hermesTimeout 600000);
+  assert hermesTimeout 600000 == 600;
+  assert hermesTimeout 1250 == 2;
+  assert hermesTimeout 1 == 1;
   assert (render "opencode").mcp.servers.drawing.command == ["/bin/drawing-mcp" "--stdio"];
   assert (render "opencode").mcp.servers.drawing.disabled;
   assert (render "opencode").mcp.servers.drawing.timeout.execution == 210000;

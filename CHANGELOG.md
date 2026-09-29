@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Render Hermes MCP timeouts as integer seconds, rounding fractional seconds up
+  to match its NixOS option type without shortening the configured timeout.
+
 ### Changed
 
 - The portable topology schema and Rust model include SSH access policy and

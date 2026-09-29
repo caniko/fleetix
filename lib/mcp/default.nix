@@ -58,6 +58,9 @@
     http = optionalAttrs (s.headers != {}) {headers = headerValues;};
     ms = optionalAttrs (timeout != null) {inherit timeout;};
     seconds = value: value / 1000.0;
+    # Hermes' NixOS option accepts integer seconds. Round up so conversion never
+    # shortens a positive millisecond timeout; subtract first to avoid overflow.
+    wholeSeconds = value: 1 + builtins.div (value - 1) 1000;
     result =
       if dialect == "opencode"
       then
@@ -123,7 +126,7 @@
       else if dialect == "zed"
       then common // http // {inherit (s) enabled;}
       else if dialect == "hermes"
-      then common // http // optionalAttrs (timeout != null) {timeout = seconds timeout;}
+      then common // http // optionalAttrs (timeout != null) {timeout = wholeSeconds timeout;}
       else if dialect == "claude"
       then
         common
