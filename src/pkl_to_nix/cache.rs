@@ -70,12 +70,6 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    pub(super) fn omit_temporary(&mut self, path: &Path) {
-        self.files.remove(&absolute(path));
-        self.existence.remove(&absolute(path));
-        self.canonical.remove(&absolute(path));
-    }
-
     async fn is_current(&self) -> bool {
         for (path, hash) in &self.files {
             if !std::fs::read(path).is_ok_and(|bytes| digest(&bytes) == *hash) {

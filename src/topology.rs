@@ -1,6 +1,5 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -800,27 +799,6 @@ pub(crate) fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
     None
 }
 
-/// Flatten a modular topology entrypoint into a temporary file the Pkl
-/// evaluator can read.
-pub(crate) fn flattened_tempfile(path: &Path) -> miette::Result<tempfile::NamedTempFile> {
-    let flattened = flatten_modular_topology(path)?;
-    tempfile_from_flattened(path, &flattened)
-}
-
-pub(crate) fn tempfile_from_flattened(
-    path: &Path,
-    flattened: &str,
-) -> miette::Result<tempfile::NamedTempFile> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| miette::miette!("create temporary topology: {error}"))?;
-    temporary
-        .write_all(flattened.as_bytes())
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| miette::miette!("write temporary topology: {error}"))?;
-    Ok(temporary)
-}
-
 /// Evaluate a .pkl topology file and produce a typed Topology value.
 pub async fn load_topology(path: &Path) -> miette::Result<Topology> {
     load_topology_with_options(path, pklx::pklr::EvalOptions::default()).await
@@ -850,14 +828,7 @@ pub(crate) async fn evaluate_topology_with_options(
     path: &Path,
     options: pklx::pklr::EvalOptions,
 ) -> miette::Result<Topology> {
-    let topology =
-        if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
-            let temporary = flattened_tempfile(path)?;
-            crate::pkl::load_with_options(temporary.path(), options).await?
-        } else {
-            crate::pkl::load_with_options(path, options).await?
-        };
-    Ok(topology)
+    crate::pkl::load_with_options(path, options).await
 }
 
 #[cfg(test)]
@@ -1013,18 +984,17 @@ services = new {
         fs::write(
             root.join("Topology.aggregated.pkl"),
             r#"
-links = new {
-  ["wg-home"] = (import("links/WgHome.pkl")).links["wg-home"]
-}
-
-hosts = new {
-  hub = (import("hosts/Hub.pkl")).hosts["hub"]
-}
-
-domains = (import("Domains.pkl")).domains
-services = (import("Services.pkl")).services
+import "links/WgHome.pkl" as W
+import "hosts/Hub.pkl" as H
+import "Domains.pkl" as D
+import "Services.pkl" as S
+import "Trust.pkl" as T
+links = W.links
+hosts = H.hosts
+domains = D.domains
+services = S.services
 schemaVersion: UInt16 = 2
-trust = (import("Trust.pkl")).trust
+trust = T.trust
 "#,
         )
         .map_err(|e| miette::miette!("write aggregate fixture: {e}"))?;

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Pkl evaluation and sidecar generation now follow the entrypoint's declared
+  imports, regardless of its filename. Use named imports (`import "Host.pkl"
+  as H`) in aggregates. The automatic Canix-shaped flattening workaround is
+  removed; custom sections and schema metadata are preserved in raw exports.
+  Nix consumers can use the existing normalization facade for nullable fields.
+
 ## [0.1.0] - 2026-09-27
 
 ### Fixed

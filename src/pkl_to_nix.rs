@@ -1,6 +1,6 @@
 //! Generic Pkl-to-Nix sidecar generation, shared by Fleetix and its consumers.
 
-use crate::{fsutil::atomic_write, topology};
+use crate::fsutil::atomic_write;
 use miette::{IntoDiagnostic, Result};
 pub use pklx::pklr::EvalOptions;
 use std::path::{Path, PathBuf};
@@ -56,12 +56,6 @@ pub struct WriteOutcome {
 
 /// Render a Pkl file as an importable Nix expression.
 pub async fn render(path: &Path, options: EvalOptions) -> Result<String> {
-    if path.file_name().and_then(|name| name.to_str()) == Some("Topology.aggregated.pkl") {
-        let temporary = topology::flattened_tempfile(path)?;
-        let nix = pklx::eval_pkl(temporary.path(), options).await?;
-        return Ok(wrap_topology_nix(nix));
-    }
-
     pklx::eval_pkl(path, options).await
 }
 
@@ -76,13 +70,6 @@ pub async fn write_with_cache(
     options: EvalOptions,
     cache_options: CacheOptions,
 ) -> Result<WriteOutcome> {
-    let flattened = (path.file_name().and_then(|name| name.to_str())
-        == Some("Topology.aggregated.pkl"))
-    .then(|| topology::flatten_modular_topology(path))
-    .transpose()?;
-    let flattened_hash = flattened
-        .as_ref()
-        .map(|source| cache::digest(source.as_bytes()));
     let cache_location =
         if cache_options.enabled && options.client.is_none() && options.http_rewrites.is_empty() {
             cache_options
@@ -93,7 +80,7 @@ pub async fn write_with_cache(
             None
         };
     if let Some((dir, key)) = &cache_location {
-        if let Some(nix) = cache::get(dir, key, flattened_hash.as_deref()).await {
+        if let Some(nix) = cache::get(dir, key, None).await {
             return Ok(WriteOutcome {
                 cached: true,
                 changed: write_rendered(output, &nix)?,
@@ -101,24 +88,11 @@ pub async fn write_with_cache(
         }
     }
 
-    let temporary = flattened
-        .as_deref()
-        .map(|source| topology::tempfile_from_flattened(path, source))
-        .transpose()?;
-    let eval_path = temporary.as_ref().map_or(path, |file| file.path());
-    let (nix, mut snapshot) = cache::evaluate(eval_path, options).await?;
-    if let Some(temporary) = &temporary {
-        snapshot.omit_temporary(temporary.path());
-    }
-    let nix = if temporary.is_some() {
-        wrap_topology_nix(nix)
-    } else {
-        nix
-    };
+    let (nix, snapshot) = cache::evaluate(path, options).await?;
     // Never publish a cache entry for a failed sidecar write.
     let changed = write_rendered(output, &nix)?;
     if let Some((dir, key)) = &cache_location {
-        cache::put(dir, key, flattened_hash, snapshot, &nix);
+        cache::put(dir, key, None, snapshot, &nix);
     }
     Ok(WriteOutcome {
         cached: false,
@@ -154,12 +128,6 @@ fn write_rendered(output: &Path, nix: &str) -> Result<bool> {
     }
     atomic_write(output, contents.as_bytes())?;
     Ok(true)
-}
-
-fn wrap_topology_nix(nix: String) -> String {
-    format!(
-        "let\n  scrub = value:\n    if builtins.isAttrs value then\n      builtins.listToAttrs (\n        builtins.filter (entry: entry.value != null) (\n          builtins.map (name: {{ inherit name; value = scrub value.${{name}}; }})\n            (builtins.attrNames (builtins.removeAttrs value [\"__pkl_class\"]))\n        )\n      )\n    else if builtins.isList value then builtins.map scrub value\n    else value;\nin\n  scrub (\n{nix}\n  )\n"
-    )
 }
 
 #[cfg(test)]
@@ -245,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aggregate_cache_tracks_flattened_imports() {
+    async fn aggregate_cache_tracks_declared_imports_and_preserves_extensions() {
         let dir = tempfile::tempdir().unwrap();
         let topology = dir.path().join("topology");
         fs::create_dir_all(topology.join("hosts")).unwrap();
@@ -270,7 +238,7 @@ mod tests {
         let source = topology.join("Topology.aggregated.pkl");
         fs::write(
             &source,
-            "schemaVersion = 2\nhosts = new { hub = (import(\"hosts/Hub.pkl\")).hosts.hub }\n",
+            "import \"hosts/Hub.pkl\" as H\nimport \"Domains.pkl\" as D\nschemaVersion = 2\nhosts = H.hosts\ndomains = D.domains\naccess = new { sshPort = 1337 }\ncustom = new { policy = \"preserved\" }\n",
         )
         .unwrap();
         let output = dir.path().join("topology.nix");
@@ -305,6 +273,16 @@ mod tests {
             }
         );
         assert!(fs::read_to_string(&output).unwrap().contains("second"));
+        let rendered = fs::read_to_string(&output).unwrap();
+        assert!(rendered.contains("sshPort = 1337"));
+        assert!(rendered.contains("preserved"));
+        // Renaming the entrypoint must not change which data is exported.
+        let renamed = topology.join("Fleet.pkl");
+        fs::copy(&source, &renamed).unwrap();
+        assert_eq!(
+            render(&source, EvalOptions::default()).await.unwrap(),
+            render(&renamed, EvalOptions::default()).await.unwrap()
+        );
     }
 
     #[tokio::test]

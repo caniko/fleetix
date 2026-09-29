@@ -222,8 +222,6 @@
           } ''
             fixture="$TMPDIR/topology"
             mkdir -p "$fixture/links" "$fixture/hosts"
-            mkdir -p "$TMPDIR/shared"
-            : > "$TMPDIR/shared/Names.pkl"
 
             cat > "$fixture/Schema.pkl" <<'EOF'
             class Link {
@@ -301,21 +299,23 @@
             EOF
 
             cat > "$fixture/Topology.aggregated.pkl" <<'EOF'
-            links = new {
-              ["wg-home"] = (import("links/WgHome.pkl")).links["wg-home"]
-            }
-
-            hosts = new {
-              hub = (import("hosts/Hub.pkl")).hosts["hub"]
-            }
-
+            import "links/WgHome.pkl" as W
+            import "hosts/Hub.pkl" as H
+            import "Domains.pkl" as D
+            import "Services.pkl" as S
+            import "Trust.pkl" as T
+            links = W.links
+            hosts = H.hosts
             schemaVersion: UInt16 = 2
-            domains = (import("Domains.pkl")).domains
-            services = (import("Services.pkl")).services
-            trust = (import("Trust.pkl")).trust
+            domains = D.domains
+            services = S.services
+            trust = T.trust
+            access = new { sshPort = 1337 }
             EOF
 
+            chmod -R a-w "$fixture"
             fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix --no-cache
+            grep -Fq 'sshPort = 1337' topology.nix
             grep -Fq 'links = {' topology.nix
             grep -Fq 'hosts = {' topology.nix
             grep -Fq 'domains = {' topology.nix
