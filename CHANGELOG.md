@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The portable topology schema and Rust model include SSH access policy and
+  public virtual-address placement, allowing consumers to import one schema.
 - Pkl evaluation and sidecar generation now follow the entrypoint's declared
   imports, regardless of its filename. Use named imports (`import "Host.pkl"
   as H`) in aggregates. The automatic Canix-shaped flattening workaround is

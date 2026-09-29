@@ -289,6 +289,8 @@ class Deployment {
   serviceIntents: Listing<ServiceIntent> = new Listing {}
   ingressGroups: Mapping<String, IngressGroup> = new {}
   localAccess: Mapping<String, LocalAccessPolicy> = new {}
+  publicVirtualCidr: String? = null
+  publicPriorities: Mapping<String, Int> = new {}
 }
 
 class SshKnownHost {
@@ -299,4 +301,14 @@ class SshKnownHost {
 
 class Trust {
   sshKnownHosts: Listing<SshKnownHost> = new Listing {}
+}
+
+class SshAccess {
+  port: UInt16
+  hostKeyPath: String
+  hostPubKeyPath: String
+}
+
+class Access {
+  ssh: SshAccess
 }

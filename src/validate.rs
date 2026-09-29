@@ -1511,6 +1511,7 @@ mod tests {
     fn validates_dynamic_hosts_against_label_boundaries() {
         let topology = Topology {
             schema_version: 2,
+            access: None,
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
@@ -1552,9 +1553,11 @@ mod tests {
             issue.code == "dns.dynamic_host_outside_managed_zone"
                 && issue.value.as_deref() == Some("example.test.evil")
         }));
-        assert!(!report
-            .warnings()
-            .any(|warning| warning.message.contains("api.example.test")));
+        assert!(
+            !report
+                .warnings()
+                .any(|warning| warning.message.contains("api.example.test"))
+        );
     }
 
     #[test]
@@ -1605,14 +1608,18 @@ mod tests {
         ];
 
         let report = validate(&topology);
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.code == "deployment.unknown_host"));
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.code == "deployment.dependency_cycle"));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "deployment.unknown_host")
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "deployment.dependency_cycle")
+        );
     }
 
     #[test]
@@ -2059,10 +2066,12 @@ mod tests {
     fn rejects_absent_and_old_schema_versions() {
         let absent = Topology::default();
         assert_eq!(absent.schema_version, 0);
-        assert!(validate(&absent)
-            .issues
-            .iter()
-            .any(|issue| issue.code == "topology.unsupported_schema_version"));
+        assert!(
+            validate(&absent)
+                .issues
+                .iter()
+                .any(|issue| issue.code == "topology.unsupported_schema_version")
+        );
 
         let mut old = v2_topology();
         old.schema_version = 1;

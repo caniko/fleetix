@@ -411,6 +411,7 @@ mod tests {
 
         Topology {
             schema_version: 2,
+            access: None,
             links: IndexMap::new(),
             hosts,
             domains: Domains {

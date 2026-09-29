@@ -15,6 +15,8 @@ pub struct Topology {
     pub deployment: Deployment,
     #[serde(default)]
     pub trust: Trust,
+    #[serde(default)]
+    pub access: Option<Access>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -556,6 +558,24 @@ pub struct Deployment {
     pub ingress_groups: IndexMap<String, IngressGroup>,
     #[serde(default)]
     pub local_access: IndexMap<String, LocalAccessPolicy>,
+    #[serde(default)]
+    pub public_virtual_cidr: Option<String>,
+    #[serde(default)]
+    pub public_priorities: IndexMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    pub ssh: SshAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshAccess {
+    pub port: u16,
+    pub host_key_path: String,
+    pub host_pub_key_path: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -835,6 +855,26 @@ pub(crate) async fn evaluate_topology_with_options(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn access_and_public_placement_survive_typed_round_trip() {
+        let value = serde_json::json!({
+            "schemaVersion": 2, "links": {}, "hosts": {}, "domains": {}, "services": {},
+            "access": {"ssh": {"port": 1337, "hostKeyPath": "/etc/ssh/key", "hostPubKeyPath": "/etc/ssh/key.pub"}},
+            "deployment": {"publicVirtualCidr": "192.0.2.240/24", "publicPriorities": {"hub": 150}}
+        });
+        let topology: Topology = serde_json::from_value(value.clone()).unwrap();
+        let output = serde_json::to_value(topology).unwrap();
+        assert_eq!(output["access"], value["access"]);
+        assert_eq!(
+            output["deployment"]["publicVirtualCidr"],
+            value["deployment"]["publicVirtualCidr"]
+        );
+        assert_eq!(
+            output["deployment"]["publicPriorities"],
+            value["deployment"]["publicPriorities"]
+        );
+    }
 
     #[test]
     fn imported_paths_keep_entrypoint_order() {
