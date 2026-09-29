@@ -222,6 +222,32 @@ pub struct Gpu {
     pub dgpu: Option<String>,
     #[serde(default)]
     pub media: Option<GpuMedia>,
+    #[serde(default)]
+    pub compute: Option<GpuCompute>,
+}
+
+/// Requested compute stack for the primary GPU (dGPU, otherwise iGPU).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuCompute {
+    pub backend: GpuComputeBackend,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuComputeBackend {
+    Oneapi,
+    Rocm,
+    Cuda,
+}
+
+impl GpuComputeBackend {
+    pub fn vendor(self) -> &'static str {
+        match self {
+            Self::Oneapi => "intel",
+            Self::Rocm => "amd",
+            Self::Cuda => "nvidia",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

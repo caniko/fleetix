@@ -43,6 +43,15 @@ Host `rebuild.buildCache` is backend-neutral fleet policy. It records whether a
 host should use a fleet build cache for selected package attributes, while the
 consuming flake chooses the concrete cache implementation.
 
+## Primary GPU compute
+
+Hosts may declare `gpu.compute = new S.GpuCompute { backend = "oneapi" }`.
+The optional request targets the dGPU when present, otherwise the iGPU.
+Validation requires `oneapi` on Intel, `rocm` on AMD, or `cuda` on NVIDIA.
+Omitting `compute` preserves existing consumer policy. This is a requested
+stack, not proof of runtime device availability; package selection and hardware
+verification belong to the consuming application/configuration.
+
 ## Pkl Helpers
 
 Rust consumers can add `fleetix = "0.1.0"` to their Cargo dependencies and

@@ -86,10 +86,16 @@ class GpuMedia {
   libvaDriver: String
 }
 
+// Requested compute stack for the primary GPU (dGPU, otherwise iGPU).
+class GpuCompute {
+  backend: "oneapi" | "rocm" | "cuda"
+}
+
 class Gpu {
   igpu: String? = null
   dgpu: String? = null
   media: GpuMedia? = null
+  compute: GpuCompute? = null
 }
 
 class Storage {

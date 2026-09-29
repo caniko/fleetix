@@ -1209,6 +1209,18 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
             }
         }
 
+        if let Some(compute) = &host.gpu.compute {
+            let primary = host.gpu.dgpu.as_deref().or(host.gpu.igpu.as_deref());
+            if primary != Some(compute.backend.vendor()) {
+                report.error(
+                    "host.incompatible_gpu_compute",
+                    Some(format!("hosts.{host_name}.gpu.compute.backend")),
+                    Some(format!("{:?}", compute.backend)),
+                    format!("host '{host_name}' compute backend requires a {} primary GPU, found {primary:?}", compute.backend.vendor()),
+                );
+            }
+        }
+
         if let Some(media) = &host.gpu.media {
             if !matches!(media.vendor.as_str(), "amd" | "intel" | "nvidia") {
                 report.error(
@@ -1766,6 +1778,50 @@ mod tests {
                 report.issues
             );
         }
+    }
+
+    #[test]
+    fn validates_primary_gpu_compute_contract() {
+        for (igpu, dgpu, backend, valid) in [
+            (None, Some("intel"), "oneapi", true),
+            (Some("intel"), None, "oneapi", true),
+            (Some("intel"), Some("nvidia"), "oneapi", false),
+            (Some("amd"), Some("nvidia"), "cuda", true),
+            (None, Some("amd"), "rocm", true),
+            (None, None, "oneapi", false),
+        ] {
+            let gpu_json = json!({
+                "igpu": igpu, "dgpu": dgpu, "media": null,
+                "compute": { "backend": backend }
+            });
+            let gpu = serde_json::from_value(gpu_json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&gpu).unwrap(), gpu_json);
+            let mut topology = v2_topology();
+            topology.hosts.insert(
+                "compute".to_string(),
+                Host {
+                    system: "x86_64-linux".to_string(),
+                    gpu,
+                    ..Default::default()
+                },
+            );
+            let report = validate(&topology);
+            assert_eq!(
+                !report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "host.incompatible_gpu_compute"),
+                valid,
+                "{igpu:?}/{dgpu:?}/{backend}: {:?}",
+                report.issues
+            );
+        }
+        assert!(
+            serde_json::from_value::<crate::topology::Gpu>(json!({
+                "dgpu": "intel", "compute": { "backend": "typo" }
+            }))
+            .is_err()
+        );
     }
 
     #[test]
