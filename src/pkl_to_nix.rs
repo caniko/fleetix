@@ -327,4 +327,30 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn producer_upgrade_invalidates_receipt_without_rewriting_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("Source.pkl");
+        let output = dir.path().join("source.nix");
+        let cache_dir = dir.path().join("cache");
+        fs::write(&source, "value = 42\n").unwrap();
+        let generate =
+            || write_with_cache(&source, &output, EvalOptions::default(), cached(&cache_dir));
+        assert!(!generate().await.unwrap().cached);
+        assert!(generate().await.unwrap().cached);
+        let receipt = cache_dir.join(format!("{}.json", cache::key(&source).unwrap()));
+        let mut entry: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+        entry["producer"] = "old-producer".into();
+        fs::write(&receipt, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert_eq!(
+            generate().await.unwrap(),
+            WriteOutcome {
+                cached: false,
+                changed: false
+            }
+        );
+        assert!(generate().await.unwrap().cached);
+    }
 }

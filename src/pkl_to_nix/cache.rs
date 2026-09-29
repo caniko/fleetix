@@ -7,8 +7,24 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-// Bump when Fleetix's rendering or the pklx serializer changes.
-const FORMAT: u32 = 1;
+// Bump when the receipt schema changes; the producer covers renderer upgrades.
+const FORMAT: u32 = 2;
+
+// Fleetix is also embedded in downstream CLIs. Fingerprint the running
+// producer once, so renderer/pklr upgrades invalidate receipts even when the
+// crate version or source file names have not changed.
+fn producer() -> Option<&'static str> {
+    static PRODUCER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PRODUCER
+        .get_or_init(|| {
+            #[cfg(target_os = "linux")]
+            let executable = PathBuf::from("/proc/self/exe");
+            #[cfg(not(target_os = "linux"))]
+            let executable = std::env::current_exe().ok()?;
+            Some(digest(&std::fs::read(executable).ok()?))
+        })
+        .as_deref()
+}
 
 pub(super) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -104,6 +120,7 @@ struct Glob {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     format: u32,
+    producer: String,
     flattened_hash: Option<String>,
     snapshot: Snapshot,
     nix: String,
@@ -114,6 +131,7 @@ pub(super) async fn get(dir: &Path, key: &str, flattened_hash: Option<&str>) -> 
     let entry: Entry =
         serde_json::from_slice(&std::fs::read(dir.join(format!("{key}.json"))).ok()?).ok()?;
     if entry.format != FORMAT
+        || Some(entry.producer.as_str()) != producer()
         || entry.flattened_hash.as_deref() != flattened_hash
         || entry.snapshot.volatile
         || digest(entry.nix.as_bytes()) != entry.nix_hash
@@ -134,8 +152,12 @@ pub(super) fn put(
     if snapshot.volatile || ensure_private_dir(dir).is_err() {
         return;
     }
+    let Some(producer) = producer() else {
+        return;
+    };
     let entry = Entry {
         format: FORMAT,
+        producer: producer.to_owned(),
         flattened_hash,
         snapshot,
         nix: nix.to_owned(),

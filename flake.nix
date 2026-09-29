@@ -38,6 +38,22 @@
 
     # Nix library: fromPkl + accessors
     fleetixLib = import ./lib {inherit (nixpkgs) lib;};
+    rustBuilds = forSystems (system: let
+      pkgs = pkgsFor system;
+      craneLib = crane.mkLib pkgs;
+      commonArgs = {
+        src = craneLib.cleanCargoSource ./.;
+        pname = "fleetix";
+        version = "0.1.0";
+        strictDeps = true;
+        cargoExtraArgs = "--all-features";
+        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+      };
+    in {
+      inherit craneLib commonArgs;
+      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+      libraryArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--no-default-features";});
+    });
   in {
     lib = fleetixLib;
 
@@ -53,18 +69,15 @@
     packages = forSystems (
       system: let
         pkgs = pkgsFor system;
-        craneLib = crane.mkLib pkgs;
+        inherit (rustBuilds.${system}) craneLib commonArgs cargoArtifacts;
 
         # Build the fleetix Rust crate
-        fleetixCrate = craneLib.buildPackage {
-          pname = "fleetix";
-          version = "0.1.0";
-          src = craneLib.cleanCargoSource ./.;
-          strictDeps = true;
-          doCheck = true;
-          cargoExtraArgs = "--features cli";
-          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-        };
+        fleetixCrate = craneLib.buildPackage (commonArgs
+          // {
+            inherit cargoArtifacts;
+            doCheck = true;
+            cargoExtraArgs = "--features cli";
+          });
 
         # Export any Pkl file to an importable Nix expression sidecar.
         pklToNix = pkgs.writeShellApplication {
@@ -125,15 +138,8 @@
     checks = forSystems (
       system: let
         pkgs = pkgsFor system;
-        craneLib = crane.mkLib pkgs;
-        src = craneLib.cleanCargoSource ./.;
-        commonArgs = {
-          inherit src;
-          pname = "fleetix";
-          strictDeps = true;
-          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-        };
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        inherit (rustBuilds.${system}) craneLib commonArgs cargoArtifacts libraryArtifacts;
+        inherit (commonArgs) src;
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         assertionsModule = {
           options.assertions = nixpkgs.lib.mkOption {
@@ -162,7 +168,7 @@
         fleetix-no-default-features = craneLib.cargoClippy (
           commonArgs
           // {
-            inherit cargoArtifacts;
+            cargoArtifacts = libraryArtifacts;
             cargoExtraArgs = "--no-default-features";
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           }
