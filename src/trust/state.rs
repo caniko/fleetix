@@ -6,7 +6,7 @@
 // reviewExisting = false also lands here.
 
 use crate::fsutil::atomic_write;
-use miette::{miette, Result};
+use miette::{Result, miette};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;

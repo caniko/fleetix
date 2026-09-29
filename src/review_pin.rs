@@ -149,8 +149,7 @@ mod tests {
         );
         assert_eq!(
             verify_pin(ReviewPin {
-                evaluated_output:
-                    "/nix/store/59s6vkyaz4s40b76w7avkigdgyb5yb6r-vm-test-run-paperclip",
+                evaluated_output: "/nix/store/59s6vkyaz4s40b76w7avkigdgyb5yb6r-vm-test-run-paperclip",
                 ..reviewed()
             }),
             Err(ReviewPinError::OutputMismatch)

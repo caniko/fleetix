@@ -1,4 +1,4 @@
-use miette::{miette, Result};
+use miette::{Result, miette};
 use std::io::Write;
 use std::path::Path;
 

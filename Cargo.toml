@@ -1,6 +1,6 @@
 [package]
 name = "fleetix"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
@@ -13,7 +13,7 @@ readme = "README.md"
 documentation = "https://docs.rs/fleetix"
 include = [
   "/src/**", "/examples/**", "/lib/**", "/modules/**", "/tests/**",
-  "/README.md", "/MCP.md", "/CHANGELOG.md", "/LICENSE*", "/Cargo.toml", "/Cargo.lock",
+  "/README.md", "/MCP.md", "/ARCHITECTURE.md", "/CHANGELOG.md", "/LICENSE*", "/Cargo.toml", "/Cargo.lock",
 ]
 
 [package.metadata.docs.rs]

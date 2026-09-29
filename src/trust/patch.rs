@@ -8,7 +8,7 @@ use super::openssh::Entry;
 use crate::fsutil::atomic_write;
 use crate::pkl::string_literal;
 use crate::topology::matching_brace;
-use miette::{miette, Result};
+use miette::{Result, miette};
 use std::path::Path;
 
 const DEFAULT_TRUST_PKL: &str = r#"// Fleet-level trust declarations.
@@ -91,7 +91,7 @@ fn insert_entry(content: &str, entry: &Entry) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trust::openssh::{entry_id, Entry};
+    use crate::trust::openssh::{Entry, entry_id};
 
     fn entry(hostname: &str, key: &str) -> Entry {
         let host_names = vec![hostname.to_string()];
@@ -131,9 +131,11 @@ mod tests {
         let path = directory.path().join("Trust.pkl");
         let previous = patch_trust_pkl(&path, &entry("host.example", "BBBB")).unwrap();
         assert!(previous.is_none());
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("\"ssh-ed25519 BBBB\""));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"ssh-ed25519 BBBB\"")
+        );
     }
 
     #[test]

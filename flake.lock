@@ -411,7 +411,11 @@
         "crane": "crane",
         "harbor-rs": "harbor-rs",
         "nixpkgs": "nixpkgs",
-        "rust-overlay": "rust-overlay_2"
+        "rust-overlay": "rust-overlay_2",
+        "treefmt-nix": [
+          "harbor-rs",
+          "treefmt-nix"
+        ]
       }
     },
     "rust-overlay": {

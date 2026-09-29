@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-30
+
+### Added
+
+- Optional `mcp` library feature with shared harness adapters and managed-entry
+  reconciliation, also available through the standalone CLI.
+
 ### Fixed
 
 - Render Hermes MCP timeouts as integer seconds, rounding fractional seconds up

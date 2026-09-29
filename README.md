@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-drift-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
+[![CI](https://img.shields.io/badge/CI-drift-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
 
 <!-- simit:badges:end -->
 
@@ -58,11 +58,21 @@ verification belong to the consuming application/configuration.
 
 ## Pkl Helpers
 
-Rust consumers can add `fleetix = "0.1.0"` to their Cargo dependencies and
+Rust consumers can add `fleetix = { version = "0.2.0", default-features = false }`
+to their Cargo dependencies and
 call `fleetix::pkl_to_nix::write_with_cache_sync` or its async counterpart.
 The library evaluates Pkl through the published `pklx` crate; a Fleetix Nix
 flake input is not needed to run the Rust generator. The Fleetix flake remains
 available for NixOS/Home Manager modules and Nix helper functions.
+
+Enable `mcp` for the harness adapter APIs, or `cli` for the standalone executable.
+Simit generates verification and crates.io publication workflows:
+`simit init ci --platform github --runtime nix --publish-crates`.
+Release tags are signed exact versions (for example `0.2.0`); publishing is
+owned by `.github/workflows/publish-crate.yaml`.
+The CI environment retains the repository's Nix module checks; Rust consumers
+still resolve and build the published library entirely through Cargo.
+See [product boundaries](ARCHITECTURE.md) for the deployment extraction contract.
 
 `fleetix::pkl` exposes generic Rust helpers for downstream crates that keep
 their canonical config in Pkl:

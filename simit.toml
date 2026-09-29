@@ -7,3 +7,4 @@ runtime = "nix"
 platform = "github"
 provider = "actions"
 publish_crates = true
+extra_env = { RUSTDOCFLAGS = "-D warnings" }

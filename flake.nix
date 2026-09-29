@@ -14,6 +14,7 @@
       inputs.crane.follows = "crane";
       inputs.rust-overlay.follows = "rust-overlay";
     };
+    treefmt-nix.follows = "harbor-rs/treefmt-nix";
   };
 
   outputs = {
@@ -22,6 +23,7 @@
     crane,
     rust-overlay,
     harbor-rs,
+    treefmt-nix,
     ...
   }: let
     supportedSystems = [
@@ -36,6 +38,17 @@
         overlays = [(import rust-overlay)];
       };
 
+    treefmtFor = system: let
+      pkgs = pkgsFor system;
+      toolchain = harbor-rs.lib.mkToolchain {
+        inherit pkgs;
+        toolchainProfile = "nightly";
+      };
+    in
+      treefmt-nix.lib.evalModule pkgs (import ./nix/treefmt.nix {
+        rustfmtPackage = toolchain.rustToolchain;
+      });
+
     # Nix library: fromPkl + accessors
     fleetixLib = import ./lib {inherit (nixpkgs) lib;};
     rustBuilds = forSystems (system: let
@@ -44,7 +57,7 @@
       commonArgs = {
         src = craneLib.cleanCargoSource ./.;
         pname = "fleetix";
-        version = "0.1.0";
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         strictDeps = true;
         cargoExtraArgs = "--all-features";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -57,7 +70,7 @@
   in {
     lib = fleetixLib;
 
-    formatter = forSystems (system: (pkgsFor system).alejandra);
+    formatter = forSystems (system: (treefmtFor system).config.build.wrapper);
 
     # NixOS and Home Manager modules for consuming fleetix topology from the
     # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
@@ -148,7 +161,6 @@
       system: let
         pkgs = pkgsFor system;
         inherit (rustBuilds.${system}) craneLib commonArgs cargoArtifacts libraryArtifacts;
-        inherit (commonArgs) src;
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         assertionsModule = {
           options.assertions = nixpkgs.lib.mkOption {
@@ -192,10 +204,7 @@
             touch $out
           '';
 
-        fleetix-fmt = craneLib.cargoFmt {
-          inherit src;
-          pname = "fleetix";
-        };
+        fleetix-fmt = (treefmtFor system).config.build.check self;
 
         validate-example-export =
           pkgs.runCommand "validate-example-export" {
@@ -705,6 +714,10 @@
             craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
             inherit cargoConfig cross;
             packages = [toolchain];
+            extraEnv = {
+              RUSTFLAGS = "";
+              CARGO_ENCODED_RUSTFLAGS = "";
+            };
             enableWindowsEnv = false;
             enableOsxcrossEnv = false;
           };
@@ -712,6 +725,7 @@
         (harbor-rs.lib.mkDevShells {
           inherit pkgs cross cargoConfig;
           inherit (toolchain) craneLib;
+          packages = [(treefmtFor system).config.build.wrapper];
         })
         // {
           docs = compatShell "1.96.1";

@@ -6,7 +6,7 @@
 // security-relevant and reported, but never offered for integration.
 
 use super::{DeclaredTrust, Observation};
-use miette::{miette, Result};
+use miette::{Result, miette};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -291,12 +291,16 @@ mod tests {
             },
         );
         let declared = DeclaredTrust::from_topology(&topology);
-        assert!(declared
-            .keys_for("192.0.2.10")
-            .contains(&"ssh-ed25519 AAAHubKey".to_string()));
-        assert!(declared
-            .keys_for("[203.0.113.1]:1337")
-            .contains(&"ssh-ed25519 AAAHubKey".to_string()));
+        assert!(
+            declared
+                .keys_for("192.0.2.10")
+                .contains(&"ssh-ed25519 AAAHubKey".to_string())
+        );
+        assert!(
+            declared
+                .keys_for("[203.0.113.1]:1337")
+                .contains(&"ssh-ed25519 AAAHubKey".to_string())
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 // possible.
 
 use super::openssh::Entry;
-use miette::{miette, Result};
+use miette::{Result, miette};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {

@@ -122,9 +122,18 @@
     table = tableOf name;
     priority = cfg.rulePriorityBase + (table - cfg.tableBase);
     dest = policy.destination;
-    destStr = if dest == null then "" else dest;
-    lanIpStr = if policy.targetLanIp == null then "" else policy.targetLanIp;
-    srcStr = if policy.clientSourceIp == null then "" else policy.clientSourceIp;
+    destStr =
+      if dest == null
+      then ""
+      else dest;
+    lanIpStr =
+      if policy.targetLanIp == null
+      then ""
+      else policy.targetLanIp;
+    srcStr =
+      if policy.clientSourceIp == null
+      then ""
+      else policy.clientSourceIp;
     mkRules = proto: ports:
       lib.concatMapStringsSep "\n" (port: ''
         if ! $IP rule show | $GREP -q "to ${dest}/32 ipproto ${proto} dport ${toString port} .*table ${toString table}"; then
@@ -209,10 +218,12 @@ in {
   };
 
   config = mkIf cfg.enable {
-    assertions = lib.mapAttrsToList (name: policy: {
-      assertion = policy.destination != null && policy.targetLanIp != null && policy.clientSourceIp != null;
-      message = "fleetix.localAccess policy '${name}' needs a destination, target LAN IP, and client source IP from topology";
-    }) active;
+    assertions =
+      lib.mapAttrsToList (name: policy: {
+        assertion = policy.destination != null && policy.targetLanIp != null && policy.clientSourceIp != null;
+        message = "fleetix.localAccess policy '${name}' needs a destination, target LAN IP, and client source IP from topology";
+      })
+      active;
 
     # Return traffic may arrive over the fallback tunnel while the policy
     # route points at LAN; strict reverse-path filtering would drop it.
