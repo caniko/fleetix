@@ -1,5 +1,6 @@
 pub mod accessors;
 mod fsutil;
+pub mod health;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod pkl;
