@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-30
+
+### Added
+
+- Backend-neutral service profiles with visibility, domain affiliation,
+  lifecycle exclusions, owned endpoint/site references, and typed health checks.
+- Gatus inventory selection, public diagnostic redaction, stable history keys,
+  collision detection, and endpoint/site coverage reporting.
+- A host-local health library for systemd units, recent successful jobs,
+  consumer health contracts, and literal-loopback HTTP/TCP readiness checks.
+  Publication uses runtime bearer credentials, bounded concurrency, and external
+  endpoint heartbeats, without redirects or proxy-environment credential leakage.
+
 ## [0.2.0] - 2026-09-30
 
 ### Added
