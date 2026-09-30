@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Installed-system management routes with independent public recovery addresses,
+  declared SSH ports, shared-link candidates, and enrolled runtime host-key checks.
+- Explicit DNS-only publication targets, static address projections, and
+  validation against competing DDNS, Pages, and explicit address-record writers.
+
+### Changed
+
+- Rust struct literals for `Host`, `Domains`, and `HttpSite` must supply the new
+  management/publication fields or use their available defaults. Serialized
+  topology remains compatible through defaulted fields. These APIs require a
+  future release; they are not part of published `0.3.0`.
+
 ## [0.3.0] - 2026-09-30
 
 ### Added
