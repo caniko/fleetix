@@ -77,6 +77,8 @@ pub struct Host {
     #[serde(default)]
     pub network: Network,
     #[serde(default)]
+    pub management: HostManagement,
+    #[serde(default)]
     pub rebuild: Rebuild,
     #[serde(default)]
     pub links: IndexMap<String, LinkBinding>,
@@ -88,6 +90,18 @@ pub struct Host {
     pub gpu: Gpu,
     #[serde(default)]
     pub storage: Storage,
+}
+
+/// Explicit installed-system management routes, independent of service publication.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostManagement {
+    #[serde(default)]
+    pub public_address: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 fn default_availability_class() -> String {
@@ -292,6 +306,19 @@ pub struct Domains {
     pub pages_sites: Vec<PagesSite>,
     #[serde(default)]
     pub redirects: Vec<Redirect>,
+    #[serde(default)]
+    pub publication_targets: IndexMap<String, PublicationTarget>,
+}
+
+/// Non-secret desired publication addresses; never live provider state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicationTarget {
+    pub hostname: String,
+    pub target_host: String,
+    pub ipv4: String,
+    #[serde(default)]
+    pub ipv6: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,6 +467,8 @@ pub struct HttpSite {
     pub ingress: String,
     pub access: HttpAccess,
     pub dns_publication: DnsPublication,
+    #[serde(default)]
+    pub publication_target: Option<String>,
     pub routes: Vec<HttpRoute>,
 }
 

@@ -23,7 +23,7 @@ impl DeclaredTrust {
     /// Build the declared index from fleet hosts and the `Trust` section.
     ///
     /// A host's key is indexed under its name, host names, LAN and direct-link
-    /// IPs, and every link binding address — the aliases the OpenSSH
+    /// IPs, its declared public recovery IP, and every link binding address — the aliases the OpenSSH
     /// knownHosts generation writes. Lookups normalize `[host]:port` forms.
     pub fn from_topology(topology: &Topology) -> Self {
         let mut host_keys: HashMap<String, Vec<String>> = HashMap::new();
@@ -35,6 +35,9 @@ impl DeclaredTrust {
                     aliases.push(ip.clone());
                 }
                 if let Some(ip) = &host.network.direct_link_ip {
+                    aliases.push(ip.clone());
+                }
+                if let Some(ip) = &host.management.public_address {
                     aliases.push(ip.clone());
                 }
                 aliases.extend(host.links.values().map(|binding| binding.address.clone()));
