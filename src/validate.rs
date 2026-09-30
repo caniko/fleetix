@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
+mod service_profiles;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -108,6 +110,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     validate_deployment(topology, &mut report);
     validate_local_access(topology, &mut report);
     validate_services(topology, &mut report);
+    service_profiles::validate(topology, &mut report);
 
     // 1. Every link has at most one server
     for (link_name, link) in &topology.links {

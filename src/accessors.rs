@@ -456,6 +456,7 @@ mod tests {
                 }],
             },
             services: Services {
+                catalog: IndexMap::new(),
                 endpoints: IndexMap::from([
                     (
                         "photos".to_string(),

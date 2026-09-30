@@ -2,6 +2,9 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod service_profiles;
+pub use service_profiles::*;
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Topology {
@@ -384,6 +387,8 @@ fn default_redirect_preserve_path() -> bool {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
+    #[serde(default)]
+    pub catalog: IndexMap<String, ServiceProfile>,
     #[serde(default)]
     pub endpoints: IndexMap<String, Endpoint>,
     #[serde(default)]

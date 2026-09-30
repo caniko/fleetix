@@ -256,8 +256,84 @@ class PagesSite {
 }
 
 class Services {
+  catalog: Mapping<String, ServiceProfile> = new {}
   endpoints: Mapping<String, Endpoint> = new {}
   httpSites: Mapping<String, HttpSite> = new {}
+}
+
+/// Generic service facts. Dashboard assignment belongs to monitoring consumers.
+typealias ServiceVisibility = "public" | "internal"
+typealias ServiceLifecycle = "active" | "on-demand" | "planned" | "retired"
+
+class ServiceProfile {
+  displayName: String
+  category: String
+  domain: String? = null
+  visibility: ServiceVisibility = "internal"
+  lifecycle: ServiceLifecycle = "active"
+  sites: Listing<String> = new Listing {}
+  endpoints: Listing<String> = new Listing {}
+  health: Mapping<String, ServiceHealthCheck> = new {}
+  exclusionReason: String? = null
+}
+
+class ServiceHealthCheck {
+  category: String? = null
+  displayName: String? = null
+  visibility: ServiceVisibility? = null
+  probe: HealthProbe
+  intervalSeconds: UInt32 = 60
+  timeoutSeconds: UInt32 = 10
+  maxResponseTimeMs: UInt32 = 5000
+}
+
+typealias HealthProbe = HttpHealthProbe | TcpHealthProbe | DnsHealthProbe | UnitHealthProbe | JobHealthProbe | ContractHealthProbe
+
+class HttpHealthProbe {
+  type: "http" = "http"
+  site: String? = null
+  endpoint: String? = null
+  path: String = "/"
+  acceptedStatus: Listing<UInt16> = new Listing { 200 }
+  followRedirects: Boolean = true
+  body: Listing<BodyAssertion> = new Listing {}
+}
+
+class BodyAssertion {
+  path: String = ""
+  operator: "equals" | "contains" | "nonempty"
+  value: String = ""
+}
+
+class TcpHealthProbe {
+  type: "tcp" = "tcp"
+  endpoint: String
+}
+
+class DnsHealthProbe {
+  type: "dns" = "dns"
+  host: String
+  query: String
+  expected: String
+}
+
+class UnitHealthProbe {
+  type: "unit" = "unit"
+  host: String
+  unit: String
+}
+
+class JobHealthProbe {
+  type: "job" = "job"
+  host: String
+  unit: String
+  maxAgeSeconds: UInt32
+}
+
+class ContractHealthProbe {
+  type: "contract" = "contract"
+  host: String
+  contract: String
 }
 
 class HealthIntent {
