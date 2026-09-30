@@ -169,6 +169,8 @@
           };
         };
       in {
+        gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
+          pkgs.writeText "gatus-profiles" "ok";
         mcp-adapters = assert import ./tests/mcp.nix {inherit (nixpkgs) lib;};
           pkgs.runCommand "fleetix-mcp-adapters" {} ''touch $out'';
 
