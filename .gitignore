@@ -1,6 +1,7 @@
 /target/
 /result
 /result-*
+/.nix-results/
 /.direnv/
 .envrc
 /.pre-commit-config.yaml
