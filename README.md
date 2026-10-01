@@ -36,6 +36,8 @@ derive runtime data from a generated topology sidecar:
   its declared LAN `remoteVia` endpoint for an ingress host.
 - `services.endpointsForHost`, `services.serviceHosts`, and
   `services.managedDnsCnameIntents` derive host, HTTP-site, and DNS views.
+- `domains.publicationAddressIntents` renders explicit static destinations and
+  directly published apexes as A/AAAA ownership intents.
 - `adapters.infernix.mkFleetNodes` converts fleet host topology plus
   consumer-owned node overlays into Infernix node definitions.
 
@@ -46,6 +48,38 @@ inventory, scheduling policy, and application-specific defaults.
 Host `rebuild.buildCache` is backend-neutral fleet policy. It records whether a
 host should use a fleet build cache for selected package attributes, while the
 consuming flake chooses the concrete cache implementation.
+
+## Cloud management and publication (unreleased source)
+
+`Host.management` keeps installed-system SSH facts separate from LAN and public
+service DNS. Its optional `publicAddress` is a literal unicast recovery IP,
+`sshPort` overrides the caller's fleet default, and `link` selects a declared
+host binding. Explicit routes require an enrolled `hostPubkey`; installer keys
+and bootstrap ports remain installer-owned. `Topology::management_routes`
+returns a shared-link candidate followed by independent public recovery. The
+caller supplies source/target names and its default port, then probes candidates
+and integrates them into its own routing policy.
+
+`Domains.publicationTargets` maps names to `PublicationTarget` values containing
+`hostname`, `targetHost`, `ipv4`, and optional `ipv6`. These are desired,
+non-secret facts promoted into topology, never live provider state. An HTTP site
+selects a destination through optional `publicationTarget`; selection requires
+managed DNS-only public access and that host in the site's ingress group. Its
+CNAME targets the destination hostname; an apex or destination-hostname site
+gets address records instead. A null selector preserves legacy zone-apex CNAME
+synthesis, and Pages destinations stay independent.
+
+Validation rejects unknown destinations/hosts, duplicate destination names,
+invalid addresses, and competing DDNS, Pages or explicit/excluded A/AAAA/CNAME
+ownership. IPv4-only publication still owns absent AAAA, so reconciliation can
+remove stale IPv6. Consumers must validate topology before rendering or applying
+DNS. The Nix helper exposes address intents; consumers render absent IPv6 by
+omitting AAAA while retaining management of that record type.
+
+These contracts are not in the published `0.3.0` crate. Consume a verified later
+release before adding production callers. Existing serialized topology remains
+compatible; Rust struct literals for `Host`, `Domains`, and `HttpSite` need the
+new fields (or their available defaults) when adopting that release.
 
 ## Primary GPU compute
 

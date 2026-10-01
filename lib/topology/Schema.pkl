@@ -128,12 +128,20 @@ class Host {
   hostPubkey: String? = null
   hostNames: Listing<String> = new Listing {}
   network: Network = new Network {}
+  management: HostManagement = new HostManagement {}
   rebuild: Rebuild = new Rebuild {}
   links: Mapping<String, LinkBinding> = new {}
   users: Mapping<String, User> = new {}
   vpnProfiles: Mapping<String, VpnProfile> = new {}
   gpu: Gpu = new Gpu {}
   storage: Storage = new Storage {}
+}
+
+/// Installed-system SSH routes. Bootstrap identity belongs to the installer.
+class HostManagement {
+  publicAddress: String? = null
+  sshPort: UInt16? = null
+  link: String? = null
 }
 
 class DynamicHost {
@@ -182,6 +190,15 @@ class Domains {
   dnsZones: Listing<DnsZone> = new Listing {}
   pagesSites: Listing<PagesSite> = new Listing {}
   redirects: Listing<Redirect> = new Listing {}
+  publicationTargets: Mapping<String, PublicationTarget> = new {}
+}
+
+/// Explicit non-secret desired addresses, promoted from provider outputs.
+class PublicationTarget {
+  hostname: String
+  targetHost: String
+  ipv4: String
+  ipv6: String? = null
 }
 
 typealias EndpointTransport = "tcp" | "http" | "https" | "h2c"
@@ -263,6 +280,7 @@ class HttpSite {
   ingress: String
   access: HttpAccess
   dnsPublication: DnsPublication
+  publicationTarget: String? = null
   routes: Listing<HttpRoute>
 }
 

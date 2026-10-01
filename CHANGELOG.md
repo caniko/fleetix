@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Independent rendering routes with stable PCI render-node identities, shared
   Pkl/Rust/Nix conformance fixtures, and purpose-specific Nix route projections.
+- Installed-system management routes with independent public recovery addresses,
+  declared SSH ports, shared-link candidates, and enrolled runtime host-key checks.
+- Explicit DNS-only publication targets, static address projections, and
+  validation against competing DDNS, Pages, and explicit address-record writers.
 
 ### Changed
 
@@ -21,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLI retains both; lightweight GPU identity consumers need neither.
 - Rust `Gpu` struct literals must supply the new `render` field or use defaults.
   These APIs await a future crate release and are not in published `0.3.0`.
+- Rust struct literals for `Host`, `Domains`, and `HttpSite` must supply the new
+  management/publication fields or use their available defaults. Serialized
+  topology remains compatible through defaulted fields. These APIs require a
+  future release; they are not part of published `0.3.0`.
 
 ## [0.3.0] - 2026-09-30
 

@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
+mod management;
+mod publication;
 mod service_profiles;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -106,6 +108,8 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     validate_identifiers(topology, &mut report);
     validate_domains(topology, &mut report);
     validate_host_hardware(topology, &mut report);
+    management::validate(topology, &mut report);
+    publication::validate(topology, &mut report);
     validate_vpn_profiles(topology, &mut report);
     validate_deployment(topology, &mut report);
     validate_local_access(topology, &mut report);
@@ -1527,6 +1531,7 @@ mod tests {
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
+                publication_targets: IndexMap::new(),
                 zones: vec!["example.test".to_string()],
                 mail_subdomain: None,
                 vpn_subdomain: None,
@@ -1662,6 +1667,7 @@ mod tests {
                 ingress: "public".to_string(),
                 access: HttpAccess::Direct,
                 dns_publication: DnsPublication::None,
+                publication_target: None,
                 routes: vec![
                     route(
                         HttpMatch {
@@ -1742,6 +1748,7 @@ mod tests {
                 ingress: "public".to_string(),
                 access: HttpAccess::Direct,
                 dns_publication: DnsPublication::None,
+                publication_target: None,
                 routes: vec![
                     route(
                         HttpMatch::default(),

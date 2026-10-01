@@ -177,6 +177,8 @@
           pkgs.writeText "fleetix-gpu-contract" "ok";
         gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
           pkgs.writeText "gatus-profiles" "ok";
+        publication-projections = assert import ./tests/publication.nix {inherit (nixpkgs) lib;};
+          pkgs.writeText "publication-projections" "ok";
         mcp-adapters = assert import ./tests/mcp.nix {inherit (nixpkgs) lib;};
           pkgs.runCommand "fleetix-mcp-adapters" {} ''touch $out'';
 
