@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Independent rendering routes with stable PCI render-node identities, shared
+  Pkl/Rust/Nix conformance fixtures, and purpose-specific Nix route projections.
+
+### Changed
+
+- GPU media routes now require stable PCI aliases instead of probe-order DRM
+  node numbers. GPU inventory and compute vocabulary are constrained in Pkl.
+- Rust consumers using `default-features = false` must enable `pkl` for
+  evaluation/export and trust patching, or `health` for live probes. The default
+  CLI retains both; lightweight GPU identity consumers need neither.
+- Rust `Gpu` struct literals must supply the new `render` field or use defaults.
+  These APIs await a future crate release and are not in published `0.3.0`.
+
 ## [0.3.0] - 2026-09-30
 
 ### Added

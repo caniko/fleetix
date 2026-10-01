@@ -72,6 +72,9 @@ hosts = new {
     gpu = new S.Gpu {
       igpu = "amd"
       dgpu = "nvidia"
+      render = new S.GpuRender {
+        renderNode = "/dev/dri/by-path/pci-0000:65:00.0-render"
+      }
       media = new S.GpuMedia {
         vendor = "amd"
         renderNode = "/dev/dri/by-path/pci-0000:65:00.0-render"

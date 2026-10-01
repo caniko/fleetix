@@ -136,6 +136,7 @@
       address
     else address;
 in rec {
+  gpu = import ./gpu.nix;
   mcp = import ./mcp {inherit lib;};
   gatus = import ./gatus.nix {
     inherit lib;

@@ -1224,6 +1224,15 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
             }
         }
 
+        if let Some(render) = &host.gpu.render {
+            let valid = crate::gpu::pci_selector(&render.render_node).is_some();
+            if !valid {
+                report.error("host.invalid_gpu_render_node",
+                    Some(format!("hosts.{host_name}.gpu.render.renderNode")), Some(render.render_node.clone()),
+                    format!("host '{host_name}' GPU render route requires a stable /dev/dri/by-path/pci-...-render alias"));
+            }
+        }
+
         if let Some(media) = &host.gpu.media {
             if !matches!(media.vendor.as_str(), "amd" | "intel" | "nvidia") {
                 report.error(
@@ -1236,12 +1245,12 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
                     ),
                 );
             }
-            if !media.render_node.starts_with("/dev/dri/") {
+            if crate::gpu::pci_selector(&media.render_node).is_none() {
                 report.error(
                     "host.invalid_gpu_media_render_node",
                     Some(format!("hosts.{host_name}.gpu.media.renderNode")),
                     Some(media.render_node.clone()),
-                    format!("host '{host_name}' GPU media renderNode must be under /dev/dri/"),
+                    format!("host '{host_name}' GPU media renderNode must be a stable PCI render-node alias"),
                 );
             }
             if media.libva_driver.trim().is_empty() {
@@ -1786,6 +1795,40 @@ mod tests {
                 report.issues.iter().any(|issue| issue.code == code),
                 "missing validation issue {code}: {:?}",
                 report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn validates_stable_game_render_routes_independently_of_media() {
+        for (node, valid) in [
+            ("/dev/dri/by-path/pci-0000:03:00.0-render", true),
+            ("/dev/dri/renderD128", false),
+            ("/dev/dri/by-path/../renderD128", false),
+            ("/dev/dri/by-path/pci-0000:03:00.0-card", false),
+        ] {
+            let mut topology = v2_topology();
+            let gpu = serde_json::from_value(json!({"render": {"renderNode": node}})).unwrap();
+            topology.hosts.insert(
+                "render".into(),
+                Host {
+                    system: "x86_64-linux".into(),
+                    gpu,
+                    ..Default::default()
+                },
+            );
+            let report = validate(&topology);
+            assert_eq!(
+                !report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "host.invalid_gpu_render_node"),
+                valid,
+                "{node}"
+            );
+            assert_eq!(
+                serde_json::to_value(&topology.hosts["render"].gpu).unwrap()["render"]["renderNode"],
+                node
             );
         }
     }
