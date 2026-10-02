@@ -15,7 +15,9 @@ fn unknown_inventory_vendors_are_rejected_without_a_compute_route() {
     for field in ["igpu", "dgpu"] {
         let report = validate(&topology(json!({field: "unknown"})));
         assert!(
-            report.errors().any(|issue| issue.code == "host.invalid_gpu_inventory_vendor"),
+            report
+                .errors()
+                .any(|issue| issue.code == "host.invalid_gpu_inventory_vendor"),
             "invalid {field} inventory must not require a compute route to be detected"
         );
     }
@@ -31,7 +33,11 @@ fn media_routes_require_an_inventoried_vendor() {
             "libvaDriver": "iHD"
         }
     })));
-    assert!(report.errors().any(|issue| issue.code == "host.uninventoried_gpu_media_vendor"));
+    assert!(
+        report
+            .errors()
+            .any(|issue| issue.code == "host.uninventoried_gpu_media_vendor")
+    );
 }
 
 #[test]
