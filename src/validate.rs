@@ -1194,6 +1194,10 @@ fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
     }
 }
 
+fn valid_gpu_vendor(vendor: &str) -> bool {
+    matches!(vendor, "amd" | "intel" | "nvidia")
+}
+
 fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
     for (host_name, host) in &topology.hosts {
         for (field, value) in [
@@ -1211,6 +1215,24 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
                         Some(format!("hosts.{host_name}.storage.{field}")),
                         Some(value.to_string()),
                         format!("host '{host_name}' storage.{field} must be an absolute path"),
+                    );
+                }
+            }
+        }
+
+        for (field, vendor) in [
+            ("igpu", host.gpu.igpu.as_deref()),
+            ("dgpu", host.gpu.dgpu.as_deref()),
+        ] {
+            if let Some(vendor) = vendor {
+                if !valid_gpu_vendor(vendor) {
+                    report.error(
+                        "host.invalid_gpu_inventory_vendor",
+                        Some(format!("hosts.{host_name}.gpu.{field}")),
+                        Some(vendor.to_string()),
+                        format!(
+                            "host '{host_name}' GPU inventory vendor '{vendor}' is unsupported"
+                        ),
                     );
                 }
             }
@@ -1238,13 +1260,25 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
         }
 
         if let Some(media) = &host.gpu.media {
-            if !matches!(media.vendor.as_str(), "amd" | "intel" | "nvidia") {
+            if !valid_gpu_vendor(&media.vendor) {
                 report.error(
                     "host.invalid_gpu_media_vendor",
                     Some(format!("hosts.{host_name}.gpu.media.vendor")),
                     Some(media.vendor.clone()),
                     format!(
                         "host '{host_name}' GPU media vendor '{}' is unsupported",
+                        media.vendor
+                    ),
+                );
+            } else if host.gpu.igpu.as_deref() != Some(media.vendor.as_str())
+                && host.gpu.dgpu.as_deref() != Some(media.vendor.as_str())
+            {
+                report.error(
+                    "host.uninventoried_gpu_media_vendor",
+                    Some(format!("hosts.{host_name}.gpu.media.vendor")),
+                    Some(media.vendor.clone()),
+                    format!(
+                        "host '{host_name}' GPU media vendor '{}' is absent from its inventory",
                         media.vendor
                     ),
                 );

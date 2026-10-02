@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
+### Fixed
+
+- Reject unknown GPU inventory vendors and media vendors absent from the
+  declared inventory, matching the Nix route validation contract.
+
 ### Added
 
 - Independent rendering routes with stable PCI render-node identities, shared
@@ -24,11 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation/export and trust patching, or `health` for live probes. The default
   CLI retains both; lightweight GPU identity consumers need neither.
 - Rust `Gpu` struct literals must supply the new `render` field or use defaults.
-  These APIs await a future crate release and are not in published `0.3.0`.
 - Rust struct literals for `Host`, `Domains`, and `HttpSite` must supply the new
   management/publication fields or use their available defaults. Serialized
-  topology remains compatible through defaulted fields. These APIs require a
-  future release; they are not part of published `0.3.0`.
+  topology remains compatible through defaulted fields.
 
 ## [0.3.0] - 2026-09-30
 
@@ -61,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public virtual-address placement, allowing consumers to import one schema.
 - Pkl evaluation and sidecar generation now follow the entrypoint's declared
   imports, regardless of its filename. Use named imports (`import "Host.pkl"
-  as H`) in aggregates. The automatic Canix-shaped flattening workaround is
+as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   removed; custom sections and schema metadata are preserved in raw exports.
   Nix consumers can use the existing normalization facade for nullable fields.
 
