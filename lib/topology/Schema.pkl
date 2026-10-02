@@ -80,22 +80,39 @@ class VpnProfile {
   portForwarding: VpnPortForwarding? = null
 }
 
+const gpuRenderNodePattern = #"/dev/dri/by-path/pci-[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]-render"#
+const gpuVendors = new Listing { "amd"; "intel"; "nvidia" }
+const gpuComputeVendors = new Mapping {
+  ["oneapi"] = "intel"
+  ["rocm"] = "amd"
+  ["cuda"] = "nvidia"
+}
+typealias StableRenderNode = String(matches(Regex(gpuRenderNodePattern)))
+typealias GpuVendor = String(gpuVendors.contains(this))
+typealias GpuComputeBackend = String(gpuComputeVendors.containsKey(this))
+
 class GpuMedia {
-  vendor: "amd" | "intel" | "nvidia"
-  renderNode: String
+  vendor: GpuVendor
+  renderNode: StableRenderNode
   libvaDriver: String
 }
 
 // Requested compute stack for the primary GPU (dGPU, otherwise iGPU).
 class GpuCompute {
-  backend: "oneapi" | "rocm" | "cuda"
+  backend: GpuComputeBackend
 }
 
 class Gpu {
-  igpu: String? = null
-  dgpu: String? = null
+  igpu: GpuVendor? = null
+  dgpu: GpuVendor? = null
   media: GpuMedia? = null
   compute: GpuCompute? = null
+  render: GpuRender? = null
+}
+
+// Default game/3D render route, independent of media decoding and compute.
+class GpuRender {
+  renderNode: StableRenderNode
 }
 
 class Storage {
@@ -111,12 +128,20 @@ class Host {
   hostPubkey: String? = null
   hostNames: Listing<String> = new Listing {}
   network: Network = new Network {}
+  management: HostManagement = new HostManagement {}
   rebuild: Rebuild = new Rebuild {}
   links: Mapping<String, LinkBinding> = new {}
   users: Mapping<String, User> = new {}
   vpnProfiles: Mapping<String, VpnProfile> = new {}
   gpu: Gpu = new Gpu {}
   storage: Storage = new Storage {}
+}
+
+/// Installed-system SSH routes. Bootstrap identity belongs to the installer.
+class HostManagement {
+  publicAddress: String? = null
+  sshPort: UInt16? = null
+  link: String? = null
 }
 
 class DynamicHost {
@@ -165,6 +190,15 @@ class Domains {
   dnsZones: Listing<DnsZone> = new Listing {}
   pagesSites: Listing<PagesSite> = new Listing {}
   redirects: Listing<Redirect> = new Listing {}
+  publicationTargets: Mapping<String, PublicationTarget> = new {}
+}
+
+/// Explicit non-secret desired addresses, promoted from provider outputs.
+class PublicationTarget {
+  hostname: String
+  targetHost: String
+  ipv4: String
+  ipv6: String? = null
 }
 
 typealias EndpointTransport = "tcp" | "http" | "https" | "h2c"
@@ -246,6 +280,7 @@ class HttpSite {
   ingress: String
   access: HttpAccess
   dnsPublication: DnsPublication
+  publicationTarget: String? = null
   routes: Listing<HttpRoute>
 }
 

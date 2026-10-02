@@ -77,6 +77,8 @@ pub struct Host {
     #[serde(default)]
     pub network: Network,
     #[serde(default)]
+    pub management: HostManagement,
+    #[serde(default)]
     pub rebuild: Rebuild,
     #[serde(default)]
     pub links: IndexMap<String, LinkBinding>,
@@ -88,6 +90,18 @@ pub struct Host {
     pub gpu: Gpu,
     #[serde(default)]
     pub storage: Storage,
+}
+
+/// Explicit installed-system management routes, independent of service publication.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostManagement {
+    #[serde(default)]
+    pub public_address: Option<String>,
+    #[serde(default)]
+    pub ssh_port: Option<u16>,
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 fn default_availability_class() -> String {
@@ -228,6 +242,16 @@ pub struct Gpu {
     pub media: Option<GpuMedia>,
     #[serde(default)]
     pub compute: Option<GpuCompute>,
+    /// Optional default game/3D route, independent of VA-API media decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render: Option<GpuRender>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GpuRender {
+    /// Stable PCI alias; runtime consumers verify the device and driver.
+    pub render_node: String,
 }
 
 /// Requested compute stack for the primary GPU (dGPU, otherwise iGPU).
@@ -292,6 +316,19 @@ pub struct Domains {
     pub pages_sites: Vec<PagesSite>,
     #[serde(default)]
     pub redirects: Vec<Redirect>,
+    #[serde(default)]
+    pub publication_targets: IndexMap<String, PublicationTarget>,
+}
+
+/// Non-secret desired publication addresses; never live provider state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicationTarget {
+    pub hostname: String,
+    pub target_host: String,
+    pub ipv4: String,
+    #[serde(default)]
+    pub ipv6: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,6 +477,8 @@ pub struct HttpSite {
     pub ingress: String,
     pub access: HttpAccess,
     pub dns_publication: DnsPublication,
+    #[serde(default)]
+    pub publication_target: Option<String>,
     pub routes: Vec<HttpRoute>,
 }
 
@@ -825,11 +864,13 @@ pub(crate) fn matching_brace(input: &str, open_index: usize) -> Option<usize> {
 }
 
 /// Evaluate a .pkl topology file and produce a typed Topology value.
+#[cfg(feature = "pkl")]
 pub async fn load_topology(path: &Path) -> miette::Result<Topology> {
     load_topology_with_options(path, pklx::pklr::EvalOptions::default()).await
 }
 
 /// Evaluate a .pkl topology file with custom evaluator options.
+#[cfg(feature = "pkl")]
 pub async fn load_topology_with_options(
     path: &Path,
     options: pklx::pklr::EvalOptions,
@@ -849,6 +890,7 @@ pub async fn load_topology_with_options(
     }
 }
 
+#[cfg(feature = "pkl")]
 pub(crate) async fn evaluate_topology_with_options(
     path: &Path,
     options: pklx::pklr::EvalOptions,
@@ -859,6 +901,7 @@ pub(crate) async fn evaluate_topology_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "pkl")]
     use std::fs;
 
     #[test]
@@ -928,6 +971,7 @@ links = new {
         assert!(body.contains("nested = new { value = \"still { text }\" }"));
     }
 
+    #[cfg(feature = "pkl")]
     #[tokio::test]
     async fn flatten_modular_topology_mirrors_aggregate_import_shape() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|e| miette::miette!("create tempdir: {e}"))?;
@@ -1082,6 +1126,7 @@ trust = new S.Trust {
 
         Ok(())
     }
+    #[cfg(feature = "pkl")]
     #[tokio::test]
     async fn example_deserializes_tagged_variants() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|error| miette::miette!("tempdir: {error}"))?;
@@ -1180,6 +1225,7 @@ deployment = new {
         Ok(())
     }
 
+    #[cfg(feature = "pkl")]
     #[tokio::test]
     async fn load_rejects_absent_and_wrong_schema_versions() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|error| miette::miette!("tempdir: {error}"))?;

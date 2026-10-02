@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
+mod management;
+mod publication;
 mod service_profiles;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -106,6 +108,8 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     validate_identifiers(topology, &mut report);
     validate_domains(topology, &mut report);
     validate_host_hardware(topology, &mut report);
+    management::validate(topology, &mut report);
+    publication::validate(topology, &mut report);
     validate_vpn_profiles(topology, &mut report);
     validate_deployment(topology, &mut report);
     validate_local_access(topology, &mut report);
@@ -1190,6 +1194,10 @@ fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
     }
 }
 
+fn valid_gpu_vendor(vendor: &str) -> bool {
+    matches!(vendor, "amd" | "intel" | "nvidia")
+}
+
 fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
     for (host_name, host) in &topology.hosts {
         for (field, value) in [
@@ -1212,6 +1220,24 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
             }
         }
 
+        for (field, vendor) in [
+            ("igpu", host.gpu.igpu.as_deref()),
+            ("dgpu", host.gpu.dgpu.as_deref()),
+        ] {
+            if let Some(vendor) = vendor {
+                if !valid_gpu_vendor(vendor) {
+                    report.error(
+                        "host.invalid_gpu_inventory_vendor",
+                        Some(format!("hosts.{host_name}.gpu.{field}")),
+                        Some(vendor.to_string()),
+                        format!(
+                            "host '{host_name}' GPU inventory vendor '{vendor}' is unsupported"
+                        ),
+                    );
+                }
+            }
+        }
+
         if let Some(compute) = &host.gpu.compute {
             let primary = host.gpu.dgpu.as_deref().or(host.gpu.igpu.as_deref());
             if primary != Some(compute.backend.vendor()) {
@@ -1224,8 +1250,17 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
             }
         }
 
+        if let Some(render) = &host.gpu.render {
+            let valid = crate::gpu::pci_selector(&render.render_node).is_some();
+            if !valid {
+                report.error("host.invalid_gpu_render_node",
+                    Some(format!("hosts.{host_name}.gpu.render.renderNode")), Some(render.render_node.clone()),
+                    format!("host '{host_name}' GPU render route requires a stable /dev/dri/by-path/pci-...-render alias"));
+            }
+        }
+
         if let Some(media) = &host.gpu.media {
-            if !matches!(media.vendor.as_str(), "amd" | "intel" | "nvidia") {
+            if !valid_gpu_vendor(&media.vendor) {
                 report.error(
                     "host.invalid_gpu_media_vendor",
                     Some(format!("hosts.{host_name}.gpu.media.vendor")),
@@ -1235,13 +1270,25 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
                         media.vendor
                     ),
                 );
+            } else if host.gpu.igpu.as_deref() != Some(media.vendor.as_str())
+                && host.gpu.dgpu.as_deref() != Some(media.vendor.as_str())
+            {
+                report.error(
+                    "host.uninventoried_gpu_media_vendor",
+                    Some(format!("hosts.{host_name}.gpu.media.vendor")),
+                    Some(media.vendor.clone()),
+                    format!(
+                        "host '{host_name}' GPU media vendor '{}' is absent from its inventory",
+                        media.vendor
+                    ),
+                );
             }
-            if !media.render_node.starts_with("/dev/dri/") {
+            if crate::gpu::pci_selector(&media.render_node).is_none() {
                 report.error(
                     "host.invalid_gpu_media_render_node",
                     Some(format!("hosts.{host_name}.gpu.media.renderNode")),
                     Some(media.render_node.clone()),
-                    format!("host '{host_name}' GPU media renderNode must be under /dev/dri/"),
+                    format!("host '{host_name}' GPU media renderNode must be a stable PCI render-node alias"),
                 );
             }
             if media.libva_driver.trim().is_empty() {
@@ -1518,6 +1565,7 @@ mod tests {
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
+                publication_targets: IndexMap::new(),
                 zones: vec!["example.test".to_string()],
                 mail_subdomain: None,
                 vpn_subdomain: None,
@@ -1653,6 +1701,7 @@ mod tests {
                 ingress: "public".to_string(),
                 access: HttpAccess::Direct,
                 dns_publication: DnsPublication::None,
+                publication_target: None,
                 routes: vec![
                     route(
                         HttpMatch {
@@ -1733,6 +1782,7 @@ mod tests {
                 ingress: "public".to_string(),
                 access: HttpAccess::Direct,
                 dns_publication: DnsPublication::None,
+                publication_target: None,
                 routes: vec![
                     route(
                         HttpMatch::default(),
@@ -1786,6 +1836,40 @@ mod tests {
                 report.issues.iter().any(|issue| issue.code == code),
                 "missing validation issue {code}: {:?}",
                 report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn validates_stable_game_render_routes_independently_of_media() {
+        for (node, valid) in [
+            ("/dev/dri/by-path/pci-0000:03:00.0-render", true),
+            ("/dev/dri/renderD128", false),
+            ("/dev/dri/by-path/../renderD128", false),
+            ("/dev/dri/by-path/pci-0000:03:00.0-card", false),
+        ] {
+            let mut topology = v2_topology();
+            let gpu = serde_json::from_value(json!({"render": {"renderNode": node}})).unwrap();
+            topology.hosts.insert(
+                "render".into(),
+                Host {
+                    system: "x86_64-linux".into(),
+                    gpu,
+                    ..Default::default()
+                },
+            );
+            let report = validate(&topology);
+            assert_eq!(
+                !report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "host.invalid_gpu_render_node"),
+                valid,
+                "{node}"
+            );
+            assert_eq!(
+                serde_json::to_value(&topology.hosts["render"].gpu).unwrap()["render"]["renderNode"],
+                node
             );
         }
     }

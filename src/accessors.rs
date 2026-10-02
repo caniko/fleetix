@@ -257,6 +257,17 @@ impl Topology {
                     return None;
                 }
                 let zone = self.zone_for_host(&site.hostname)?;
+                let target = match site.publication_target.as_deref() {
+                    Some(name) => &self.domains.publication_targets.get(name)?.hostname,
+                    None => zone,
+                };
+                // Destination names and zone apexes are rendered as addresses.
+                if site.publication_target.is_some()
+                    && (site.hostname.eq_ignore_ascii_case(zone)
+                        || site.hostname.eq_ignore_ascii_case(target))
+                {
+                    return None;
+                }
                 Some(CnameIntent {
                     name: name.clone(),
                     hostname: site.hostname.clone(),
@@ -264,7 +275,7 @@ impl Topology {
                     relative_name: Self::relative_name(&site.hostname, zone)
                         .unwrap_or(&site.hostname)
                         .to_string(),
-                    target: zone.to_string(),
+                    target: target.to_string(),
                     proxied: site.access == HttpAccess::Cloudflare,
                     comment: None,
                     source: "service",
@@ -415,6 +426,7 @@ mod tests {
             links: IndexMap::new(),
             hosts,
             domains: Domains {
+                publication_targets: IndexMap::new(),
                 zones: vec![
                     "example.test".to_string(),
                     "internal.example.test".to_string(),
@@ -491,6 +503,7 @@ mod tests {
                             ingress: "public".to_string(),
                             access: HttpAccess::Cloudflare,
                             dns_publication: DnsPublication::Managed,
+                            publication_target: None,
                             routes: vec![HttpRoute {
                                 matcher: HttpMatch::default(),
                                 action: HttpAction::Proxy {
@@ -509,6 +522,7 @@ mod tests {
                             ingress: "vpn".to_string(),
                             access: HttpAccess::Vpn,
                             dns_publication: DnsPublication::None,
+                            publication_target: None,
                             routes: vec![HttpRoute {
                                 matcher: HttpMatch::default(),
                                 action: HttpAction::Respond {
@@ -535,6 +549,7 @@ mod tests {
             host_pubkey: None,
             host_names: vec![],
             network: Network::default(),
+            management: Default::default(),
             rebuild: Default::default(),
             links: IndexMap::new(),
             users: IndexMap::new(),

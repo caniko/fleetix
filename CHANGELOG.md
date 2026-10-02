@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
+### Fixed
+
+- Reject unknown GPU inventory vendors and media vendors absent from the
+  declared inventory, matching the Nix route validation contract.
+
+### Added
+
+- Independent rendering routes with stable PCI render-node identities, shared
+  Pkl/Rust/Nix conformance fixtures, and purpose-specific Nix route projections.
+- Installed-system management routes with independent public recovery addresses,
+  declared SSH ports, shared-link candidates, and enrolled runtime host-key checks.
+- Explicit DNS-only publication targets, static address projections, and
+  validation against competing DDNS, Pages, and explicit address-record writers.
+
+### Changed
+
+- GPU media routes now require stable PCI aliases instead of probe-order DRM
+  node numbers. GPU inventory and compute vocabulary are constrained in Pkl.
+- Rust consumers using `default-features = false` must enable `pkl` for
+  evaluation/export and trust patching, or `health` for live probes. The default
+  CLI retains both; lightweight GPU identity consumers need neither.
+- Rust `Gpu` struct literals must supply the new `render` field or use defaults.
+- Rust struct literals for `Host`, `Domains`, and `HttpSite` must supply the new
+  management/publication fields or use their available defaults. Serialized
+  topology remains compatible through defaulted fields.
+
 ## [0.3.0] - 2026-09-30
 
 ### Added
@@ -38,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public virtual-address placement, allowing consumers to import one schema.
 - Pkl evaluation and sidecar generation now follow the entrypoint's declared
   imports, regardless of its filename. Use named imports (`import "Host.pkl"
-  as H`) in aggregates. The automatic Canix-shaped flattening workaround is
+as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   removed; custom sections and schema metadata are preserved in raw exports.
   Nix consumers can use the existing normalization facade for nullable fields.
 

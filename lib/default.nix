@@ -136,6 +136,7 @@
       address
     else address;
 in rec {
+  gpu = import ./gpu.nix;
   mcp = import ./mcp {inherit lib;};
   gatus = import ./gatus.nix {
     inherit lib;
@@ -229,6 +230,58 @@ in rec {
     proxiedDynamicHostFqdns = {topology}:
       map (host: host.fqdn) (domains.proxiedDynamicHosts {inherit topology;});
 
+    publicationAddressIntents = {topology}: let
+      targets = topology.domains.publicationTargets or {};
+      targetNames = map (target: lib.toLower target.hostname) (builtins.attrValues targets);
+      uniqueTargets =
+        builtins.length targetNames
+        == builtins.length (lib.unique targetNames)
+        || throw "fleetix publication: destinations must have unique hostnames";
+      owners =
+        (map (target: {
+          inherit (target) hostname;
+          inherit target;
+        }) (builtins.attrValues targets))
+        ++ builtins.concatMap (site: let
+          destination = site.publicationTarget or null;
+          zone = domains.zoneForHost {
+            inherit topology;
+            fqdn = site.hostname;
+          };
+        in
+          if destination == null || site.hostname != zone || site.access != "direct" || site.dnsPublication != "managed"
+          then []
+          else [
+            {
+              inherit (site) hostname;
+              target = targets.${destination} or (throw "fleetix publication: unknown target ${destination}");
+            }
+          ])
+        (builtins.attrValues (topology.services.httpSites or {}));
+      uniqueOwners = builtins.attrValues (builtins.listToAttrs (map (owner: {
+          name = lib.toLower owner.hostname;
+          value = owner;
+        })
+        owners));
+    in
+      assert uniqueTargets;
+        map (owner: let
+          zone = requireValue "fleetix publication: ${owner.hostname} is outside managed zones" (domains.zoneForHost {
+            inherit topology;
+            fqdn = owner.hostname;
+          });
+        in {
+          inherit zone;
+          inherit (owner) hostname;
+          relativeName = relativeNameImpl {
+            inherit zone;
+            fqdn = owner.hostname;
+          };
+          inherit (owner.target) ipv4;
+          ipv6 = owner.target.ipv6 or null;
+        })
+        uniqueOwners;
+
     normalize = {topology}: let
       cleanTopology = stripPklClass topology;
       tdom = cleanTopology.domains or {};
@@ -261,6 +314,7 @@ in rec {
       inherit managedZones;
       pagesSites = tdom.pagesSites or [];
       redirects = tdom.redirects or [];
+      publicationTargets = tdom.publicationTargets or {};
     };
   };
 
@@ -332,18 +386,34 @@ in rec {
           inherit topology;
           fqdn = site.hostname;
         };
+        destination = site.publicationTarget or null;
+        target =
+          if destination == null
+          then zone
+          else ((topology.domains.publicationTargets or {}).${destination} or (throw "fleetix publication: unknown target ${destination}")).hostname;
+        policyOk =
+          destination
+          == null
+          || (site.access == "direct" && site.dnsPublication == "managed")
+          || throw "fleetix publication: explicit target requires managed DNS-only public access";
       in
-        if site.dnsPublication != "managed" || site.access == "vpn" || zone == null
-        then []
-        else [
-          (cnameIntent {
-            inherit name zone;
-            inherit (site) hostname;
-            target = zone;
-            proxied = site.access == "cloudflare";
-            source = "service";
-          })
-        ]) (builtins.attrNames (siteByName {inherit topology;}));
+        assert policyOk;
+          if
+            site.dnsPublication
+            != "managed"
+            || site.access == "vpn"
+            || zone == null
+            || (destination != null && (lib.toLower site.hostname == lib.toLower zone || lib.toLower site.hostname == lib.toLower target))
+          then []
+          else [
+            (cnameIntent {
+              inherit name zone;
+              inherit (site) hostname;
+              inherit target;
+              proxied = site.access == "cloudflare";
+              source = "service";
+            })
+          ]) (builtins.attrNames (siteByName {inherit topology;}));
 
     pagesCnameIntents = {
       topology,

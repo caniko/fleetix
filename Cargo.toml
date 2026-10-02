@@ -1,6 +1,6 @@
 [package]
 name = "fleetix"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
@@ -12,8 +12,19 @@ categories = ["config"]
 readme = "README.md"
 documentation = "https://docs.rs/fleetix"
 include = [
-  "/src/**", "/examples/**", "/lib/**", "/modules/**", "/tests/**",
-  "/README.md", "/MCP.md", "/SERVICE_PROFILES.md", "/ARCHITECTURE.md", "/CHANGELOG.md", "/LICENSE*", "/Cargo.toml", "/Cargo.lock",
+  "/src/**",
+  "/examples/**",
+  "/lib/**",
+  "/modules/**",
+  "/tests/**",
+  "/README.md",
+  "/MCP.md",
+  "/SERVICE_PROFILES.md",
+  "/ARCHITECTURE.md",
+  "/CHANGELOG.md",
+  "/LICENSE*",
+  "/Cargo.toml",
+  "/Cargo.lock",
 ]
 
 [package.metadata.docs.rs]
@@ -25,8 +36,13 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-pklx = "0.1.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+pklx = { version = "0.1.0", optional = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "time",
+], optional = true }
 miette = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -38,7 +54,9 @@ fs2 = { version = "0.4", optional = true }
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "mcp"]
+cli = ["dep:clap", "mcp", "pkl", "health"]
+pkl = ["dep:pklx", "dep:tokio"]
+health = ["pkl"]
 mcp = ["dep:toml_edit", "dep:fs2"]
 
 [dependencies.clap]
