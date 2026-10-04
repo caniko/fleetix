@@ -2,8 +2,8 @@
 use fleetix::build_train::{runtime::*, *};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -277,19 +277,23 @@ fn bounded_drain_keeps_fence_and_cancellation_removes_only_one_interest() {
     client.call(Command::Submit(request("a", "atlas"))).unwrap();
     eventually(|| client.call(Command::Inspect).unwrap().running == 1);
     client.call(Command::Submit(request("m", "murph"))).unwrap();
-    assert!(client
-        .drain("a", Duration::ZERO)
-        .unwrap_err()
-        .contains("fence"));
+    assert!(
+        client
+            .drain("a", Duration::ZERO)
+            .unwrap_err()
+            .contains("fence")
+    );
     client.call(Command::Cancel("m".into())).unwrap();
     assert_eq!(
         client.call(Command::Status("m".into())).unwrap().outcome,
         Some(Outcome::Cancelled)
     );
     let fence = client.call(Command::Inspect).unwrap().fence.unwrap();
-    assert!(client
-        .call(Command::ReleaseFence(fence.token.clone()))
-        .is_err());
+    assert!(
+        client
+            .call(Command::ReleaseFence(fence.token.clone()))
+            .is_err()
+    );
     *server.backend.released.lock().unwrap() = true;
     server.backend.gate.notify_all();
     eventually(|| client.call(Command::Inspect).unwrap().running == 0);
@@ -297,13 +301,15 @@ fn bounded_drain_keeps_fence_and_cancellation_removes_only_one_interest() {
     eventually(|| {
         client.call(Command::Status("a".into())).unwrap().outcome == Some(Outcome::Ready)
     });
-    assert!(!server
-        .backend
-        .started
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|s| s == "murph"));
+    assert!(
+        !server
+            .backend
+            .started
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == "murph")
+    );
 }
 
 #[test]

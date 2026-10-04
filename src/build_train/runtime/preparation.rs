@@ -2,7 +2,7 @@
 //! lease; a caller acquires the phase-local lease only inside the supplied work.
 use super::private_dir;
 use fs2::FileExt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};

@@ -118,17 +118,21 @@ fn incompatible_graphs_and_cycles_are_transactionally_rejected() {
     let before = serde_json::to_value(&train).unwrap();
     let mut conflicting = graph(&[("one", &[])]);
     conflicting.get_mut(&goal("one")).unwrap().output_path = "/different".into();
-    assert!(train
-        .submit(request("m", "murph", "one"), conflicting, 1)
-        .is_err());
+    assert!(
+        train
+            .submit(request("m", "murph", "one"), conflicting, 1)
+            .is_err()
+    );
     assert_eq!(before, serde_json::to_value(&train).unwrap());
-    assert!(train
-        .submit(
-            request("m", "murph", "x"),
-            graph(&[("x", &["y"]), ("y", &["x"])]),
-            1
-        )
-        .is_err());
+    assert!(
+        train
+            .submit(
+                request("m", "murph", "x"),
+                graph(&[("x", &["y"]), ("y", &["x"])]),
+                1
+            )
+            .is_err()
+    );
     assert_eq!(before, serde_json::to_value(&train).unwrap());
 }
 
@@ -262,10 +266,12 @@ fn cached_outputs_do_not_bypass_live_activation_admission() {
     train.reconcile(&BTreeSet::from([goal("atlas")]));
     train.hold("a").unwrap();
     assert_eq!(train.outcome("a").unwrap(), Outcome::Ready);
-    assert!(train
-        .authorize_activation("a")
-        .unwrap_err()
-        .contains("admission"));
+    assert!(
+        train
+            .authorize_activation("a")
+            .unwrap_err()
+            .contains("admission")
+    );
     train.admit("a").unwrap();
     train.authorize_activation("a").unwrap();
 }
