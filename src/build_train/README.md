@@ -23,6 +23,9 @@ backend; consumers retain fleet policy and deployment stages.
 - Restore-only parents prune build-only dependencies. The backend must guarantee
   restoration cannot fall through to source compilation. Static named multi-output
   graphs are supported; backend-unsupported graph forms return explicit errors.
+  A join's plan changes only its needed outputs. Unselected siblings and pruned
+  dependencies cannot reclassify another request's pending source work; unused
+  plans may be replaced when an output is first needed.
 - Named outputs of one derivation occupy at most one worker at a time. Completion
   rechecks the store for sibling outputs before scheduling another worker.
   Shared-build priority counts each admitted request once across those outputs;

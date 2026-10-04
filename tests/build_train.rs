@@ -391,3 +391,97 @@ fn one_request_selecting_two_outputs_has_one_builder_interest() {
         .unwrap();
     assert_eq!(train.dispatch(0).unwrap().unwrap().goal, goal("exclusive"));
 }
+
+#[test]
+fn unneeded_restore_plan_cannot_replace_another_requests_source_work() {
+    let mut train = Train::new("p".into(), 10);
+    train
+        .submit(
+            request("a", "atlas", "atlas"),
+            graph(&[("atlas", &["shared"]), ("shared", &[])]),
+            0,
+        )
+        .unwrap();
+    // A restored parent still carries canonical derivation dependencies, but
+    // its dry-run does not request any work on those dependency outputs.
+    let mut cached = graph(&[("murph", &["shared"]), ("shared", &[])]);
+    for definition in cached.values_mut() {
+        definition.operation = Operation::Restore;
+    }
+    train
+        .submit(request("m", "murph", "murph"), cached, 1)
+        .unwrap();
+    let restore = train.dispatch(1).unwrap().unwrap();
+    assert_eq!(restore.goal, goal("murph"));
+    assert_eq!(restore.definition.operation, Operation::Restore);
+    train.finish(&restore, Ok(()));
+    let build = train.dispatch(1).unwrap().unwrap();
+    assert_eq!(build.goal, goal("shared"));
+    assert_eq!(build.definition.operation, Operation::Build);
+    train.finish(&build, Ok(()));
+    let atlas = train.dispatch(1).unwrap().unwrap();
+    train.finish(&atlas, Ok(()));
+    assert_eq!(train.outcome("a").unwrap(), Outcome::Ready);
+    assert_eq!(train.outcome("m").unwrap(), Outcome::Ready);
+}
+
+#[test]
+fn unselected_sibling_output_can_later_enter_the_source_frontier() {
+    let mut train = Train::new("p".into(), 10);
+    let dev = Goal {
+        derivation: "shared".into(),
+        output: "dev".into(),
+    };
+    let mut cached = graph(&[("shared", &[])]);
+    cached.get_mut(&goal("shared")).unwrap().operation = Operation::Restore;
+    cached.insert(
+        dev.clone(),
+        Definition {
+            output_path: "/store/shared-dev".into(),
+            dependencies: BTreeSet::new(),
+            operation: Operation::Restore,
+        },
+    );
+    train
+        .submit(request("a", "atlas", "shared"), cached.clone(), 0)
+        .unwrap();
+    let out = train.dispatch(0).unwrap().unwrap();
+    train.finish(&out, Ok(()));
+    cached.get_mut(&dev).unwrap().operation = Operation::Build;
+    let mut murph = request("m", "murph", "shared");
+    murph.roots = BTreeSet::from([dev.clone()]);
+    train.submit(murph, cached, 1).unwrap();
+    let build = train.dispatch(1).unwrap().unwrap();
+    assert_eq!(build.goal, dev);
+    assert_eq!(build.definition.operation, Operation::Build);
+    train.finish(&build, Ok(()));
+    assert_eq!(train.outcome("a").unwrap(), Outcome::Ready);
+    assert_eq!(train.outcome("m").unwrap(), Outcome::Ready);
+}
+
+#[test]
+fn required_restore_goal_never_falls_through_to_source_compilation() {
+    for held in [false, true] {
+        let mut train = Train::new("p".into(), 10);
+        let mut cached = graph(&[("shared", &[])]);
+        cached.get_mut(&goal("shared")).unwrap().operation = Operation::Restore;
+        train
+            .submit(request("a", "atlas", "shared"), cached, 0)
+            .unwrap();
+        if held {
+            train.hold("a").unwrap();
+        }
+        train
+            .submit(
+                request("m", "murph", "shared"),
+                graph(&[("shared", &[])]),
+                1,
+            )
+            .unwrap();
+        let restore = train.dispatch(1).unwrap().unwrap();
+        assert_eq!(restore.definition.operation, Operation::Restore);
+        train.finish(&restore, Err("substitute disappeared".into()));
+        assert!(matches!(train.outcome("a").unwrap(), Outcome::Failed(_)));
+        assert!(matches!(train.outcome("m").unwrap(), Outcome::Failed(_)));
+    }
+}

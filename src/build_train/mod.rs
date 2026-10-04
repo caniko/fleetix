@@ -178,15 +178,33 @@ impl Train {
                 }
             }
         }
+        // A full derivation graph includes outputs that this request will never
+        // need: cached parents prune source dependencies and siblings may be
+        // unselected. Their dry-run classification cannot alter another request.
+        let mut selected = BTreeSet::new();
+        let mut todo: Vec<_> = request.roots.iter().cloned().collect();
+        while let Some(goal) = todo.pop() {
+            if selected.insert(goal.clone()) && graph[&goal].operation == Operation::Build {
+                todo.extend(graph[&goal].dependencies.iter().cloned());
+            }
+        }
+        let previously_needed: BTreeSet<_> = self
+            .requests
+            .values()
+            .filter(|record| !record.cancelled)
+            .flat_map(|record| self.needed(&record.request.roots))
+            .collect();
         for (goal, definition) in graph {
+            let may_replan = selected.contains(&goal)
+                && (definition.operation == Operation::Restore
+                    || !previously_needed.contains(&goal));
             self.nodes
                 .entry(goal)
                 .and_modify(|node| {
-                    // Newly available substitutes may prune pending source builds.
-                    if node.state == NodeState::Pending
-                        && definition.operation == Operation::Restore
-                    {
-                        node.definition.operation = Operation::Restore;
+                    // New substitutes may prune required builds; source work may
+                    // replace only an unused plan, never a promised restoration.
+                    if node.state == NodeState::Pending && may_replan {
+                        node.definition.operation = definition.operation;
                     }
                 })
                 .or_insert(Node {
