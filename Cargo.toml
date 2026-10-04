@@ -13,7 +13,7 @@ readme = "README.md"
 documentation = "https://docs.rs/fleetix"
 include = [
   "/src/**", "/examples/**", "/lib/**", "/modules/**", "/tests/**",
-  "/README.md", "/MCP.md", "/SERVICE_PROFILES.md", "/ARCHITECTURE.md", "/CHANGELOG.md", "/LICENSE*", "/Cargo.toml", "/Cargo.lock",
+  "/README.md", "/MCP.md", "/SERVICE_PROFILES.md", "/ARCHITECTURE.md", "/BUILD_TRAIN.md", "/CHANGELOG.md", "/LICENSE*", "/Cargo.toml", "/Cargo.lock",
 ]
 
 [package.metadata.docs.rs]
@@ -35,11 +35,13 @@ tempfile = "3"
 sha2 = "0.10"
 toml_edit = { version = "0.23", features = ["serde"], optional = true }
 fs2 = { version = "0.4", optional = true }
+libc = { version = "0.2", optional = true }
 
 [features]
 default = ["cli"]
 cli = ["dep:clap", "mcp"]
 mcp = ["dep:toml_edit", "dep:fs2"]
+build-train-runtime = ["dep:fs2", "dep:libc"]
 
 [dependencies.clap]
 version = "4"

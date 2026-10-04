@@ -356,6 +356,7 @@ dependencies = [
  "clap",
  "fs2",
  "indexmap",
+ "libc",
  "miette",
  "pklx",
  "serde",

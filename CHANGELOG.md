@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Build trains
+
+- Add a dependency-aware shared-construction library and optional authenticated
+  builder-local coordinator, with late joins, bounded fairness, independent
+  request completion, exact-output sharing, restart reconciliation, cancellation,
+  durable activation fences and exact preparation receipts. The implementation
+  awaits release qualification; real Nix/performance acceptance remains separate.
+
 ### Added
 
 - Installed-system management routes with independent public recovery addresses,
