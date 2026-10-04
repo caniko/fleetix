@@ -307,3 +307,87 @@ fn named_outputs_of_one_derivation_never_compile_concurrently() {
     train.finish(&first, Ok(()));
     assert!(train.dispatch(0).unwrap().is_some());
 }
+
+#[test]
+fn late_join_on_a_sibling_output_prioritizes_the_shared_builder() {
+    for joined_interest in ["admitted", "held", "cancelled"] {
+        let mut train = Train::new("p".into(), 10);
+        let dev = Goal {
+            derivation: "shared".into(),
+            output: "dev".into(),
+        };
+        let mut definitions = graph(&[
+            ("atlas", &["busy", "exclusive", "shared"]),
+            ("busy", &[]),
+            ("exclusive", &[]),
+            ("shared", &[]),
+        ]);
+        definitions.insert(
+            dev.clone(),
+            Definition {
+                output_path: "/store/shared-dev".into(),
+                dependencies: BTreeSet::new(),
+                operation: Operation::Build,
+            },
+        );
+        train
+            .submit(request("a", "atlas", "atlas"), definitions.clone(), 0)
+            .unwrap();
+        let busy = train.dispatch(0).unwrap().unwrap();
+        assert_eq!(busy.goal, goal("busy"));
+        definitions.insert(
+            goal("murph"),
+            Definition {
+                output_path: "/store/murph".into(),
+                dependencies: BTreeSet::from([dev]),
+                operation: Operation::Build,
+            },
+        );
+        train
+            .submit(request("m", "murph", "murph"), definitions, 1)
+            .unwrap();
+        match joined_interest {
+            "held" => train.hold("m").unwrap(),
+            "cancelled" => train.cancel("m").unwrap(),
+            _ => {}
+        }
+        let chosen = train.dispatch(1).unwrap().unwrap();
+        assert_eq!(
+            chosen.goal.derivation,
+            if joined_interest == "admitted" {
+                "shared"
+            } else {
+                "exclusive"
+            }
+        );
+        assert!(matches!(
+            train.nodes[&busy.goal].state,
+            NodeState::Running { .. }
+        ));
+    }
+}
+
+#[test]
+fn one_request_selecting_two_outputs_has_one_builder_interest() {
+    let mut train = Train::new("p".into(), 10);
+    let mut definitions = graph(&[("shared", &[]), ("exclusive", &[])]);
+    let dev = Goal {
+        derivation: "shared".into(),
+        output: "dev".into(),
+    };
+    definitions.insert(
+        dev.clone(),
+        Definition {
+            output_path: "/store/shared-dev".into(),
+            dependencies: BTreeSet::new(),
+            operation: Operation::Build,
+        },
+    );
+    let mut atlas = request("a", "atlas", "shared");
+    atlas.roots.insert(dev);
+    train.submit(atlas, definitions.clone(), 0).unwrap();
+    train
+        .submit(request("m", "murph", "exclusive"), definitions, 0)
+        .unwrap();
+    assert_eq!(train.dispatch(0).unwrap().unwrap().goal, goal("exclusive"));
+}

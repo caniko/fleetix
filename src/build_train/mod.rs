@@ -309,6 +309,7 @@ impl Train {
             return Ok(None);
         }
         let mut interests: BTreeMap<Goal, usize> = BTreeMap::new();
+        let mut build_interests: BTreeMap<String, usize> = BTreeMap::new();
         let mut roots = BTreeSet::new();
         // Native Nix may produce several named outputs in one builder process.
         // A second output of that derivation must not occupy another worker.
@@ -326,8 +327,17 @@ impl Train {
                 continue;
             }
             roots.extend(record.request.roots.iter().cloned());
+            let mut request_builds = BTreeSet::new();
             for goal in self.needed(&record.request.roots) {
+                if self.nodes[&goal].definition.operation == Operation::Build {
+                    request_builds.insert(goal.derivation.clone());
+                }
                 *interests.entry(goal).or_default() += 1;
+            }
+            // Distinct named outputs still share one native builder. Count each
+            // interested request once; restore-only goals retain exact-output priority.
+            for derivation in request_builds {
+                *build_interests.entry(derivation).or_default() += 1;
             }
         }
         let chosen = interests
@@ -346,10 +356,15 @@ impl Train {
             .min_by_key(|(goal, count)| {
                 let node = &self.nodes[*goal];
                 let aged = now.saturating_sub(node.queued_at) >= self.aging_seconds;
+                let count = if node.definition.operation == Operation::Build {
+                    build_interests[&goal.derivation]
+                } else {
+                    **count
+                };
                 (
                     !aged,
                     if aged { node.queued_at } else { 0 },
-                    if aged { 0 } else { usize::MAX - **count },
+                    if aged { 0 } else { usize::MAX - count },
                     !roots.contains(*goal),
                     node.queued_at,
                     (*goal).clone(),

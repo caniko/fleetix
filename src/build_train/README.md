@@ -25,6 +25,8 @@ backend; consumers retain fleet policy and deployment stages.
   graphs are supported; backend-unsupported graph forms return explicit errors.
 - Named outputs of one derivation occupy at most one worker at a time. Completion
   rechecks the store for sibling outputs before scheduling another worker.
+  Shared-build priority counts each admitted request once across those outputs;
+  restoration retains exact-output priority.
 - Disconnect detaches. Cancellation removes one request's interests. Running goals
   finish, including work still needed by other requests. Failures propagate only
   through required dependencies; independent branches continue. Retry is explicit
