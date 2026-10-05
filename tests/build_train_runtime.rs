@@ -314,10 +314,14 @@ fn trickling_request_has_one_absolute_delivery_deadline() {
     writer.join().unwrap();
     drop(stream);
     server.shutdown();
-    assert!(
-        result.is_ok(),
-        "trickling request was never expired: {result:?}"
-    );
+    // Closing with unread bytes may deliver ECONNRESET rather than clean EOF.
+    // Either proves expiry; a timeout or a protocol response does not.
+    let closed = match &result {
+        Ok(0) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::ConnectionReset,
+        _ => false,
+    };
+    assert!(closed, "trickling request was never expired: {result:?}");
     assert!(
         elapsed < Duration::from_secs(6),
         "delivery deadline reset: {elapsed:?}"
