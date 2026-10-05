@@ -110,6 +110,44 @@ fn cancellation_and_failure_do_not_poison_other_branches() {
 }
 
 #[test]
+fn retry_of_a_shared_failure_keeps_other_failed_requests_terminal() {
+    let mut train = Train::new("p".into(), 10);
+    for (attempt, target) in [("a", "atlas"), ("m", "murph")] {
+        train
+            .submit(
+                request(attempt, target, target),
+                graph(&[(target, &["shared"]), ("shared", &[])]),
+                0,
+            )
+            .unwrap();
+    }
+    let shared = train.dispatch(0).unwrap().unwrap();
+    train.finish(&shared, Err("shared compiler failure".into()));
+    let atlas_failure = train.outcome("a").unwrap();
+    assert!(matches!(atlas_failure, Outcome::Failed(_)));
+
+    train.retry("m").unwrap();
+    assert_eq!(train.outcome("a").unwrap(), atlas_failure);
+    assert_eq!(train.outcome("m").unwrap(), Outcome::Pending);
+    assert!(train.dispatch(1).unwrap().is_none());
+
+    train.admit("m").unwrap();
+    let shared = train.dispatch(1).unwrap().unwrap();
+    train.finish(&shared, Ok(()));
+    let murph = train.dispatch(2).unwrap().unwrap();
+    assert_eq!(murph.goal, goal("murph"));
+    train.finish(&murph, Ok(()));
+    assert_eq!(train.outcome("m").unwrap(), Outcome::Ready);
+    assert_eq!(train.outcome("a").unwrap(), atlas_failure);
+    assert!(train.dispatch(3).unwrap().is_none());
+
+    train.retry("a").unwrap();
+    assert!(train.dispatch(3).unwrap().is_none());
+    train.admit("a").unwrap();
+    assert_eq!(train.dispatch(3).unwrap().unwrap().goal, goal("atlas"));
+}
+
+#[test]
 fn incompatible_graphs_and_cycles_are_transactionally_rejected() {
     let mut train = Train::new("p".into(), 10);
     train

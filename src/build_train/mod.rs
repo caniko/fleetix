@@ -89,6 +89,8 @@ pub struct RequestRecord {
     /// Old journals contain fully planned requests; new intake is held durably.
     #[serde(default = "prepared_by_default")]
     pub prepared: bool,
+    /// Request-local failure, including construction failures preserved when
+    /// another request explicitly retries a shared failed goal.
     #[serde(default)]
     pub preparation_error: Option<String>,
 }
@@ -363,15 +365,39 @@ impl Train {
             .roots
             .clone();
         let prepared = self.requests[attempt].prepared;
-        for goal in if prepared {
+        let failed: BTreeSet<_> = if prepared {
             self.needed(&roots)
         } else {
             BTreeSet::new()
-        } {
+        }
+        .into_iter()
+        .filter(|goal| matches!(self.nodes[goal].state, NodeState::Failed(_)))
+        .collect();
+        // Resetting a shared node must not implicitly retry every request that
+        // failed on it, restoring their admission/priority or exceeding capacity.
+        // Preserve their terminal outcomes in the existing request-error field;
+        // only their own explicit retry may clear that durable failure.
+        let failures: Vec<_> = self
+            .requests
+            .iter()
+            .filter(|(id, record)| {
+                id.as_str() != attempt
+                    && record.prepared
+                    && !record.cancelled
+                    && record.preparation_error.is_none()
+                    && !self.needed(&record.request.roots).is_disjoint(&failed)
+            })
+            .filter_map(|(id, _)| match self.outcome(id) {
+                Ok(Outcome::Failed(error)) => Some((id.clone(), error)),
+                _ => None,
+            })
+            .collect();
+        for (id, error) in failures {
+            self.preparation_failed(&id, error)?;
+        }
+        for goal in failed {
             let node = self.nodes.get_mut(&goal).ok_or("missing retry goal")?;
-            if matches!(node.state, NodeState::Failed(_)) {
-                node.state = NodeState::Pending;
-            }
+            node.state = NodeState::Pending;
         }
         let record = self.requests.get_mut(attempt).ok_or("unknown request")?;
         record.cancelled = false;

@@ -281,6 +281,100 @@ fn terminal_history_does_not_exhaust_active_request_capacity() {
 }
 
 #[test]
+fn shared_failure_retry_preserves_capacity_and_other_outcomes_after_restart() {
+    let mut server = Server::with_limit(1);
+    server.shutdown();
+    let state_path = server.config.state_dir.join("train.json");
+    let mut state: Train =
+        serde_json::from_reader(std::fs::File::open(&state_path).unwrap()).unwrap();
+    for attempt in ["first", "second"] {
+        let request = request(attempt, "murph");
+        let graph = server.backend.plan(&request).unwrap();
+        state.submit(request, graph, 0).unwrap();
+    }
+    let work = state.dispatch(0).unwrap().unwrap();
+    state.finish(&work, Err("shared compiler failure".into()));
+    let first_failure = state.outcome("first").unwrap();
+    assert!(matches!(first_failure, Outcome::Failed(_)));
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    server.restart();
+    let client = server.client();
+
+    client.call(Command::Retry("second".into())).unwrap();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure.clone())
+    );
+    assert_eq!(
+        client
+            .call(Command::Status("second".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Pending)
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    assert!(
+        client
+            .call(Command::Register(request("third", "atlas")))
+            .unwrap_err()
+            .contains("request limit")
+    );
+
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure.clone())
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    client.call(Command::Admit("second".into())).unwrap();
+    eventually(|| {
+        client
+            .call(Command::Status("second".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure.clone())
+    );
+
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure)
+    );
+    client.call(Command::Retry("first".into())).unwrap();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Ready)
+    );
+    assert!(
+        client
+            .call(Command::AuthorizeActivation("first".into()))
+            .unwrap_err()
+            .contains("admission")
+    );
+}
+
+#[test]
 fn retirement_archives_before_root_release_and_retries_after_restart() {
     let mut server = Server::start();
     let client = server.client();

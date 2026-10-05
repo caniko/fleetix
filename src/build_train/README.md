@@ -48,7 +48,9 @@ backend; consumers retain fleet policy and deployment stages.
 - Disconnect detaches. Cancellation removes one request's interests. Running goals
   finish, including work still needed by other requests. Failures propagate only
   through required dependencies; independent branches continue. Retry is explicit
-  and returns the request to held admission.
+  and returns the request to held admission. Retrying a shared failure preserves
+  other failed requests' terminal outcomes and capacity accounting until they
+  explicitly retry, including across restart and successful shared reconstruction.
 - Worker receipts are journaled before dispatch and use monotonically increasing
   generations. Restart reconciles store validity and retained GC roots before
   redispatch. Old acknowledgements cannot complete a new generation.
