@@ -4,7 +4,101 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::{ffi::OsStrExt, net::UnixStream};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+// Bound both descriptor/memory use and work per event-loop turn. Slow delivery
+// and slow readers never occupy the coordinator's scheduling thread.
+pub(super) const MAX_CONNECTIONS: usize = 64;
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const IO_CHUNK: usize = 8192;
+
+pub(super) struct Incoming {
+    pub stream: UnixStream,
+    raw: Vec<u8>,
+    deadline: Instant,
+}
+
+impl Incoming {
+    pub fn new(stream: UnixStream) -> Result<Self, String> {
+        stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+        same_uid(&stream)?;
+        Ok(Self {
+            stream,
+            raw: Vec::new(),
+            deadline: Instant::now() + IO_TIMEOUT,
+        })
+    }
+
+    pub fn receive(&mut self) -> Result<Option<Vec<u8>>, String> {
+        if Instant::now() >= self.deadline {
+            return Err("request delivery deadline exceeded".into());
+        }
+        let mut buffer = [0u8; IO_CHUNK];
+        match self.stream.read(&mut buffer) {
+            Ok(0) => Err("truncated protocol frame".into()),
+            Ok(size) => {
+                let frame = &buffer[..size];
+                let newline = frame.iter().position(|byte| *byte == b'\n');
+                self.raw
+                    .extend_from_slice(&frame[..newline.map_or(size, |n| n + 1)]);
+                if self.raw.len() as u64 > MAX_FRAME {
+                    return Err("oversized protocol frame".into());
+                }
+                if newline.is_some() {
+                    Ok(Some(std::mem::take(&mut self.raw)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+pub(super) struct Outgoing {
+    stream: UnixStream,
+    raw: Vec<u8>,
+    written: usize,
+    deadline: Instant,
+}
+
+impl Outgoing {
+    pub fn new(stream: UnixStream, raw: Vec<u8>) -> Self {
+        Self {
+            stream,
+            raw,
+            written: 0,
+            deadline: Instant::now() + IO_TIMEOUT,
+        }
+    }
+
+    /// A disconnect/timeout detaches the client, never undoing durable state.
+    pub fn pending(&mut self) -> bool {
+        if Instant::now() >= self.deadline {
+            return false;
+        }
+        let end = (self.written + IO_CHUNK).min(self.raw.len());
+        match self.stream.write(&self.raw[self.written..end]) {
+            Ok(0) => false,
+            Ok(size) => {
+                self.written += size;
+                self.written < self.raw.len()
+            }
+            Err(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            ),
+        }
+    }
+}
 
 fn wait(stream: &UnixStream, events: i16, deadline: Instant) -> Result<(), String> {
     loop {

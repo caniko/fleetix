@@ -63,6 +63,16 @@ impl Backend for TestBackend {
                 })
                 .collect());
         }
+        if request.target == "large" {
+            return Ok(BTreeMap::from([(
+                goal("large"),
+                Definition {
+                    output_path: format!("/store/{}", "x".repeat(800_000)),
+                    dependencies: BTreeSet::new(),
+                    operation: Operation::Build,
+                },
+            )]));
+        }
         let entries: Vec<(&str, Vec<&str>)> = match request.target.as_str() {
             "atlas" => vec![
                 ("atlas", vec!["busy", "exclusive", "shared"]),
@@ -202,6 +212,116 @@ fn responsive(client: &Client, command: Command) -> Reply {
     rx.recv_timeout(Duration::from_secs(1))
         .expect("control plane blocked behind graph preparation")
         .unwrap()
+}
+
+#[test]
+fn unread_reply_does_not_block_other_control_clients() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let mut server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Submit(request("large", "large")))
+        .unwrap();
+    client.wait("large", &AtomicBool::new(false)).unwrap();
+    let mut unread = UnixStream::connect(&server.config.socket).unwrap();
+    let mut raw = serde_json::to_vec(&serde_json::json!({
+        "version": VERSION, "policy": client.policy, "command": Command::Status("large".into())
+    }))
+    .unwrap();
+    raw.push(b'\n');
+    unread.write_all(&raw).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(client.call(Command::Inspect));
+    });
+    let result = rx.recv_timeout(Duration::from_secs(1));
+    drop(unread);
+    server.shutdown();
+    assert!(
+        result.is_ok(),
+        "control plane blocked behind unread reply: {result:?}"
+    );
+    result.unwrap().unwrap();
+}
+
+#[test]
+fn partial_request_does_not_block_status_cancellation_fences_or_worker_completion() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let mut server = Server::start();
+    let client = server.client();
+    client.call(Command::Submit(request("a", "atlas"))).unwrap();
+    eventually(|| server.backend.started.lock().unwrap().as_slice() == ["busy"]);
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    let mut partial = UnixStream::connect(&server.config.socket).unwrap();
+    partial.write_all(b"{").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let inspecting = client.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(inspecting.call(Command::Status("a".into())));
+    });
+    let status = rx.recv_timeout(Duration::from_secs(1));
+    if status.is_err() {
+        drop(partial);
+        server.shutdown();
+        panic!("status blocked behind a partial request: {status:?}");
+    }
+    assert_eq!(status.unwrap().unwrap().outcome, Some(Outcome::Pending));
+    assert_eq!(
+        responsive(&client, Command::Cancel("m".into())).outcome,
+        Some(Outcome::Cancelled)
+    );
+    let fence = responsive(&client, Command::Fence("a".into()))
+        .fence
+        .unwrap();
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| responsive(&client, Command::Inspect).running == 0);
+    responsive(&client, Command::ReleaseFence(fence.token));
+    drop(partial);
+    server.shutdown();
+}
+
+#[test]
+fn trickling_request_has_one_absolute_delivery_deadline() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut server = Server::start();
+    let mut stream = UnixStream::connect(&server.config.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(7)))
+        .unwrap();
+    let mut sending = stream.try_clone().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let writer = std::thread::spawn(move || {
+        while !stopping.load(Ordering::Relaxed) && sending.write_all(b" ").is_ok() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let started = Instant::now();
+    let result = stream.read(&mut [0u8; 1]);
+    let elapsed = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    drop(stream);
+    server.shutdown();
+    assert!(
+        result.is_ok(),
+        "trickling request was never expired: {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "delivery deadline reset: {elapsed:?}"
+    );
 }
 
 #[test]

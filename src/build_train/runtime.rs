@@ -8,7 +8,6 @@
 use super::*;
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::{
     fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -213,17 +212,6 @@ impl Client {
     }
 }
 
-fn read_frame(stream: &UnixStream) -> Result<Vec<u8>, String> {
-    let mut raw = Vec::new();
-    BufReader::new(stream.take(MAX_FRAME))
-        .read_until(b'\n', &mut raw)
-        .map_err(|e| e.to_string())?;
-    if raw.last() != Some(&b'\n') {
-        return Err("truncated or oversized protocol frame".into());
-    }
-    Ok(raw)
-}
-
 fn same_uid(stream: &UnixStream) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -399,11 +387,16 @@ struct Planner {
     timed_out: bool,
 }
 
-fn write_reply(stream: &mut UnixStream, result: &Reply) -> Result<(), String> {
+fn queue_reply(
+    outgoing: &mut Vec<ipc::Outgoing>,
+    stream: UnixStream,
+    result: &Reply,
+) -> Result<(), String> {
     let mut raw = serde_json::to_vec(result).map_err(|e| e.to_string())?;
     raw.push(b'\n');
-    // A disconnect never undoes a durable operation.
-    let _ = stream.write_all(&raw);
+    if raw.len() as u64 <= MAX_FRAME {
+        outgoing.push(ipc::Outgoing::new(stream, raw));
+    }
     Ok(())
 }
 
@@ -411,6 +404,7 @@ fn flush_waiters(
     config: &Config,
     train: &Train,
     waiters: &mut BTreeMap<String, Vec<UnixStream>>,
+    outgoing: &mut Vec<ipc::Outgoing>,
     attempt: &str,
 ) -> Result<(), String> {
     if let Some(streams) = waiters.remove(attempt) {
@@ -419,8 +413,8 @@ fn flush_waiters(
         if let Outcome::Failed(error) = outcome {
             result.error = Some(error);
         }
-        for mut stream in streams {
-            write_reply(&mut stream, &result)?;
+        for stream in streams {
+            queue_reply(outgoing, stream, &result)?;
         }
     }
     Ok(())
@@ -515,6 +509,8 @@ pub fn serve(
     let (planned_tx, planned_rx) = mpsc::channel::<(String, Result<Graph, String>)>();
     let mut planners: BTreeMap<String, Planner> = BTreeMap::new();
     let mut waiters: BTreeMap<String, Vec<UnixStream>> = BTreeMap::new();
+    let mut incoming = Vec::<ipc::Incoming>::new();
+    let mut outgoing = Vec::<ipc::Outgoing>::new();
     let mut workers = Vec::new();
     while !stop.load(Ordering::Relaxed) || train.running() != 0 || !planners.is_empty() {
         while let Ok((attempt, result)) = planned_rx.try_recv() {
@@ -530,7 +526,7 @@ pub fn serve(
                 save(&config, &next)?;
                 train = next;
             }
-            flush_waiters(&config, &train, &mut waiters, &attempt)?;
+            flush_waiters(&config, &train, &mut waiters, &mut outgoing, &attempt)?;
         }
         for (attempt, planner) in &mut planners {
             if !planner.timed_out
@@ -542,7 +538,7 @@ pub fn serve(
                     "graph preparation deadline exceeded; retry after the planner exits".into(),
                 )?;
                 save(&config, &train)?;
-                flush_waiters(&config, &train, &mut waiters, attempt)?;
+                flush_waiters(&config, &train, &mut waiters, &mut outgoing, attempt)?;
             }
         }
         while let Ok((dispatch, result, valid)) = completed_rx.try_recv() {
@@ -557,82 +553,94 @@ pub fn serve(
             save(&config, &train)?;
         }
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
+        outgoing.retain_mut(ipc::Outgoing::pending);
         if !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(5)))
-                        .map_err(|e| e.to_string())?;
-                    stream
-                        .set_write_timeout(Some(Duration::from_secs(5)))
-                        .map_err(|e| e.to_string())?;
-                    let result = same_uid(&stream)
-                        .and_then(|()| read_frame(&stream))
-                        .and_then(|raw| {
-                            serde_json::from_slice::<Envelope>(&raw).map_err(|e| e.to_string())
-                        })
-                        .and_then(|envelope| {
-                            if envelope.version != VERSION || envelope.policy != config.policy {
-                                return Err(
-                                    "incompatible coordinator protocol or execution policy".into(),
-                                );
-                            }
-                            let subject = match &envelope.command {
-                                Command::Submit(request) | Command::Register(request) => {
-                                    Some(request.attempt.clone())
-                                }
-                                _ => None,
-                            };
-                            if let Command::Retry(attempt) | Command::Retire(attempt) =
-                                &envelope.command
-                            {
-                                if planners.contains_key(attempt) {
-                                    return Err("request graph planner has not exited".into());
-                                }
-                            }
-                            if subject.as_ref().is_some_and(|id| {
-                                waiters.get(id).is_some_and(|streams| streams.len() >= 8)
-                            }) {
-                                return Err("too many waiting registration clients".into());
-                            }
-                            apply(&config, &mut train, backend.as_ref(), envelope.command)
-                                .map(|result| (result, subject))
-                        });
-                    let mut endpoint = Some(stream);
-                    let reply = match result {
-                        Ok((result, subject)) => {
-                            if let Some(attempt) = subject {
-                                let record = &train.requests[&attempt];
-                                if !record.prepared && train.outcome(&attempt)? == Outcome::Pending
-                                {
-                                    waiters.entry(attempt).or_default().push(
-                                        endpoint.take().ok_or("missing registration endpoint")?,
-                                    );
-                                }
-                            }
-                            result
+                    let connections = incoming.len()
+                        + outgoing.len()
+                        + waiters.values().map(Vec::len).sum::<usize>();
+                    if connections < ipc::MAX_CONNECTIONS {
+                        if let Ok(connection) = ipc::Incoming::new(stream) {
+                            incoming.push(connection);
                         }
-                        Err(error) => Reply {
-                            version: VERSION,
-                            policy: config.policy.clone(),
-                            outcome: None,
-                            fence: train.fence.clone(),
-                            running: train.running(),
-                            error: Some(error),
-                            outputs: BTreeMap::new(),
-                        },
-                    };
-                    if let Some(mut stream) = endpoint {
-                        write_reply(&mut stream, &reply)?;
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error.to_string()),
             }
+            let mut pending = Vec::new();
+            for mut connection in incoming.drain(..) {
+                let raw = match connection.receive() {
+                    Ok(Some(raw)) => raw,
+                    Ok(None) => {
+                        pending.push(connection);
+                        continue;
+                    }
+                    Err(_) => continue,
+                };
+                let result = serde_json::from_slice::<Envelope>(&raw)
+                    .map_err(|e| e.to_string())
+                    .and_then(|envelope| {
+                        if envelope.version != VERSION || envelope.policy != config.policy {
+                            return Err(
+                                "incompatible coordinator protocol or execution policy".into()
+                            );
+                        }
+                        let subject = match &envelope.command {
+                            Command::Submit(request) | Command::Register(request) => {
+                                Some(request.attempt.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Command::Retry(attempt) | Command::Retire(attempt) =
+                            &envelope.command
+                        {
+                            if planners.contains_key(attempt) {
+                                return Err("request graph planner has not exited".into());
+                            }
+                        }
+                        if subject.as_ref().is_some_and(|id| {
+                            waiters.get(id).is_some_and(|streams| streams.len() >= 8)
+                        }) {
+                            return Err("too many waiting registration clients".into());
+                        }
+                        apply(&config, &mut train, backend.as_ref(), envelope.command)
+                            .map(|result| (result, subject))
+                    });
+                let mut endpoint = Some(connection.stream);
+                let reply = match result {
+                    Ok((result, subject)) => {
+                        if let Some(attempt) = subject {
+                            let record = &train.requests[&attempt];
+                            if !record.prepared && train.outcome(&attempt)? == Outcome::Pending {
+                                waiters
+                                    .entry(attempt)
+                                    .or_default()
+                                    .push(endpoint.take().ok_or("missing registration endpoint")?);
+                            }
+                        }
+                        result
+                    }
+                    Err(error) => Reply {
+                        version: VERSION,
+                        policy: config.policy.clone(),
+                        outcome: None,
+                        fence: train.fence.clone(),
+                        running: train.running(),
+                        error: Some(error),
+                        outputs: BTreeMap::new(),
+                    },
+                };
+                if let Some(stream) = endpoint {
+                    queue_reply(&mut outgoing, stream, &reply)?;
+                }
+            }
+            incoming = pending;
             for attempt in waiters.keys().cloned().collect::<Vec<_>>() {
                 if train.requests[&attempt].prepared || train.outcome(&attempt)? != Outcome::Pending
                 {
-                    flush_waiters(&config, &train, &mut waiters, &attempt)?;
+                    flush_waiters(&config, &train, &mut waiters, &mut outgoing, &attempt)?;
                 }
             }
             while planners.len() < config.planning_workers {
@@ -718,7 +726,11 @@ pub fn serve(
         thread::sleep(Duration::from_millis(10));
     }
     for attempt in waiters.keys().cloned().collect::<Vec<_>>() {
-        flush_waiters(&config, &train, &mut waiters, &attempt)?;
+        flush_waiters(&config, &train, &mut waiters, &mut outgoing, &attempt)?;
+    }
+    while !outgoing.is_empty() {
+        outgoing.retain_mut(ipc::Outgoing::pending);
+        thread::sleep(Duration::from_millis(10));
     }
     for worker in workers {
         let _ = worker.join();
