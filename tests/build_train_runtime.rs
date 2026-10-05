@@ -719,6 +719,57 @@ fn bounded_drain_keeps_fence_and_cancellation_removes_only_one_interest() {
 }
 
 #[test]
+fn drain_deadline_bounds_a_stalled_status_reply_and_reports_its_fence() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let peer = std::thread::spawn(move || {
+        for running in [1, 0] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut command = String::new();
+            BufReader::new(&stream).read_line(&mut command).unwrap();
+            if running == 0 {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            let mut wire = serde_json::to_vec(&Reply {
+                version: VERSION,
+                policy: "p".into(),
+                outcome: None,
+                fence: Some(Fence {
+                    token: "a-1".into(),
+                    attempt: "a".into(),
+                }),
+                running,
+                error: None,
+                outputs: BTreeMap::new(),
+            })
+            .unwrap();
+            wire.push(b'\n');
+            let _ = stream.write_all(&wire);
+        }
+    });
+    let started = Instant::now();
+    let result = client.drain("a", Duration::from_millis(300));
+    let elapsed = started.elapsed();
+    peer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "drain took {elapsed:?}"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("a-1") && error.contains("retained"),
+        "{error}"
+    );
+}
+
+#[test]
 fn preparation_is_process_shared_exact_keyed_and_caches_only_passes() {
     use preparation::{Evidence, Key};
     let temp = tempfile::tempdir().unwrap();

@@ -68,6 +68,10 @@ waits a bounded time for affected workers to drain, acquires the existing target
 lease, activates, reconciles the backend/policy, and releases the exact fence
 token. A timeout or failed activation retains the fence, including across service
 restart, until the owner verifies the outcome and explicitly releases it.
+The drain deadline also bounds socket connection, request delivery and status
+replies; slow or partial replies cannot extend it. Zero wait permits a five-second
+fence round trip but never waits for workers. An ambiguous fence reply requires
+inspection of that request's existing fence before retrying.
 
 Deployment integration keeps the old immutable coordinator alive while its
 requests finish. A newly configured policy cannot attach to that older service.

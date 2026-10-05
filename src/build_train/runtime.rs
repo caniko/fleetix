@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_FRAME: u64 = 1024 * 1024;
 
+mod ipc;
 pub mod preparation;
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
@@ -115,14 +116,13 @@ pub struct Client {
 
 impl Client {
     pub fn call(&self, command: Command) -> Result<Reply, String> {
-        let mut stream = UnixStream::connect(&self.socket)
-            .map_err(|e| format!("connect {}: {e}", self.socket.display()))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(300)))
-            .map_err(|e| e.to_string())?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
-            .map_err(|e| e.to_string())?;
+        self.call_until(
+            command,
+            std::time::Instant::now() + Duration::from_secs(300),
+        )
+    }
+
+    fn call_until(&self, command: Command, deadline: std::time::Instant) -> Result<Reply, String> {
         let mut raw = serde_json::to_vec(&Envelope {
             version: VERSION,
             policy: self.policy.clone(),
@@ -133,9 +133,12 @@ impl Client {
             return Err("request exceeds protocol limit".into());
         }
         raw.push(b'\n');
-        stream.write_all(&raw).map_err(|e| e.to_string())?;
-        let reply: Reply =
-            serde_json::from_slice(&read_frame(&stream)?).map_err(|e| e.to_string())?;
+        let reply: Reply = serde_json::from_slice(&ipc::exchange(
+            &self.socket,
+            &raw,
+            deadline.min(std::time::Instant::now() + Duration::from_secs(300)),
+        )?)
+        .map_err(|e| e.to_string())?;
         if reply.version != VERSION || reply.policy != self.policy {
             return Err("coordinator protocol or policy changed".into());
         }
@@ -164,9 +167,25 @@ impl Client {
     /// Close dispatch atomically before waiting. Timeout leaves the named fence
     /// intact so a disconnected activation cannot accidentally restart builders.
     pub fn drain(&self, attempt: &str, wait: Duration) -> Result<Fence, String> {
-        let reply = self.call(Command::Fence(attempt.into()))?;
-        let fence = reply.fence.ok_or("missing fence")?;
         let deadline = std::time::Instant::now() + wait;
+        // Zero means inspect-and-fail without waiting for workers. Allow only a
+        // bounded control-plane round trip to establish the durable fence.
+        let fence_deadline = if wait.is_zero() {
+            std::time::Instant::now() + Duration::from_secs(5)
+        } else {
+            deadline
+        };
+        let reply = self
+            .call_until(Command::Fence(attempt.into()), fence_deadline)
+            .map_err(|error| {
+                format!(
+                    "fence outcome uncertain for request {attempt}; inspect before retry: {error}"
+                )
+            })?;
+        let fence = reply.fence.ok_or("missing fence")?;
+        if fence.attempt != attempt {
+            return Err("coordinator returned another request's fence".into());
+        }
         let mut running = reply.running;
         while running != 0 {
             if std::time::Instant::now() >= deadline {
@@ -175,8 +194,20 @@ impl Client {
                     fence.token, attempt
                 ));
             }
-            thread::sleep(Duration::from_millis(100));
-            running = self.call(Command::Inspect)?.running;
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(Duration::from_millis(100)),
+            );
+            running = self
+                .call_until(Command::Inspect, deadline)
+                .map_err(|error| {
+                    format!(
+                        "drain failed; fence {} retained for request {attempt}: {error}",
+                        fence.token
+                    )
+                })?
+                .running;
         }
         Ok(fence)
     }

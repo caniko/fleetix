@@ -1,0 +1,143 @@
+//! One deadline covers connect, complete request delivery and complete reply.
+use super::{MAX_FRAME, same_uid};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::{ffi::OsStrExt, net::UnixStream};
+use std::path::Path;
+use std::time::Instant;
+
+fn wait(stream: &UnixStream, events: i16, deadline: Instant) -> Result<(), String> {
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("coordinator IPC deadline exceeded")?;
+        let mut descriptor = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        let milliseconds = remaining
+            .as_millis()
+            .saturating_add(1)
+            .min(i32::MAX as u128) as i32;
+        // SAFETY: the live stream owns the descriptor and poll receives one
+        // initialized, writable pollfd. No descriptor crosses the call boundary.
+        let result = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.to_string());
+        }
+        if result > 0 {
+            if descriptor.revents & libc::POLLNVAL != 0 {
+                return Err("invalid coordinator socket descriptor".into());
+            }
+            return Ok(());
+        }
+    }
+}
+
+fn connect(path: &Path, deadline: Instant) -> Result<UnixStream, String> {
+    let name = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un consists entirely of integer fields and a byte array.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if name.is_empty() || name.len() >= address.sun_path.len() || name.contains(&0) {
+        return Err("invalid coordinator socket path".into());
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, byte) in address.sun_path.iter_mut().zip(name) {
+        *destination = *byte as libc::c_char;
+    }
+    // SAFETY: socket returns a fresh descriptor, adopted exactly once below.
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    // SAFETY: raw is a newly created, valid and exclusively owned descriptor.
+    let stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(raw) });
+    // SAFETY: address is initialized, NUL-terminated and lives for this syscall.
+    let result = unsafe {
+        libc::connect(
+            stream.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINPROGRESS) {
+            // Linux Unix-socket backlog saturation returns EAGAIN. Fail closed
+            // immediately instead of retrying a potentially unbounded connect.
+            return Err(error.to_string());
+        }
+        wait(&stream, libc::POLLOUT, deadline)?;
+        let mut error = 0i32;
+        let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
+        // SAFETY: initialized, correctly sized writable SO_ERROR storage.
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&mut error as *mut i32).cast(),
+                &mut length,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        if error != 0 {
+            return Err(std::io::Error::from_raw_os_error(error).to_string());
+        }
+    }
+    same_uid(&stream)?;
+    Ok(stream)
+}
+
+pub(super) fn exchange(
+    socket: &Path,
+    mut request: &[u8],
+    deadline: Instant,
+) -> Result<Vec<u8>, String> {
+    let mut stream = connect(socket, deadline)?;
+    while !request.is_empty() {
+        wait(&stream, libc::POLLOUT, deadline)?;
+        match stream.write(request) {
+            Ok(0) => return Err("coordinator closed during request delivery".into()),
+            Ok(size) => request = &request[size..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let mut reply = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        wait(&stream, libc::POLLIN, deadline)?;
+        match stream.read(&mut buffer) {
+            Ok(0) => return Err("truncated coordinator reply".into()),
+            Ok(size) => {
+                let frame = &buffer[..size];
+                let newline = frame.iter().position(|byte| *byte == b'\n');
+                reply.extend_from_slice(&frame[..newline.map_or(size, |offset| offset + 1)]);
+                if reply.len() as u64 > MAX_FRAME {
+                    return Err("oversized coordinator reply".into());
+                }
+                if newline.is_some() {
+                    return Ok(reply);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
