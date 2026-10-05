@@ -55,10 +55,14 @@
       pkgs = pkgsFor system;
       craneLib = crane.mkLib pkgs;
       commonArgs = {
-        src = craneLib.cleanCargoSource ./.;
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type: craneLib.filterCargoSources path type || pkgs.lib.hasPrefix (toString ./lib + "/") path;
+        };
         pname = "fleetix";
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         strictDeps = true;
+        nativeBuildInputs = [pkgs.pkl];
         cargoExtraArgs = "--all-features";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
@@ -717,7 +721,7 @@
             inherit pkgs;
             craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
             inherit cargoConfig cross;
-            packages = [toolchain];
+            packages = [toolchain pkgs.pkl];
             extraEnv = {
               RUSTFLAGS = "";
               CARGO_ENCODED_RUSTFLAGS = "";
@@ -729,7 +733,7 @@
         (harbor-rs.lib.mkDevShells {
           inherit pkgs cross cargoConfig;
           inherit (toolchain) craneLib;
-          packages = [(treefmtFor system).config.build.wrapper];
+          packages = [(treefmtFor system).config.build.wrapper pkgs.pkl];
         })
         // {
           docs = compatShell "1.96.1";
