@@ -84,6 +84,15 @@ pub struct RequestRecord {
     pub sequence: u64,
     pub cancelled: bool,
     pub admitted: bool,
+    /// Old journals contain fully planned requests; new intake is held durably.
+    #[serde(default = "prepared_by_default")]
+    pub prepared: bool,
+    #[serde(default)]
+    pub preparation_error: Option<String>,
+}
+
+fn prepared_by_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,8 +163,8 @@ impl Train {
         }
     }
 
-    /// Validate the entire join before mutating durable state.
-    pub fn submit(&mut self, request: Request, graph: Graph, now: u64) -> Result<(), String> {
+    /// Reserve identity and activation order before asynchronous graph preparation.
+    pub fn register(&mut self, request: Request, admitted: bool) -> Result<(), String> {
         if request.attempt.is_empty()
             || request.target.is_empty()
             || request.source.is_empty()
@@ -163,11 +172,44 @@ impl Train {
         {
             return Err("request identity and roots must be nonempty".into());
         }
-        validate_graph(&request.roots, &graph)?;
         if let Some(previous) = self.requests.get(&request.attempt) {
             if previous.request != request {
                 return Err("attempt has a different frozen identity".into());
             }
+            return Ok(());
+        }
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or("request sequence exhausted")?;
+        if request.activates {
+            self.latest_activation
+                .insert(request.target.clone(), request.attempt.clone());
+        }
+        self.requests.insert(
+            request.attempt.clone(),
+            RequestRecord {
+                request,
+                sequence,
+                cancelled: false,
+                admitted,
+                prepared: false,
+                preparation_error: None,
+            },
+        );
+        self.sequence = sequence;
+        Ok(())
+    }
+
+    /// Validate the entire join before mutating durable state.
+    pub fn submit(&mut self, request: Request, graph: Graph, now: u64) -> Result<(), String> {
+        validate_graph(&request.roots, &graph)?;
+        if self
+            .requests
+            .get(&request.attempt)
+            .is_some_and(|record| record.request != request)
+        {
+            return Err("attempt has a different frozen identity".into());
         }
         for (goal, definition) in &graph {
             if let Some(previous) = self.nodes.get(goal) {
@@ -191,9 +233,10 @@ impl Train {
         let previously_needed: BTreeSet<_> = self
             .requests
             .values()
-            .filter(|record| !record.cancelled)
+            .filter(|record| record.prepared && !record.cancelled)
             .flat_map(|record| self.needed(&record.request.roots))
             .collect();
+        self.register(request.clone(), true)?;
         for (goal, definition) in graph {
             let may_replan = selected.contains(&goal)
                 && (definition.operation == Operation::Restore
@@ -213,26 +256,73 @@ impl Train {
                     queued_at: now,
                 });
         }
-        if !self.requests.contains_key(&request.attempt) {
-            self.sequence = self
-                .sequence
-                .checked_add(1)
-                .ok_or("request sequence exhausted")?;
-            if request.activates {
-                self.latest_activation
-                    .insert(request.target.clone(), request.attempt.clone());
-            }
-            self.requests.insert(
-                request.attempt.clone(),
-                RequestRecord {
-                    request,
-                    sequence: self.sequence,
-                    cancelled: false,
-                    admitted: true,
-                },
-            );
-        }
+        let record = self
+            .requests
+            .get_mut(&request.attempt)
+            .ok_or("missing prepared request")?;
+        record.prepared = true;
+        record.preparation_error = None;
         Ok(())
+    }
+
+    pub fn preparation_failed(&mut self, attempt: &str, error: String) -> Result<(), String> {
+        self.requests
+            .get_mut(attempt)
+            .ok_or("unknown request")?
+            .preparation_error = Some(error);
+        Ok(())
+    }
+
+    /// Full evidence closure used for retention, including build-only dependencies.
+    pub fn retained_graph(&self, attempt: &str) -> Result<Graph, String> {
+        let record = self.requests.get(attempt).ok_or("unknown request")?;
+        let mut graph = Graph::new();
+        let mut todo: Vec<_> = record.request.roots.iter().cloned().collect();
+        while let Some(goal) = todo.pop() {
+            if graph.contains_key(&goal) {
+                continue;
+            }
+            if let Some(node) = self.nodes.get(&goal) {
+                todo.extend(node.definition.dependencies.iter().cloned());
+                graph.insert(goal, node.definition.clone());
+            }
+        }
+        Ok(graph)
+    }
+
+    /// Explicitly release terminal membership after the coordinator archives evidence.
+    /// Activation tombstones remain, so retiring a newer request never promotes an older one.
+    pub fn retire(&mut self, attempt: &str) -> Result<RequestRecord, String> {
+        if self.outcome(attempt)? == Outcome::Pending {
+            return Err("pending request cannot be retired".into());
+        }
+        if self
+            .fence
+            .as_ref()
+            .is_some_and(|fence| fence.attempt == attempt)
+        {
+            return Err("fence owner cannot be retired".into());
+        }
+        if self
+            .retained_graph(attempt)?
+            .keys()
+            .any(|goal| matches!(self.nodes[goal].state, NodeState::Running { .. }))
+        {
+            return Err("request still owns running work".into());
+        }
+        let record = self.requests.remove(attempt).ok_or("unknown request")?;
+        let retained: BTreeSet<_> = self
+            .requests
+            .keys()
+            .map(|id| self.retained_graph(id))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flat_map(|graph| graph.into_keys())
+            .collect();
+        self.nodes.retain(|goal, node| {
+            retained.contains(goal) || matches!(node.state, NodeState::Running { .. })
+        });
+        Ok(record)
     }
 
     pub fn cancel(&mut self, attempt: &str) -> Result<(), String> {
@@ -270,7 +360,12 @@ impl Train {
             .request
             .roots
             .clone();
-        for goal in self.needed(&roots) {
+        let prepared = self.requests[attempt].prepared;
+        for goal in if prepared {
+            self.needed(&roots)
+        } else {
+            BTreeSet::new()
+        } {
             let node = self.nodes.get_mut(&goal).ok_or("missing retry goal")?;
             if matches!(node.state, NodeState::Failed(_)) {
                 node.state = NodeState::Pending;
@@ -279,6 +374,7 @@ impl Train {
         let record = self.requests.get_mut(attempt).ok_or("unknown request")?;
         record.cancelled = false;
         record.admitted = false;
+        record.preparation_error = None;
         Ok(())
     }
 
@@ -287,6 +383,12 @@ impl Train {
         let record = self.requests.get(attempt).ok_or("unknown request")?;
         if record.cancelled {
             return Ok(Outcome::Cancelled);
+        }
+        if let Some(error) = &record.preparation_error {
+            return Ok(Outcome::Failed(error.clone()));
+        }
+        if !record.prepared {
+            return Ok(Outcome::Pending);
         }
         let needed = self.needed(&record.request.roots);
         for goal in &needed {
@@ -338,7 +440,7 @@ impl Train {
             .map(|(goal, _)| goal.derivation.as_str())
             .collect();
         for (id, record) in &self.requests {
-            if !record.admitted {
+            if !record.admitted || !record.prepared {
                 continue;
             }
             if self.outcome(id)? != Outcome::Pending {

@@ -29,10 +29,16 @@ pub mod preparation;
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
 pub trait Backend: Send + Sync + 'static {
+    /// Bounded graph inspection. The coordinator runs this on dedicated planners.
     fn plan(&self, request: &Request) -> Result<Graph, String>;
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String>;
     fn valid(&self, goal: &Goal, definition: &Definition) -> Result<bool, String>;
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String>;
+    /// Release only this request's roots; other owners must retain their own pins.
+    /// Backends without request-scoped roots conservatively retain them.
+    fn release(&self, _request: &Request, _graph: &Graph) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Configuration is deployment-owned and immutable for this coordinator lifetime.
@@ -45,6 +51,19 @@ pub struct Config {
     pub workers: usize,
     pub queue_limit: usize,
     pub aging_seconds: u64,
+    /// Separate bounded capacity for graph preparation, never build-worker slots.
+    #[serde(default = "default_planning_workers")]
+    pub planning_workers: usize,
+    /// Reply deadline. A tardy backend still occupies its slot until it exits.
+    #[serde(default = "default_planning_timeout")]
+    pub planning_timeout_seconds: u64,
+}
+
+fn default_planning_workers() -> usize {
+    1
+}
+fn default_planning_timeout() -> u64 {
+    180
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +78,7 @@ pub enum Command {
     Register(Request),
     Admit(String),
     Retry(String),
+    Retire(String),
     Status(String),
     Cancel(String),
     Fence(String),
@@ -247,6 +267,134 @@ fn save(config: &Config, train: &Train) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize, Deserialize)]
+struct Archive {
+    version: u32,
+    policy: String,
+    record: RequestRecord,
+    outcome: Outcome,
+    graph: Graph,
+    roots_released: bool,
+}
+
+fn archive_path(config: &Config, attempt: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    config
+        .state_dir
+        .join("archive")
+        .join(format!("{:x}.json", Sha256::digest(attempt.as_bytes())))
+}
+
+fn read_archive(config: &Config, attempt: &str) -> Result<Option<Archive>, String> {
+    match File::open(archive_path(config, attempt)) {
+        Ok(file) => {
+            let archive: Archive = serde_json::from_reader(file).map_err(|e| e.to_string())?;
+            if archive.version != VERSION
+                || archive.policy != config.policy
+                || archive.record.request.attempt != attempt
+            {
+                return Err("archive identity mismatch".into());
+            }
+            Ok(Some(archive))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn save_archive(config: &Config, archive: &Archive) -> Result<(), String> {
+    crate::fsutil::atomic_write(
+        &archive_path(config, &archive.record.request.attempt),
+        &serde_json::to_vec(archive).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn retire(
+    config: &Config,
+    train: &mut Train,
+    backend: &dyn Backend,
+    attempt: &str,
+) -> Result<Reply, String> {
+    let mut archive = if train.requests.contains_key(attempt) {
+        let outcome = train.outcome(attempt)?;
+        let graph = train.retained_graph(attempt)?;
+        let mut next = train.clone();
+        let record = next.retire(attempt)?;
+        let archive = Archive {
+            version: VERSION,
+            policy: config.policy.clone(),
+            record,
+            outcome,
+            graph,
+            roots_released: false,
+        };
+        // Evidence first, membership second, roots last. Every interrupted phase is retryable.
+        save_archive(config, &archive)?;
+        save(config, &next)?;
+        *train = next;
+        archive
+    } else {
+        read_archive(config, attempt)?.ok_or("unknown request")?
+    };
+    if !archive.roots_released {
+        backend.release(&archive.record.request, &archive.graph)?;
+        archive.roots_released = true;
+        save_archive(config, &archive)?;
+    }
+    Ok(archive_reply(config, train, &archive))
+}
+
+fn archive_reply(config: &Config, train: &Train, archive: &Archive) -> Reply {
+    let mut result = reply(config, train, Some(archive.outcome.clone()), None);
+    result.outputs = archive
+        .record
+        .request
+        .roots
+        .iter()
+        .filter_map(|goal| {
+            archive
+                .graph
+                .get(goal)
+                .map(|d| (goal.clone(), d.output_path.clone()))
+        })
+        .collect();
+    result
+}
+
+struct Planner {
+    worker: thread::JoinHandle<()>,
+    started: std::time::Instant,
+    timed_out: bool,
+}
+
+fn write_reply(stream: &mut UnixStream, result: &Reply) -> Result<(), String> {
+    let mut raw = serde_json::to_vec(result).map_err(|e| e.to_string())?;
+    raw.push(b'\n');
+    // A disconnect never undoes a durable operation.
+    let _ = stream.write_all(&raw);
+    Ok(())
+}
+
+fn flush_waiters(
+    config: &Config,
+    train: &Train,
+    waiters: &mut BTreeMap<String, Vec<UnixStream>>,
+    attempt: &str,
+) -> Result<(), String> {
+    if let Some(streams) = waiters.remove(attempt) {
+        let outcome = train.outcome(attempt)?;
+        let mut result = reply(config, train, Some(outcome.clone()), Some(attempt));
+        if let Outcome::Failed(error) = outcome {
+            result.error = Some(error);
+        }
+        for mut stream in streams {
+            write_reply(&mut stream, &result)?;
+        }
+    }
+    Ok(())
+}
+
 /// Run one exclusive coordinator. No evaluation lease is held by this service.
 pub fn serve(
     config: Config,
@@ -257,10 +405,13 @@ pub fn serve(
         || config.workers > 64
         || config.queue_limit == 0
         || config.policy.is_empty()
+        || !(1..=16).contains(&config.planning_workers)
+        || !(1..=86_400).contains(&config.planning_timeout_seconds)
     {
         return Err("invalid coordinator capacity or policy".into());
     }
     private_dir(&config.state_dir)?;
+    private_dir(&config.state_dir.join("archive"))?;
     private_dir(config.socket.parent().ok_or("socket has no parent")?)?;
     let lease = OpenOptions::new()
         .create(true)
@@ -295,16 +446,15 @@ pub fn serve(
         }
         Err(error) => return Err(error.to_string()),
     };
-    if train.version != VERSION || train.policy != config.policy {
+    if train.version != VERSION
+        || train.policy != config.policy
+        || train.aging_seconds != config.aging_seconds
+    {
         return Err("persisted train protocol/policy mismatch; retain the old coordinator until its requests finish".into());
     }
     let mut valid = BTreeSet::new();
-    for record in train.requests.values() {
-        let graph = train
-            .nodes
-            .iter()
-            .map(|(g, n)| (g.clone(), n.definition.clone()))
-            .collect();
+    for (attempt, record) in &train.requests {
+        let graph = train.retained_graph(attempt)?;
         backend.retain(&record.request, &graph)?;
     }
     for (goal, node) in &train.nodes {
@@ -329,17 +479,47 @@ pub fn serve(
     fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o600))
         .map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let (completed_tx, completed_rx) = mpsc::channel::<(Dispatch, Result<(), String>)>();
+    let (completed_tx, completed_rx) =
+        mpsc::channel::<(Dispatch, Result<(), String>, BTreeSet<Goal>)>();
+    let (planned_tx, planned_rx) = mpsc::channel::<(String, Result<Graph, String>)>();
+    let mut planners: BTreeMap<String, Planner> = BTreeMap::new();
+    let mut waiters: BTreeMap<String, Vec<UnixStream>> = BTreeMap::new();
     let mut workers = Vec::new();
-    while !stop.load(Ordering::Relaxed) || train.running() != 0 {
-        while let Ok((dispatch, result)) = completed_rx.try_recv() {
+    while !stop.load(Ordering::Relaxed) || train.running() != 0 || !planners.is_empty() {
+        while let Ok((attempt, result)) = planned_rx.try_recv() {
+            let planner = planners.remove(&attempt).ok_or("unknown planner receipt")?;
+            let _ = planner.worker.join();
+            let mut next = train.clone();
+            if !planner.timed_out && !next.requests[&attempt].cancelled {
+                let request = next.requests[&attempt].request.clone();
+                if let Err(error) = result.and_then(|graph| next.submit(request, graph, now())) {
+                    next = train.clone();
+                    next.preparation_failed(&attempt, error)?;
+                }
+                save(&config, &next)?;
+                train = next;
+            }
+            flush_waiters(&config, &train, &mut waiters, &attempt)?;
+        }
+        for (attempt, planner) in &mut planners {
+            if !planner.timed_out
+                && planner.started.elapsed() >= Duration::from_secs(config.planning_timeout_seconds)
+            {
+                planner.timed_out = true;
+                train.preparation_failed(
+                    attempt,
+                    "graph preparation deadline exceeded; retry after the planner exits".into(),
+                )?;
+                save(&config, &train)?;
+                flush_waiters(&config, &train, &mut waiters, attempt)?;
+            }
+        }
+        while let Ok((dispatch, result, valid)) = completed_rx.try_recv() {
             train.finish(&dispatch, result);
             // One native builder may have produced multiple selected outputs.
             // Store evidence, rather than the worker's exit code, satisfies them.
-            for (goal, node) in &mut train.nodes {
-                if goal.derivation == dispatch.goal.derivation
-                    && backend.valid(goal, &node.definition)?
-                {
+            for goal in valid {
+                if let Some(node) = train.nodes.get_mut(&goal) {
                     node.state = NodeState::Complete;
                 }
             }
@@ -348,7 +528,7 @@ pub fn serve(
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
         if !stop.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((mut stream, _)) => {
+                Ok((stream, _)) => {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(5)))
                         .map_err(|e| e.to_string())?;
@@ -366,10 +546,41 @@ pub fn serve(
                                     "incompatible coordinator protocol or execution policy".into(),
                                 );
                             }
+                            let subject = match &envelope.command {
+                                Command::Submit(request) | Command::Register(request) => {
+                                    Some(request.attempt.clone())
+                                }
+                                _ => None,
+                            };
+                            if let Command::Retry(attempt) | Command::Retire(attempt) =
+                                &envelope.command
+                            {
+                                if planners.contains_key(attempt) {
+                                    return Err("request graph planner has not exited".into());
+                                }
+                            }
+                            if subject.as_ref().is_some_and(|id| {
+                                waiters.get(id).is_some_and(|streams| streams.len() >= 8)
+                            }) {
+                                return Err("too many waiting registration clients".into());
+                            }
                             apply(&config, &mut train, backend.as_ref(), envelope.command)
+                                .map(|result| (result, subject))
                         });
+                    let mut endpoint = Some(stream);
                     let reply = match result {
-                        Ok(reply) => reply,
+                        Ok((result, subject)) => {
+                            if let Some(attempt) = subject {
+                                let record = &train.requests[&attempt];
+                                if !record.prepared && train.outcome(&attempt)? == Outcome::Pending
+                                {
+                                    waiters.entry(attempt).or_default().push(
+                                        endpoint.take().ok_or("missing registration endpoint")?,
+                                    );
+                                }
+                            }
+                            result
+                        }
                         Err(error) => Reply {
                             version: VERSION,
                             policy: config.policy.clone(),
@@ -380,13 +591,57 @@ pub fn serve(
                             outputs: BTreeMap::new(),
                         },
                     };
-                    let mut raw = serde_json::to_vec(&reply).map_err(|e| e.to_string())?;
-                    raw.push(b'\n');
-                    // The durable operation remains committed after a disconnect.
-                    let _ = stream.write_all(&raw);
+                    if let Some(mut stream) = endpoint {
+                        write_reply(&mut stream, &reply)?;
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error.to_string()),
+            }
+            for attempt in waiters.keys().cloned().collect::<Vec<_>>() {
+                if train.requests[&attempt].prepared || train.outcome(&attempt)? != Outcome::Pending
+                {
+                    flush_waiters(&config, &train, &mut waiters, &attempt)?;
+                }
+            }
+            while planners.len() < config.planning_workers {
+                let attempt = train
+                    .requests
+                    .iter()
+                    .filter(|(id, record)| {
+                        !record.prepared
+                            && !planners.contains_key(*id)
+                            && train.outcome(id).ok() == Some(Outcome::Pending)
+                    })
+                    .min_by_key(|(_, record)| record.sequence)
+                    .map(|(id, _)| id.clone());
+                let Some(attempt) = attempt else {
+                    break;
+                };
+                let request = train.requests[&attempt].request.clone();
+                let backend = Arc::clone(&backend);
+                let tx = planned_tx.clone();
+                let id = attempt.clone();
+                let worker = thread::spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let graph = backend.plan(&request)?;
+                        if graph.len() > 200_000 {
+                            return Err("backend graph limit exceeded".into());
+                        }
+                        backend.retain(&request, &graph)?;
+                        Ok(graph)
+                    }))
+                    .unwrap_or_else(|_| Err("backend planner panicked".into()));
+                    let _ = tx.send((id, result));
+                });
+                planners.insert(
+                    attempt,
+                    Planner {
+                        worker,
+                        started: std::time::Instant::now(),
+                        timed_out: false,
+                    },
+                );
             }
             while train.running() < config.workers {
                 let Some(dispatch) = train.dispatch(now())? else {
@@ -395,22 +650,44 @@ pub fn serve(
                 save(&config, &train)?; // Receipt exists before any worker starts.
                 let backend = Arc::clone(&backend);
                 let tx = completed_tx.clone();
+                let siblings: Graph = train
+                    .nodes
+                    .iter()
+                    .filter(|(goal, _)| goal.derivation == dispatch.goal.derivation)
+                    .map(|(goal, node)| (goal.clone(), node.definition.clone()))
+                    .collect();
                 workers.push(thread::spawn(move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        backend.realise(&dispatch)?;
-                        if !backend.valid(&dispatch.goal, &dispatch.definition)? {
-                            return Err(
-                                "backend returned success without valid output evidence".into()
-                            );
-                        }
-                        Ok(())
-                    }))
-                    .unwrap_or_else(|_| Err("backend worker panicked".into()));
-                    let _ = tx.send((dispatch, result));
+                    let (result, valid) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut result = backend.realise(&dispatch);
+                            let mut valid = BTreeSet::new();
+                            for (goal, definition) in siblings {
+                                match backend.valid(&goal, &definition) {
+                                    Ok(true) => {
+                                        valid.insert(goal);
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => result = Err(error),
+                                }
+                            }
+                            if result.is_ok() && !valid.contains(&dispatch.goal) {
+                                result =
+                                    Err("backend returned success without valid output evidence"
+                                        .into());
+                            }
+                            (result, valid)
+                        }))
+                        .unwrap_or_else(|_| {
+                            (Err("backend worker panicked".into()), BTreeSet::new())
+                        });
+                    let _ = tx.send((dispatch, result, valid));
                 }));
             }
         }
         thread::sleep(Duration::from_millis(10));
+    }
+    for attempt in waiters.keys().cloned().collect::<Vec<_>>() {
+        flush_waiters(&config, &train, &mut waiters, &attempt)?;
     }
     for worker in workers {
         let _ = worker.join();
@@ -437,6 +714,11 @@ fn apply(
     match &command {
         Command::Inspect => return Ok(reply(config, train, None, None)),
         Command::Status(attempt) => {
+            if !train.requests.contains_key(attempt) {
+                return read_archive(config, attempt)?
+                    .map(|archive| archive_reply(config, train, &archive))
+                    .ok_or("unknown request".into());
+            }
             return Ok(reply(
                 config,
                 train,
@@ -448,6 +730,7 @@ fn apply(
             train.authorize_activation(attempt)?;
             return Ok(reply(config, train, None, None));
         }
+        Command::Retire(attempt) => return retire(config, train, backend, attempt),
         _ => {}
     }
     // Failed persistence never makes a new operation visible to dispatch.
@@ -462,7 +745,7 @@ fn apply(
     match command {
         Command::Submit(request) | Command::Register(request) => {
             if !next.requests.contains_key(&request.attempt)
-                && next.requests.len() >= config.queue_limit
+                && active_requests(&next)? >= config.queue_limit
             {
                 return Err("coordinator request limit reached".into());
             }
@@ -471,24 +754,30 @@ fn apply(
                     return Err("attempt has a different frozen identity".into());
                 }
             } else {
+                if read_archive(config, &request.attempt)?.is_some() {
+                    return Err(
+                        "retired attempt cannot be resubmitted; use a new attempt identity".into(),
+                    );
+                }
                 backend.retain(&request, &Graph::new())?;
-                let graph = backend.plan(&request)?;
-                if graph.len() > 200_000 {
-                    return Err("backend graph limit exceeded".into());
-                }
-                // Retention precedes journal commit. A failed commit may leave extra
-                // roots but cannot expose unrooted work to workers or GC.
-                backend.retain(&request, &graph)?;
-                next.submit(request.clone(), graph, now())?;
-                if held {
-                    next.hold(&request.attempt)?;
-                }
+                next.register(request.clone(), !held)?;
             }
             outcome = Some(next.outcome(&request.attempt)?);
         }
         Command::Status(attempt) => outcome = Some(next.outcome(&attempt)?),
         Command::Admit(attempt) => next.admit(&attempt)?,
-        Command::Retry(attempt) => next.retry(&attempt)?,
+        Command::Retry(attempt) => {
+            if next.outcome(&attempt)? != Outcome::Pending
+                && active_requests(&next)? >= config.queue_limit
+            {
+                return Err("coordinator request limit reached".into());
+            }
+            backend.retain(
+                &next.requests[&attempt].request,
+                &next.retained_graph(&attempt)?,
+            )?;
+            next.retry(&attempt)?;
+        }
         Command::Cancel(attempt) => {
             next.cancel(&attempt)?;
             outcome = Some(next.outcome(&attempt)?);
@@ -499,10 +788,25 @@ fn apply(
         Command::ReleaseFence(token) => next.release_fence(&token)?,
         Command::AuthorizeActivation(attempt) => next.authorize_activation(&attempt)?,
         Command::Inspect => {}
+        Command::Retire(_) => unreachable!("handled before mutation"),
     }
     save(config, &next)?;
     *train = next;
     Ok(reply(config, train, outcome, subject.as_deref()))
+}
+
+fn active_requests(train: &Train) -> Result<usize, String> {
+    train
+        .requests
+        .keys()
+        .map(|id| train.outcome(id))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|outcomes| {
+            outcomes
+                .into_iter()
+                .filter(|outcome| *outcome == Outcome::Pending)
+                .count()
+        })
 }
 
 fn reply(config: &Config, train: &Train, outcome: Option<Outcome>, subject: Option<&str>) -> Reply {
@@ -513,11 +817,11 @@ fn reply(config: &Config, train: &Train, outcome: Option<Outcome>, subject: Opti
                 .request
                 .roots
                 .iter()
-                .map(|goal| {
-                    (
-                        goal.clone(),
-                        train.nodes[goal].definition.output_path.clone(),
-                    )
+                .filter_map(|goal| {
+                    train
+                        .nodes
+                        .get(goal)
+                        .map(|node| (goal.clone(), node.definition.output_path.clone()))
                 })
                 .collect()
         })

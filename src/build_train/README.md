@@ -17,6 +17,18 @@ backend; consumers retain fleet policy and deployment stages.
 - `Register` joins and prepares the graph without admitting that request's work.
   `Admit` follows the caller's live safety stages. `Submit` is the combined API
   for callers that have already passed admission.
+- Intake reserves its exact identity and activation order durably before planning.
+  Dedicated bounded planners leave completions and control commands responsive.
+  Planning deadlines fail only that request; a tardy planner retains its slot and
+  roots until it exits. Retry then returns the request to held admission.
+- Capacity counts pending requests, including held/preparing requests, rather than
+  terminal history. Explicit `Retire` archives terminal identity, outcome and graph
+  before removing membership and releasing request-owned roots. Status remains
+  available from the archive and a retired attempt cannot be reused. Retirement
+  rejects live planners, running interests and fence owners. Release failure is
+  retryable after restart. Other requests and caller-owned attempt roots retain
+  their independent pins; backends without scoped release conservatively retain
+  roots. Activation tombstones prevent retirement from promoting an older request.
 - Only ready dependency-frontier goals dispatch. Shared-first prioritizes pending
   work; bounded aging eventually gives oldest-ready precedence. Ready roots win
   equal-priority ties so requests can finish independently. Running work continues.
