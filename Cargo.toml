@@ -1,6 +1,6 @@
 [package]
 name = "fleetix"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"

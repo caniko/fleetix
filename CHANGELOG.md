@@ -5,13 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Build-train candidate (unreleased)
+## Build-train candidate (unreleased; next minor 0.5.0)
 
 - Add a dependency-aware shared-construction library and optional authenticated
   builder-local coordinator, with late joins, bounded fairness, independent
   request completion, exact-output sharing, restart reconciliation, cancellation,
   durable activation fences and exact preparation receipts. The implementation
   awaits release qualification; real Nix/performance acceptance remains separate.
+- Prepare graphs on bounded independent planners, keep control commands responsive,
+  and recover held preparation across restart. Count active requests separately
+  from terminal history; explicit retirement archives evidence before releasing
+  request-owned roots and preserves activation supersession tombstones.
+- Reserve a new minor after published `0.4.0`; the candidate version is not a
+  publication claim and cannot replace that registry release before qualification.
 
 ## [Unreleased]
 
@@ -28,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   management/publication fields or use their available defaults. Serialized
   topology remains compatible through defaulted fields. These APIs require a
   future release; they are not part of published `0.3.0`.
+
+## [0.4.0] - 2026-10-02
+
+- The independently published topology/GPU/feature-policy release is recorded by
+  tag `0.4.0`. It does not include the build-train runtime. Its full release notes
+  remain in that tagged source; build-train publication uses the next minor.
 
 ## [0.3.0] - 2026-09-30
 

@@ -409,6 +409,27 @@ fn durable_unprepared_intake_resumes_after_restart_in_held_admission() {
 }
 
 #[test]
+fn incompatible_journal_is_rejected_without_rewriting_evidence() {
+    let mut server = Server::start();
+    server.shutdown();
+    let state_path = server.config.state_dir.join("train.json");
+    let mut state: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&state_path).unwrap()).unwrap();
+    state["version"] = serde_json::json!(1);
+    let evidence = serde_json::to_vec(&state).unwrap();
+    std::fs::write(&state_path, &evidence).unwrap();
+    let error = serve(
+        server.config.clone(),
+        server.backend.clone(),
+        server.stop.clone(),
+    )
+    .unwrap_err();
+    assert!(error.contains("persisted train protocol/policy mismatch"));
+    assert_eq!(std::fs::read(&state_path).unwrap(), evidence);
+    assert!(!server.config.socket.exists());
+}
+
+#[test]
 fn preparation_deadline_retains_planner_capacity_and_requires_explicit_retry() {
     let mut server = Server::start();
     server.shutdown();

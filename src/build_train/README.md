@@ -18,6 +18,9 @@ backend; consumers retain fleet policy and deployment stages.
   `Admit` follows the caller's live safety stages. `Submit` is the combined API
   for callers that have already passed admission.
 - Intake reserves its exact identity and activation order durably before planning.
+  Protocol/journal version 2 prevents older coordinators from interpreting held
+  unprepared requests as fully planned work. Version 1 journals fail closed and
+  remain untouched; finish their requests with their original coordinator policy.
   Dedicated bounded planners leave completions and control commands responsive.
   Planning deadlines fail only that request; a tardy planner retains its slot and
   roots until it exits. Retry then returns the request to held admission.

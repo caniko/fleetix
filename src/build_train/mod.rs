@@ -12,8 +12,10 @@ use std::fmt;
 #[cfg(all(unix, feature = "build-train-runtime"))]
 pub mod runtime;
 
-/// Version of the durable state and coordinator protocol.
-pub const VERSION: u32 = 1;
+/// Version of the durable state and coordinator protocol. Version 2 introduces
+/// unprepared durable requests and archives; version 1 coordinators must never
+/// interpret these requests as complete graph intake.
+pub const VERSION: u32 = 2;
 
 /// Exact backend derivation and named output, never a package name or revision.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
