@@ -1,6 +1,6 @@
 [package]
 name = "fleetix"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
@@ -51,6 +51,7 @@ tempfile = "3"
 sha2 = "0.10"
 toml_edit = { version = "0.23", features = ["serde"], optional = true }
 fs2 = { version = "0.4", optional = true }
+libc = { version = "0.2", optional = true }
 
 [features]
 default = ["cli"]
@@ -58,6 +59,7 @@ cli = ["dep:clap", "mcp", "pkl", "health"]
 pkl = ["dep:pklx", "dep:tokio"]
 health = ["pkl"]
 mcp = ["dep:toml_edit", "dep:fs2"]
+build-train-runtime = ["dep:fs2", "dep:libc"]
 
 [dependencies.clap]
 version = "4"

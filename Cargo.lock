@@ -351,11 +351,12 @@ dependencies = [
 
 [[package]]
 name = "fleetix"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "fs2",
  "indexmap",
+ "libc",
  "miette",
  "pklx",
  "serde",

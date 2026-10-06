@@ -1,0 +1,1098 @@
+#![cfg(all(unix, feature = "build-train-runtime"))]
+use fleetix::build_train::{runtime::*, *};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
+
+fn goal(name: &str) -> Goal {
+    Goal {
+        derivation: name.into(),
+        output: "out".into(),
+    }
+}
+fn request(id: &str, target: &str) -> Request {
+    Request {
+        attempt: id.into(),
+        target: target.into(),
+        source: format!("frozen-{id}"),
+        roots: BTreeSet::from([goal(target)]),
+        activates: true,
+    }
+}
+
+#[derive(Default)]
+struct TestBackend {
+    valid: Mutex<BTreeSet<Goal>>,
+    started: Mutex<Vec<String>>,
+    released: Mutex<bool>,
+    gate: Condvar,
+    block_plan: AtomicBool,
+    plan_entered: AtomicBool,
+    plan_released: Mutex<bool>,
+    plan_gate: Condvar,
+    release_fails: AtomicBool,
+    released_requests: Mutex<Vec<String>>,
+}
+impl Backend for TestBackend {
+    fn plan(&self, request: &Request) -> Result<Graph, String> {
+        if request.target == "murph" && self.block_plan.load(Ordering::Relaxed) {
+            self.plan_entered.store(true, Ordering::Relaxed);
+            let mut released = self.plan_released.lock().unwrap();
+            while !*released {
+                released = self.plan_gate.wait(released).unwrap();
+            }
+        }
+        if request.target == "multi" {
+            let mut dev = goal("multi");
+            dev.output = "dev".into();
+            return Ok([goal("multi"), dev]
+                .into_iter()
+                .map(|goal| {
+                    let path = format!("/store/multi-{}", goal.output);
+                    (
+                        goal,
+                        Definition {
+                            output_path: path,
+                            dependencies: BTreeSet::new(),
+                            operation: Operation::Build,
+                        },
+                    )
+                })
+                .collect());
+        }
+        if request.target == "large" {
+            return Ok(BTreeMap::from([(
+                goal("large"),
+                Definition {
+                    output_path: format!("/store/{}", "x".repeat(800_000)),
+                    dependencies: BTreeSet::new(),
+                    operation: Operation::Build,
+                },
+            )]));
+        }
+        if request.target == "oversized-output" {
+            return Ok(BTreeMap::from([(
+                goal("oversized-output"),
+                Definition {
+                    output_path: format!("/store/{}", "x".repeat(1_100_000)),
+                    dependencies: BTreeSet::new(),
+                    operation: Operation::Build,
+                },
+            )]));
+        }
+        if request.target == "many-roots" {
+            return Ok(request
+                .roots
+                .iter()
+                .cloned()
+                .map(|goal| {
+                    let path = goal.derivation.trim_end_matches(".drv").to_owned();
+                    (
+                        goal,
+                        Definition {
+                            output_path: path,
+                            dependencies: BTreeSet::new(),
+                            operation: Operation::Build,
+                        },
+                    )
+                })
+                .collect());
+        }
+        if request.target == "verbose-failure" {
+            return Err(format!("backend diagnostic: {}", "é".repeat(600_000)));
+        }
+        let entries: Vec<(&str, Vec<&str>)> = match request.target.as_str() {
+            "atlas" => vec![
+                ("atlas", vec!["busy", "exclusive", "shared"]),
+                ("busy", vec![]),
+                ("exclusive", vec![]),
+                ("shared", vec![]),
+            ],
+            "murph" => vec![("murph", vec!["shared"]), ("shared", vec![])],
+            _ => return Err("unsupported test target".into()),
+        };
+        Ok(entries
+            .into_iter()
+            .map(|(name, deps)| {
+                (
+                    goal(name),
+                    Definition {
+                        output_path: format!("/store/{name}"),
+                        dependencies: deps.into_iter().map(goal).collect(),
+                        operation: Operation::Build,
+                    },
+                )
+            })
+            .collect())
+    }
+    fn retain(&self, _: &Request, _: &Graph) -> Result<(), String> {
+        Ok(())
+    }
+    fn valid(&self, goal: &Goal, _: &Definition) -> Result<bool, String> {
+        Ok(self.valid.lock().unwrap().contains(goal))
+    }
+    fn realise(&self, dispatch: &Dispatch) -> Result<(), String> {
+        self.started
+            .lock()
+            .unwrap()
+            .push(dispatch.goal.derivation.clone());
+        if dispatch.goal == goal("busy") {
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.gate.wait(released).unwrap();
+            }
+        }
+        self.valid.lock().unwrap().insert(dispatch.goal.clone());
+        if dispatch.goal.derivation == "multi" {
+            let mut other = dispatch.goal.clone();
+            other.output = if other.output == "out" { "dev" } else { "out" }.into();
+            self.valid.lock().unwrap().insert(other);
+        }
+        Ok(())
+    }
+    fn release(&self, request: &Request, _: &Graph) -> Result<(), String> {
+        if self.release_fails.load(Ordering::Relaxed) {
+            return Err("injected root release failure".into());
+        }
+        self.released_requests
+            .lock()
+            .unwrap()
+            .push(request.attempt.clone());
+        Ok(())
+    }
+}
+
+fn eventually(mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !predicate() {
+        assert!(
+            Instant::now() < deadline,
+            "coordinator did not reach expected state"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+struct Server {
+    config: Config,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<Result<(), String>>>,
+    backend: Arc<TestBackend>,
+    _temp: tempfile::TempDir,
+}
+impl Server {
+    fn start() -> Self {
+        Self::with_limit(8)
+    }
+    fn with_limit(queue_limit: usize) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            socket: temp.path().join("runtime/coordinator.sock"),
+            state_dir: temp.path().join("state"),
+            policy: "exact-policy".into(),
+            workers: 1,
+            queue_limit,
+            aging_seconds: 60,
+            planning_workers: 1,
+            planning_timeout_seconds: 10,
+        };
+        let backend = Arc::new(TestBackend::default());
+        let mut server = Self {
+            config,
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            backend,
+            _temp: temp,
+        };
+        server.restart();
+        server
+    }
+    fn client(&self) -> Client {
+        Client {
+            socket: self.config.socket.clone(),
+            policy: self.config.policy.clone(),
+        }
+    }
+    fn restart(&mut self) {
+        self.stop.store(false, Ordering::Relaxed);
+        let config = self.config.clone();
+        let backend = self.backend.clone();
+        let stop = self.stop.clone();
+        self.worker = Some(std::thread::spawn(move || serve(config, backend, stop)));
+        eventually(|| self.client().call(Command::Inspect).is_ok());
+    }
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        *self.backend.released.lock().unwrap() = true;
+        self.backend.gate.notify_all();
+        *self.backend.plan_released.lock().unwrap() = true;
+        self.backend.plan_gate.notify_all();
+        self.worker.take().unwrap().join().unwrap().unwrap();
+    }
+}
+
+fn responsive(client: &Client, command: Command) -> Reply {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let client = client.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(client.call(command));
+    });
+    rx.recv_timeout(Duration::from_secs(1))
+        .expect("control plane blocked behind graph preparation")
+        .unwrap()
+}
+
+#[test]
+fn oversized_root_evidence_fails_before_admission_and_keeps_status_available() {
+    let server = Server::start();
+    let client = server.client();
+    let error = client
+        .call(Command::Register(request("oversized", "oversized-output")))
+        .unwrap_err();
+    assert!(
+        error.contains("root output evidence exceeds protocol limit"),
+        "{error}"
+    );
+    let status = responsive(&client, Command::Status("oversized".into()));
+    assert!(matches!(status.outcome, Some(Outcome::Failed(_))));
+    assert!(status.outputs.is_empty());
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    responsive(&client, Command::Inspect);
+}
+
+#[test]
+fn accepted_multi_root_frame_cannot_create_an_undeliverable_reply() {
+    let server = Server::start();
+    let client = server.client();
+    let mut request = request("many", "many-roots");
+    request.roots = (0..10_000)
+        .map(|i| {
+            goal(&format!(
+                "/nix/store/00000000000000000000000000000000-package-{i:05}.drv"
+            ))
+        })
+        .collect();
+    let envelope = serde_json::json!({
+        "version": VERSION, "policy": client.policy, "command": Command::Register(request.clone())
+    });
+    assert!(serde_json::to_vec(&envelope).unwrap().len() + 1 < 1024 * 1024);
+    let error = client.call(Command::Register(request)).unwrap_err();
+    assert!(
+        error.contains("root output evidence exceeds protocol limit"),
+        "{error}"
+    );
+    let status = responsive(&client, Command::Status("many".into()));
+    assert!(matches!(status.outcome, Some(Outcome::Failed(_))));
+    assert!(status.outputs.is_empty());
+    assert!(server.backend.started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn oversized_failure_details_are_bounded_without_losing_terminal_status() {
+    let server = Server::start();
+    let client = server.client();
+    let error = client
+        .call(Command::Register(request("verbose", "verbose-failure")))
+        .unwrap_err();
+    assert!(error.starts_with("backend diagnostic:"), "{error}");
+    assert!(error.contains("truncated"));
+    assert!(error.len() < 8192);
+    let status = responsive(&client, Command::Status("verbose".into()));
+    let Some(Outcome::Failed(detail)) = status.outcome else {
+        panic!("missing terminal failure");
+    };
+    assert!(detail.starts_with("backend diagnostic:"));
+    assert!(detail.contains("truncated"));
+    assert!(detail.len() < 8192);
+    let state: Train =
+        serde_json::from_slice(&std::fs::read(server.config.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    assert!(
+        state.requests["verbose"]
+            .preparation_error
+            .as_ref()
+            .unwrap()
+            .len()
+            > 1024 * 1024
+    );
+    responsive(&client, Command::Inspect);
+}
+
+#[test]
+fn unread_reply_does_not_block_other_control_clients() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let mut server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Submit(request("large", "large")))
+        .unwrap();
+    client.wait("large", &AtomicBool::new(false)).unwrap();
+    let mut unread = UnixStream::connect(&server.config.socket).unwrap();
+    let mut raw = serde_json::to_vec(&serde_json::json!({
+        "version": VERSION, "policy": client.policy, "command": Command::Status("large".into())
+    }))
+    .unwrap();
+    raw.push(b'\n');
+    unread.write_all(&raw).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(client.call(Command::Inspect));
+    });
+    let result = rx.recv_timeout(Duration::from_secs(1));
+    drop(unread);
+    server.shutdown();
+    assert!(
+        result.is_ok(),
+        "control plane blocked behind unread reply: {result:?}"
+    );
+    result.unwrap().unwrap();
+}
+
+#[test]
+fn oversized_legacy_fence_returns_a_diagnostic_and_survives_restart() {
+    let mut server = Server::start();
+    server.shutdown();
+    let mut state = Train::new(server.config.policy.clone(), server.config.aging_seconds);
+    // Version 2 previously accepted this identity within a one-MiB request.
+    // Its fence repeats the identity, so the retained reply no longer fits.
+    let mut legacy = request("legacy", "atlas");
+    legacy.attempt = "x".repeat(600_000);
+    state.register(legacy.clone(), false).unwrap();
+    let token = state.fence(&legacy.attempt).unwrap();
+    std::fs::write(
+        server.config.state_dir.join("train.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    server.stop.store(false, Ordering::Relaxed);
+    let config = server.config.clone();
+    let backend = server.backend.clone();
+    let stop = server.stop.clone();
+    let worker = std::thread::spawn(move || serve(config, backend, stop));
+    eventually(|| server.config.socket.exists());
+    let first = server.client().call(Command::Inspect);
+    let second = server.client().call(Command::Inspect);
+    server.stop.store(true, Ordering::Relaxed);
+    let exit = worker.join().unwrap();
+    for response in [first, second] {
+        let error = response.unwrap_err();
+        assert!(
+            error.contains("coordinator reply exceeds protocol limit"),
+            "{error}"
+        );
+        assert!(error.contains("journal"), "{error}");
+    }
+    exit.unwrap();
+    let retained: Train =
+        serde_json::from_slice(&std::fs::read(server.config.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    assert_eq!(retained.fence.unwrap().token, token);
+    assert!(server.backend.started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn partial_request_does_not_block_status_cancellation_fences_or_worker_completion() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let mut server = Server::start();
+    let client = server.client();
+    client.call(Command::Submit(request("a", "atlas"))).unwrap();
+    eventually(|| server.backend.started.lock().unwrap().as_slice() == ["busy"]);
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    let mut partial = UnixStream::connect(&server.config.socket).unwrap();
+    partial.write_all(b"{").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let inspecting = client.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(inspecting.call(Command::Status("a".into())));
+    });
+    let status = rx.recv_timeout(Duration::from_secs(1));
+    if status.is_err() {
+        drop(partial);
+        server.shutdown();
+        panic!("status blocked behind a partial request: {status:?}");
+    }
+    assert_eq!(status.unwrap().unwrap().outcome, Some(Outcome::Pending));
+    assert_eq!(
+        responsive(&client, Command::Cancel("m".into())).outcome,
+        Some(Outcome::Cancelled)
+    );
+    let fence = responsive(&client, Command::Fence("a".into()))
+        .fence
+        .unwrap();
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| responsive(&client, Command::Inspect).running == 0);
+    responsive(&client, Command::ReleaseFence(fence.token));
+    drop(partial);
+    server.shutdown();
+}
+
+#[test]
+fn trickling_request_has_one_absolute_delivery_deadline() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut server = Server::start();
+    let mut stream = UnixStream::connect(&server.config.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(7)))
+        .unwrap();
+    let mut sending = stream.try_clone().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let writer = std::thread::spawn(move || {
+        while !stopping.load(Ordering::Relaxed) && sending.write_all(b" ").is_ok() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let started = Instant::now();
+    let result = stream.read(&mut [0u8; 1]);
+    let elapsed = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    drop(stream);
+    server.shutdown();
+    // Closing with unread bytes may deliver ECONNRESET rather than clean EOF.
+    // Either proves expiry; a timeout or a protocol response does not.
+    let closed = match &result {
+        Ok(0) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::ConnectionReset,
+        _ => false,
+    };
+    assert!(closed, "trickling request was never expired: {result:?}");
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "delivery deadline reset: {elapsed:?}"
+    );
+}
+
+#[test]
+fn blocked_planning_does_not_block_completion_status_cancellation_or_fences() {
+    let server = Server::start();
+    let client = server.client();
+    client.call(Command::Submit(request("a", "atlas"))).unwrap();
+    eventually(|| server.backend.started.lock().unwrap().as_slice() == ["busy"]);
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    let joining = client.clone();
+    let registration =
+        std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+    eventually(|| server.backend.plan_entered.load(Ordering::Relaxed));
+    assert_eq!(
+        responsive(&client, Command::Status("m".into())).outcome,
+        Some(Outcome::Pending)
+    );
+    assert_eq!(
+        responsive(&client, Command::Cancel("m".into())).outcome,
+        Some(Outcome::Cancelled)
+    );
+    let fence = responsive(&client, Command::Fence("a".into()))
+        .fence
+        .unwrap();
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| responsive(&client, Command::Inspect).running == 0);
+    responsive(&client, Command::ReleaseFence(fence.token));
+    *server.backend.plan_released.lock().unwrap() = true;
+    server.backend.plan_gate.notify_all();
+    assert_eq!(
+        registration.join().unwrap().unwrap().outcome,
+        Some(Outcome::Cancelled)
+    );
+    assert!(
+        !server
+            .backend
+            .started
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|target| target == "murph")
+    );
+}
+
+#[test]
+fn terminal_history_does_not_exhaust_active_request_capacity() {
+    let server = Server::with_limit(1);
+    let client = server.client();
+    client
+        .call(Command::Submit(request("first", "murph")))
+        .unwrap();
+    eventually(|| {
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    client
+        .call(Command::Submit(request("second", "murph")))
+        .unwrap();
+    eventually(|| {
+        client
+            .call(Command::Status("second".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Ready)
+    );
+}
+
+#[test]
+fn shared_failure_retry_preserves_capacity_and_other_outcomes_after_restart() {
+    let mut server = Server::with_limit(1);
+    server.shutdown();
+    let state_path = server.config.state_dir.join("train.json");
+    let mut state: Train =
+        serde_json::from_reader(std::fs::File::open(&state_path).unwrap()).unwrap();
+    for attempt in ["first", "second"] {
+        let request = request(attempt, "murph");
+        let graph = server.backend.plan(&request).unwrap();
+        state.submit(request, graph, 0).unwrap();
+    }
+    let work = state.dispatch(0).unwrap().unwrap();
+    state.finish(&work, Err("shared compiler failure".into()));
+    let first_failure = state.outcome("first").unwrap();
+    assert!(matches!(first_failure, Outcome::Failed(_)));
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    server.restart();
+    let client = server.client();
+
+    client.call(Command::Retry("second".into())).unwrap();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure.clone())
+    );
+    assert_eq!(
+        client
+            .call(Command::Status("second".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Pending)
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    assert!(
+        client
+            .call(Command::Register(request("third", "atlas")))
+            .unwrap_err()
+            .contains("request limit")
+    );
+
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure.clone())
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    client.call(Command::Admit("second".into())).unwrap();
+    eventually(|| {
+        client
+            .call(Command::Status("second".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure.clone())
+    );
+
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(first_failure)
+    );
+    client.call(Command::Retry("first".into())).unwrap();
+    assert_eq!(
+        client
+            .call(Command::Status("first".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Ready)
+    );
+    assert!(
+        client
+            .call(Command::AuthorizeActivation("first".into()))
+            .unwrap_err()
+            .contains("admission")
+    );
+}
+
+#[test]
+fn retirement_archives_before_root_release_and_retries_after_restart() {
+    let mut server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Submit(request("old", "murph")))
+        .unwrap();
+    eventually(|| {
+        client.call(Command::Status("old".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    client
+        .call(Command::Submit(request("new", "murph")))
+        .unwrap();
+    eventually(|| {
+        client.call(Command::Status("new".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    server.backend.release_fails.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .call(Command::Retire("new".into()))
+            .unwrap_err()
+            .contains("root release")
+    );
+    let state: Train = serde_json::from_reader(
+        std::fs::File::open(server.config.state_dir.join("train.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(!state.requests.contains_key("new"));
+    assert!(state.requests.contains_key("old"));
+    assert!(server.backend.released_requests.lock().unwrap().is_empty());
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client.call(Command::Status("new".into())).unwrap().outcome,
+        Some(Outcome::Ready)
+    );
+    assert!(
+        client
+            .call(Command::AuthorizeActivation("old".into()))
+            .unwrap_err()
+            .contains("superseded")
+    );
+    assert!(
+        client
+            .call(Command::Submit(request("new", "murph")))
+            .unwrap_err()
+            .contains("retired")
+    );
+    server.backend.release_fails.store(false, Ordering::Relaxed);
+    client.call(Command::Retire("new".into())).unwrap();
+    client.call(Command::Retire("new".into())).unwrap();
+    assert_eq!(*server.backend.released_requests.lock().unwrap(), ["new"]);
+    assert_eq!(
+        client.call(Command::Status("old".into())).unwrap().outcome,
+        Some(Outcome::Ready)
+    );
+}
+
+#[test]
+fn retirement_requires_terminal_state_drained_interest_and_no_owned_fence() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("a", "atlas")))
+        .unwrap();
+    assert!(
+        client
+            .call(Command::Retire("a".into()))
+            .unwrap_err()
+            .contains("pending")
+    );
+    client.call(Command::Admit("a".into())).unwrap();
+    eventually(|| client.call(Command::Inspect).unwrap().running == 1);
+    client.call(Command::Cancel("a".into())).unwrap();
+    assert!(
+        client
+            .call(Command::Retire("a".into()))
+            .unwrap_err()
+            .contains("running work")
+    );
+    let fence = client
+        .call(Command::Fence("a".into()))
+        .unwrap()
+        .fence
+        .unwrap();
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| client.call(Command::Inspect).unwrap().running == 0);
+    assert!(
+        client
+            .call(Command::Retire("a".into()))
+            .unwrap_err()
+            .contains("fence owner")
+    );
+    client.call(Command::ReleaseFence(fence.token)).unwrap();
+    client.call(Command::Retire("a".into())).unwrap();
+    assert_eq!(
+        client.call(Command::Status("a".into())).unwrap().outcome,
+        Some(Outcome::Cancelled)
+    );
+}
+
+#[test]
+fn durable_unprepared_intake_resumes_after_restart_in_held_admission() {
+    let mut server = Server::start();
+    server.shutdown();
+    let mut state: Train = serde_json::from_reader(
+        std::fs::File::open(server.config.state_dir.join("train.json")).unwrap(),
+    )
+    .unwrap();
+    state.register(request("m", "murph"), false).unwrap();
+    std::fs::write(
+        server.config.state_dir.join("train.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    server.restart();
+    let client = server.client();
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    client.call(Command::Admit("m".into())).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+}
+
+#[test]
+fn incompatible_journal_is_rejected_without_rewriting_evidence() {
+    let mut server = Server::start();
+    server.shutdown();
+    let state_path = server.config.state_dir.join("train.json");
+    let mut state: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&state_path).unwrap()).unwrap();
+    state["version"] = serde_json::json!(1);
+    let evidence = serde_json::to_vec(&state).unwrap();
+    std::fs::write(&state_path, &evidence).unwrap();
+    let error = serve(
+        server.config.clone(),
+        server.backend.clone(),
+        server.stop.clone(),
+    )
+    .unwrap_err();
+    assert!(error.contains("persisted train protocol/policy mismatch"));
+    assert_eq!(std::fs::read(&state_path).unwrap(), evidence);
+    assert!(!server.config.socket.exists());
+}
+
+#[test]
+fn preparation_deadline_retains_planner_capacity_and_requires_explicit_retry() {
+    let mut server = Server::start();
+    server.shutdown();
+    server.config.planning_timeout_seconds = 1;
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    *server.backend.plan_released.lock().unwrap() = false;
+    server.restart();
+    let client = server.client();
+    let joining = client.clone();
+    let registration =
+        std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+    eventually(|| server.backend.plan_entered.load(Ordering::Relaxed));
+    assert!(
+        registration
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .contains("deadline")
+    );
+    responsive(&client, Command::Inspect);
+    assert!(
+        client
+            .call(Command::Retry("m".into()))
+            .unwrap_err()
+            .contains("planner has not exited")
+    );
+    assert!(
+        client
+            .call(Command::Retire("m".into()))
+            .unwrap_err()
+            .contains("planner has not exited")
+    );
+    *server.backend.plan_released.lock().unwrap() = true;
+    server.backend.plan_gate.notify_all();
+    eventually(|| client.call(Command::Retry("m".into())).is_ok());
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    client.call(Command::Admit("m".into())).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        if self.worker.is_some() {
+            self.shutdown();
+        }
+    }
+}
+
+#[test]
+fn disconnected_request_continues_and_late_join_changes_actual_worker_order() {
+    let server = Server::start();
+    server
+        .client()
+        .call(Command::Submit(request("a", "atlas")))
+        .unwrap();
+    eventually(|| server.backend.started.lock().unwrap().as_slice() == ["busy"]);
+    let client = server.client();
+    // Submitting from another connection attaches to the existing coordinator.
+    client.call(Command::Submit(request("m", "murph"))).unwrap();
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    let started = server.backend.started.lock().unwrap().clone();
+    assert_eq!(&started[..3], ["busy", "shared", "murph"]);
+    assert_eq!(started.iter().filter(|s| *s == "shared").count(), 1);
+}
+
+#[test]
+fn socket_ownership_is_exclusive_even_with_another_state_directory() {
+    let server = Server::start();
+    let mut config = server.config.clone();
+    config.state_dir = server._temp.path().join("another-state");
+    let error = serve(
+        config,
+        server.backend.clone(),
+        Arc::new(AtomicBool::new(true)),
+    )
+    .unwrap_err();
+    assert!(error.contains("socket lease held"), "{error}");
+    server.client().call(Command::Inspect).unwrap();
+}
+
+#[test]
+fn one_builder_result_reconciles_all_valid_named_outputs() {
+    let server = Server::start();
+    let mut req = request("multi", "multi");
+    let mut dev = goal("multi");
+    dev.output = "dev".into();
+    req.roots.insert(dev);
+    server.client().call(Command::Submit(req)).unwrap();
+    eventually(|| {
+        server
+            .client()
+            .call(Command::Status("multi".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    assert_eq!(server.backend.started.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn held_intake_cannot_dispatch_before_live_preparation_and_explicit_admission() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    assert_eq!(client.call(Command::Inspect).unwrap().running, 0);
+    client.call(Command::Admit("m".into())).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        server.backend.started.lock().unwrap().as_slice(),
+        ["shared", "murph"]
+    );
+}
+
+#[test]
+fn durable_fence_survives_service_restart_and_rejects_wrong_policy() {
+    let mut server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    let fence = client.drain("m", Duration::from_secs(1)).unwrap();
+    client.call(Command::Admit("m".into())).unwrap();
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client.call(Command::Inspect).unwrap().fence.unwrap().token,
+        fence.token
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    let wrong = Client {
+        socket: client.socket.clone(),
+        policy: "other-policy".into(),
+    };
+    assert!(wrong.call(Command::Cancel("m".into())).is_err());
+    client.call(Command::ReleaseFence(fence.token)).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+}
+
+#[test]
+fn bounded_drain_keeps_fence_and_cancellation_removes_only_one_interest() {
+    let server = Server::start();
+    let client = server.client();
+    client.call(Command::Submit(request("a", "atlas"))).unwrap();
+    eventually(|| client.call(Command::Inspect).unwrap().running == 1);
+    client.call(Command::Submit(request("m", "murph"))).unwrap();
+    assert!(
+        client
+            .drain("a", Duration::ZERO)
+            .unwrap_err()
+            .contains("fence")
+    );
+    client.call(Command::Cancel("m".into())).unwrap();
+    assert_eq!(
+        client.call(Command::Status("m".into())).unwrap().outcome,
+        Some(Outcome::Cancelled)
+    );
+    let fence = client.call(Command::Inspect).unwrap().fence.unwrap();
+    assert!(
+        client
+            .call(Command::ReleaseFence(fence.token.clone()))
+            .is_err()
+    );
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| client.call(Command::Inspect).unwrap().running == 0);
+    client.call(Command::ReleaseFence(fence.token)).unwrap();
+    eventually(|| {
+        client.call(Command::Status("a".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    assert!(
+        !server
+            .backend
+            .started
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == "murph")
+    );
+}
+
+#[test]
+fn drain_deadline_bounds_a_stalled_status_reply_and_reports_its_fence() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let peer = std::thread::spawn(move || {
+        for running in [1, 0] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut command = String::new();
+            BufReader::new(&stream).read_line(&mut command).unwrap();
+            if running == 0 {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            let mut wire = serde_json::to_vec(&Reply {
+                version: VERSION,
+                policy: "p".into(),
+                outcome: None,
+                fence: Some(Fence {
+                    token: "a-1".into(),
+                    attempt: "a".into(),
+                }),
+                running,
+                error: None,
+                outputs: BTreeMap::new(),
+            })
+            .unwrap();
+            wire.push(b'\n');
+            let _ = stream.write_all(&wire);
+        }
+    });
+    let started = Instant::now();
+    let result = client.drain("a", Duration::from_millis(300));
+    let elapsed = started.elapsed();
+    peer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "drain took {elapsed:?}"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("a-1") && error.contains("retained"),
+        "{error}"
+    );
+}
+
+#[test]
+fn preparation_is_process_shared_exact_keyed_and_caches_only_passes() {
+    use preparation::{Evidence, Key};
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("preparation");
+    let key = Key::Evaluation {
+        source: "frozen".into(),
+        inputs: "lock-hash".into(),
+        attribute: "out".into(),
+        evaluator: "nix-2.34".into(),
+        settings: BTreeMap::new(),
+    };
+    assert_eq!(
+        preparation::run(&directory, &key, Duration::ZERO, || Ok(Evidence::Passed(
+            "drv".to_string()
+        )))
+        .unwrap(),
+        Evidence::Passed("drv".into())
+    );
+    assert_eq!(
+        preparation::run::<String>(&directory, &key, Duration::ZERO, || panic!(
+            "exact evaluation should be reused"
+        ))
+        .unwrap(),
+        Evidence::Passed("drv".into())
+    );
+    let cargo = Key::Cargo {
+        source: "src".into(),
+        lockfile: "lock".into(),
+        toolchain: "rust".into(),
+        target: "host".into(),
+        features: vec![],
+        command: vec!["check".into()],
+        environment: "drv-env".into(),
+    };
+    assert!(
+        preparation::run::<()>(&directory, &cargo, Duration::ZERO, || Err("failed".into()))
+            .is_err()
+    );
+    assert_eq!(
+        preparation::run::<()>(&directory, &cargo, Duration::ZERO, || Ok(
+            Evidence::Skipped("missing cargo".into())
+        ))
+        .unwrap(),
+        Evidence::Skipped("missing cargo".into())
+    );
+    assert_eq!(
+        preparation::run(&directory, &cargo, Duration::ZERO, || Ok(Evidence::Passed(
+            ()
+        )))
+        .unwrap(),
+        Evidence::Passed(())
+    );
+}

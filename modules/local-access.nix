@@ -84,7 +84,7 @@
   fromTopology = name: raw: {
     inherit name;
     clients = raw.clients or [];
-    targetHost = raw.targetHost;
+    inherit (raw) targetHost;
     preferredLink = raw.preferredLink or "lan";
     fallbackLink = raw.fallbackLink or "wg-home";
     destination =
@@ -95,7 +95,7 @@
     udpPorts = raw.udpPorts or [];
     targetLanIp = (topologyHosts.${raw.targetHost} or {}).network.lanIp or null;
     clientSourceIp = linkAddress ownHost (raw.fallbackLink or "wg-home");
-    sshPort = cfg.sshPort;
+    inherit (cfg) sshPort;
   };
 
   merged =

@@ -94,7 +94,8 @@ pub fn verify_fetch_plan(plan: &str, expected_output: &str) -> Result<(), Review
     let mut found = false;
     let mut building = false;
     for line in plan.lines().map(str::trim) {
-        if line.starts_with("these derivations will be built:")
+        if (line.starts_with("these ") && line.contains(" derivations will be built:"))
+            || line.starts_with("this derivation will be built:")
             || line.starts_with("don't know how to build these paths:")
         {
             building = true;
@@ -189,6 +190,17 @@ mod tests {
             ),
             Err(ReviewPinError::BuildRequired)
         );
+        for heading in [
+            "these 1 derivations will be built:",
+            "these 20 derivations will be built:",
+            "this derivation will be built:",
+        ] {
+            assert_eq!(
+                verify_fetch_plan(&format!("{heading}\n  /nix/store/abc.drv\n{fetched}"), OUT),
+                Err(ReviewPinError::BuildRequired),
+                "missed build heading: {heading}"
+            );
+        }
         assert_eq!(
             verify_fetch_plan(
                 &format!("{fetched}don't know how to build these paths:\n  /nix/store/missing"),
