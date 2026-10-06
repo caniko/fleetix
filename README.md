@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-drift-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
 
 <!-- simit:badges:end -->
 
@@ -49,7 +49,7 @@ Host `rebuild.buildCache` is backend-neutral fleet policy. It records whether a
 host should use a fleet build cache for selected package attributes, while the
 consuming flake chooses the concrete cache implementation.
 
-## Cloud management and publication (unreleased source)
+## Cloud management and publication (0.4)
 
 `Host.management` keeps installed-system SSH facts separate from LAN and public
 service DNS. Its optional `publicAddress` is a literal unicast recovery IP,
@@ -76,8 +76,8 @@ remove stale IPv6. Consumers must validate topology before rendering or applying
 DNS. The Nix helper exposes address intents; consumers render absent IPv6 by
 omitting AAAA while retaining management of that record type.
 
-These contracts are not in the published `0.3.0` crate. Consume a verified later
-release before adding production callers. Existing serialized topology remains
+These contracts require Fleetix `0.4` or later. Verify registry publication
+before adding production callers. Existing serialized topology remains
 compatible; Rust struct literals for `Host`, `Domains`, and `HttpSite` need the
 new fields (or their available defaults) when adopting that release.
 
