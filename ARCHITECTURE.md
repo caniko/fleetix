@@ -39,3 +39,27 @@ Test independent synthetic consumers with registry dependencies and no Canix
 checkout or Nix source injection. Library compilation and pure operations must
 work without Nix; deployment may invoke explicitly configured Nix/SSH tools.
 Maintain separate implementation and target status until all of these gates pass.
+
+## Construction policy upgrades
+
+The optional build-train runtime keeps protocol and journal version 2. Its policy
+is an immutable execution/admission identity, not a setting that can be updated
+under queued work. A changed-policy service rejects the old journal.
+
+`build_train::runtime::rollover` is the explicit offline handover API. The caller
+owns host activation coordination and stops the old service after draining its
+exact activation fence. Pending requests must be cancelled individually; this
+API never cancels other requests implicitly. Both configurations must keep the
+same state and socket locations and select different policies.
+
+Rollover takes both coordinator leases, saves a checksum-bound snapshot of the
+old train and archives, and writes a durable interruption marker before retiring
+terminal requests and releasing their backend-owned roots. The replacement empty
+journal is published last. Startup refuses an interrupted handover; retry uses
+the exact previous/next configurations and fence token. A completed retry cannot
+erase new work. Neither lease anchors nor historical journals are deleted.
+
+The replacement coordinator serves old-policy status/retirement only from
+completed, root-released archives. It rejects old-policy intake, admission, retry
+and activation. Historical failures, cancellation and supersession evidence stay
+available without migrating old request identities to a new execution policy.

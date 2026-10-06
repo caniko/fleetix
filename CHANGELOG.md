@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-07
+
+### Fixed
+
+- Add an explicit offline policy rollover for a stopped, drained coordinator with
+  an exact retained fence and terminal requests. Preserve the old journal,
+  supersession, failures and archives before root release and initialize the new
+  policy only after retirement succeeds. Interrupted handovers block startup and
+  can be retried with the same checksum-bound evidence.
+- Allow old-policy status and retirement against completed historical archives,
+  while rejecting old request intake, admission, retry and activation. Keep IPC
+  and journal version 2, and prevent repeated rollover from resetting new work.
+
 ## [0.5.1] - 2026-10-06
 
 ### Fixed

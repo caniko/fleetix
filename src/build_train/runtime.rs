@@ -26,7 +26,9 @@ const MAX_FRAME: u64 = 1024 * 1024;
 
 mod ipc;
 pub mod preparation;
+mod rollover;
 mod wire;
+pub use rollover::rollover;
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
 pub trait Backend: Send + Sync + 'static {
@@ -43,7 +45,7 @@ pub trait Backend: Send + Sync + 'static {
 }
 
 /// Configuration is deployment-owned and immutable for this coordinator lifetime.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub socket: PathBuf,
@@ -460,6 +462,14 @@ pub fn serve(
     socket_lease
         .try_lock_exclusive()
         .map_err(|e| format!("coordinator socket lease held: {e}"))?;
+    if config
+        .state_dir
+        .join("rollover.json")
+        .try_exists()
+        .map_err(|e| e.to_string())?
+    {
+        return Err("interrupted policy rollover; repeat the exact offline rollover before starting the coordinator".into());
+    }
     let mut train: Train = match File::open(config.state_dir.join("train.json")) {
         Ok(file) => {
             serde_json::from_reader(file).map_err(|e| format!("invalid coordinator state: {e}"))?
@@ -580,10 +590,13 @@ pub fn serve(
                 let result = serde_json::from_slice::<Envelope>(&raw)
                     .map_err(|e| e.to_string())
                     .and_then(|envelope| {
-                        if envelope.version != VERSION || envelope.policy != config.policy {
+                        if envelope.version != VERSION {
                             return Err(
                                 "incompatible coordinator protocol or execution policy".into()
                             );
+                        }
+                        if envelope.policy != config.policy {
+                            return historical_reply(&config, envelope).map(|reply| (reply, None));
                         }
                         let subject = match &envelope.command {
                             Command::Submit(request) | Command::Register(request) => {
@@ -855,6 +868,32 @@ fn active_requests(train: &Train) -> Result<usize, String> {
                 .filter(|outcome| *outcome == Outcome::Pending)
                 .count()
         })
+}
+
+fn historical_reply(config: &Config, envelope: Envelope) -> Result<Reply, String> {
+    let attempt = match envelope.command {
+        Command::Status(attempt) | Command::Retire(attempt) => attempt,
+        _ => return Err("incompatible coordinator execution policy; historical attempts cannot be admitted, retried or activated".into()),
+    };
+    let archive: Archive = serde_json::from_reader(
+        File::open(archive_path(config, &attempt)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if archive.version != VERSION
+        || archive.policy != envelope.policy
+        || archive.record.request.attempt != attempt
+        || !archive.roots_released
+    {
+        return Err("historical retirement evidence is incompatible or incomplete".into());
+    }
+    // This is retired evidence, never an attachment to the new train or fence.
+    let mut reply = archive_reply(
+        config,
+        &Train::new(envelope.policy.clone(), config.aging_seconds),
+        &archive,
+    );
+    reply.policy = envelope.policy;
+    Ok(reply)
 }
 
 fn reply(config: &Config, train: &Train, outcome: Option<Outcome>, subject: Option<&str>) -> Reply {
