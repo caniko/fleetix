@@ -7,6 +7,7 @@
 
 pub mod notify;
 pub mod openssh;
+#[cfg(feature = "pkl")]
 pub mod patch;
 pub mod state;
 

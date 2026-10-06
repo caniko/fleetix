@@ -83,6 +83,30 @@ new fields (or their available defaults) when adopting that release.
 
 ## Primary GPU compute
 
+An optional `gpu.render = new S.GpuRender { renderNode = "/dev/dri/by-path/pci-0000:03:00.0-render" }`
+declares a default game/3D device. This is independent of the video-decoding
+`gpu.media` route and the compute request below. Use a stable PCI alias rather
+than a probe-order `renderD128` name. Runtime consumers must verify accessibility,
+PCI identity and driver support; topology is desired configuration, not proof
+that an application rendered on that device.
+
+`lib/topology/GpuContract.pkl` exports the schema's stable-node pattern, vendor
+and backend vocabulary, and shared conformance fixtures. Regenerate its Rust/Nix
+consumer with `pkl eval --format json lib/topology/GpuContract.pkl -o
+lib/generated/gpu-contract.json`. Fleetix tests check producer drift and compare
+official Pkl constraint enforcement with Rust parsing. Official `pkl` must be on
+PATH for those tests; the Nix Cargo checks supply it.
+
+`fleetix.lib.gpu.routes` projects a host GPU record to independent rendering,
+media and compute defaults; `fleetix.lib.gpu.forHost` also retains inventory and
+legacy aliases. Absent routes stay disabled. Consumers translate these roles to
+their own framework controls and perform live device validation.
+
+Rust applications can reuse `fleetix::gpu::pci_selector` with
+`default-features = false`, which excludes the Pkl evaluator and Tokio. Enable
+the `pkl` feature for loading/exporting Pkl and trust-source patching, and
+`health` for live probes. The default CLI enables both features.
+
 Hosts may declare `gpu.compute = new S.GpuCompute { backend = "oneapi" }`.
 The optional request targets the dGPU when present, otherwise the iGPU.
 Validation requires `oneapi` on Intel, `rocm` on AMD, or `cuda` on NVIDIA.

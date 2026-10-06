@@ -173,6 +173,8 @@
           };
         };
       in {
+        gpu-contract = assert import ./tests/gpu.nix;
+          pkgs.writeText "fleetix-gpu-contract" "ok";
         gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
           pkgs.writeText "gatus-profiles" "ok";
         publication-projections = assert import ./tests/publication.nix {inherit (nixpkgs) lib;};

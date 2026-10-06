@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Independent rendering routes with stable PCI render-node identities, shared
+  Pkl/Rust/Nix conformance fixtures, and purpose-specific Nix route projections.
 - Installed-system management routes with independent public recovery addresses,
   declared SSH ports, shared-link candidates, and enrolled runtime host-key checks.
 - Explicit DNS-only publication targets, static address projections, and
@@ -30,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- GPU media routes now require stable PCI aliases instead of probe-order DRM
+  node numbers. GPU inventory and compute vocabulary are constrained in Pkl.
+- Rust consumers using `default-features = false` must enable `pkl` for
+  evaluation/export and trust patching, or `health` for live probes. The default
+  CLI retains both; lightweight GPU identity consumers need neither.
+- Rust `Gpu` struct literals must supply the new `render` field or use defaults.
+  These APIs await a future crate release and are not in published `0.3.0`.
 - Rust struct literals for `Host`, `Domains`, and `HttpSite` must supply the new
   management/publication fields or use their available defaults. Serialized
   topology remains compatible through defaulted fields. These APIs require a

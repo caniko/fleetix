@@ -80,22 +80,39 @@ class VpnProfile {
   portForwarding: VpnPortForwarding? = null
 }
 
+const gpuRenderNodePattern = #"/dev/dri/by-path/pci-[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]-render"#
+const gpuVendors = new Listing { "amd"; "intel"; "nvidia" }
+const gpuComputeVendors = new Mapping {
+  ["oneapi"] = "intel"
+  ["rocm"] = "amd"
+  ["cuda"] = "nvidia"
+}
+typealias StableRenderNode = String(matches(Regex(gpuRenderNodePattern)))
+typealias GpuVendor = String(gpuVendors.contains(this))
+typealias GpuComputeBackend = String(gpuComputeVendors.containsKey(this))
+
 class GpuMedia {
-  vendor: "amd" | "intel" | "nvidia"
-  renderNode: String
+  vendor: GpuVendor
+  renderNode: StableRenderNode
   libvaDriver: String
 }
 
 // Requested compute stack for the primary GPU (dGPU, otherwise iGPU).
 class GpuCompute {
-  backend: "oneapi" | "rocm" | "cuda"
+  backend: GpuComputeBackend
 }
 
 class Gpu {
-  igpu: String? = null
-  dgpu: String? = null
+  igpu: GpuVendor? = null
+  dgpu: GpuVendor? = null
   media: GpuMedia? = null
   compute: GpuCompute? = null
+  render: GpuRender? = null
+}
+
+// Default game/3D render route, independent of media decoding and compute.
+class GpuRender {
+  renderNode: StableRenderNode
 }
 
 class Storage {

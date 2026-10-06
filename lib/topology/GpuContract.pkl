@@ -1,0 +1,21 @@
+// Producer for the shared Rust/Nix GPU contract and conformance fixtures.
+import "Schema.pkl" as S
+output { renderer = new JsonRenderer { omitNullProperties = false } }
+
+renderNodePattern = S.gpuRenderNodePattern
+vendors = S.gpuVendors
+computeVendors = S.gpuComputeVendors
+class Case {
+  node: String
+  selector: String? = null
+}
+cases = new Listing {
+  new Case { node = "/dev/dri/by-path/pci-0000:03:00.0-render"; selector = "pci-0000_03_00_0" }
+  new Case { node = "/dev/dri/by-path/pci-0000:AF:01.7-render"; selector = "pci-0000_af_01_7" }
+  new Case { node = "/dev/dri/renderD128" }
+  new Case { node = "/dev/dri/by-path/../renderD128" }
+  new Case { node = "/dev/dri/by-path/pci-0000:03:00.0-card" }
+  new Case { node = "/dev/dri/by-path/pci-0000:03:00.8-render" }
+  new Case { node = "/dev/dri/by-path/pci-0000:03:00.f-render" }
+  new Case { node = "/dev/dri/by-path/pci-0000:03:00.0-render/" }
+}

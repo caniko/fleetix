@@ -1,3 +1,4 @@
+#![cfg(feature = "pkl")]
 use fleetix::{Topology, validate};
 
 #[test]
