@@ -175,6 +175,44 @@ fn incompatible_graphs_and_cycles_are_transactionally_rejected() {
 }
 
 #[test]
+fn recovered_store_outputs_do_not_retry_legacy_failed_requests() {
+    let mut train = Train::new("p".into(), 10);
+    for (attempt, target) in [("a", "atlas"), ("m", "murph")] {
+        train
+            .submit(
+                request(attempt, target, target),
+                graph(&[(target, &["shared"]), ("shared", &[])]),
+                0,
+            )
+            .unwrap();
+    }
+    // Version-2 journals written before request-local failure capture contained
+    // the terminal error only in the shared node, with no request error.
+    train.nodes.get_mut(&goal("shared")).unwrap().state =
+        NodeState::Failed("original cache failure".into());
+    let failure = train.outcome("a").unwrap();
+    let mut recovered: Train =
+        serde_json::from_slice(&serde_json::to_vec(&train).unwrap()).unwrap();
+    let valid = BTreeSet::from([goal("shared"), goal("atlas"), goal("murph")]);
+    recovered.reconcile(&valid);
+    assert_eq!(recovered.outcome("a").unwrap(), failure);
+    assert_eq!(recovered.outcome("m").unwrap(), failure);
+    assert_eq!(recovered.nodes[&goal("shared")].state, NodeState::Complete);
+    assert!(recovered.dispatch(1).unwrap().is_none());
+
+    recovered.retry("m").unwrap();
+    assert_eq!(recovered.outcome("m").unwrap(), Outcome::Ready);
+    assert!(recovered.authorize_activation("m").is_err());
+    recovered.admit("m").unwrap();
+    recovered.authorize_activation("m").unwrap();
+    let mut restarted: Train =
+        serde_json::from_slice(&serde_json::to_vec(&recovered).unwrap()).unwrap();
+    restarted.reconcile(&valid);
+    assert_eq!(restarted.outcome("a").unwrap(), failure);
+    assert_eq!(restarted.outcome("m").unwrap(), Outcome::Ready);
+}
+
+#[test]
 fn recovery_rechecks_store_evidence_and_ignores_stale_worker_receipts() {
     let mut train = Train::new("p".into(), 10);
     train

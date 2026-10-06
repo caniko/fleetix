@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-06
+
+### Fixed
+
+- Keep a failed build-train request terminal when its output is materialized by
+  another worker or observed during restart. Capture the original failure in the
+  request journal before importing store evidence; only that request's explicit
+  retry clears it and activation still requires caller admission.
+- Preserve these failures when recovering existing version-2 journals that stored
+  the error only in a shared node, without changing the journal or IPC version.
+
 ## [0.5.0] - 2026-10-06
 
 - Add a dependency-aware shared-construction library and optional authenticated
