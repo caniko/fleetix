@@ -377,24 +377,7 @@ impl Train {
         // failed on it, restoring their admission/priority or exceeding capacity.
         // Preserve their terminal outcomes in the existing request-error field;
         // only their own explicit retry may clear that durable failure.
-        let failures: Vec<_> = self
-            .requests
-            .iter()
-            .filter(|(id, record)| {
-                id.as_str() != attempt
-                    && record.prepared
-                    && !record.cancelled
-                    && record.preparation_error.is_none()
-                    && !self.needed(&record.request.roots).is_disjoint(&failed)
-            })
-            .filter_map(|(id, _)| match self.outcome(id) {
-                Ok(Outcome::Failed(error)) => Some((id.clone(), error)),
-                _ => None,
-            })
-            .collect();
-        for (id, error) in failures {
-            self.preparation_failed(&id, error)?;
-        }
+        self.capture_failures();
         for goal in failed {
             let node = self.nodes.get_mut(&goal).ok_or("missing retry goal")?;
             node.state = NodeState::Pending;
@@ -538,20 +521,47 @@ impl Train {
     }
 
     pub fn finish(&mut self, dispatch: &Dispatch, result: Result<(), String>) {
+        let mut failed = false;
         if let Some(node) = self.nodes.get_mut(&dispatch.goal) {
             if node.state
                 == (NodeState::Running {
                     serial: dispatch.serial,
                 })
             {
+                failed = result.is_err();
                 node.state = result.map_or_else(NodeState::Failed, |()| NodeState::Complete);
+            }
+        }
+        if failed {
+            self.capture_failures();
+        }
+    }
+
+    // Capture request outcomes before store evidence or shared-node retries can
+    // replace a failure. The existing version-2 request-error field keeps this
+    // compatible with legacy journals and is cleared only by that request's retry.
+    fn capture_failures(&mut self) {
+        let failures: Vec<_> = self
+            .requests
+            .iter()
+            .filter(|(_, record)| record.preparation_error.is_none())
+            .filter_map(|(id, _)| match self.outcome(id) {
+                Ok(Outcome::Failed(error)) => Some((id.clone(), error)),
+                _ => None,
+            })
+            .collect();
+        for (id, error) in failures {
+            if let Some(record) = self.requests.get_mut(&id) {
+                record.preparation_error = Some(error);
             }
         }
     }
 
     /// Store evidence replaces interrupted receipts, including vanished complete outputs.
-    /// The backend must retain GC roots before passing this evidence.
+    /// Failed requests retain their original outcomes until explicit retry. The
+    /// backend must retain GC roots before passing this evidence.
     pub fn reconcile(&mut self, valid: &BTreeSet<Goal>) {
+        self.capture_failures();
         for (goal, node) in &mut self.nodes {
             if valid.contains(goal) {
                 node.state = NodeState::Complete;

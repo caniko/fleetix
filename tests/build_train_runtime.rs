@@ -34,6 +34,7 @@ struct TestBackend {
     plan_released: Mutex<bool>,
     plan_gate: Condvar,
     release_fails: AtomicBool,
+    fail_after_materialize: AtomicBool,
     released_requests: Mutex<Vec<String>>,
 }
 impl Backend for TestBackend {
@@ -150,6 +151,9 @@ impl Backend for TestBackend {
             let mut other = dispatch.goal.clone();
             other.output = if other.output == "out" { "dev" } else { "out" }.into();
             self.valid.lock().unwrap().insert(other);
+        }
+        if self.fail_after_materialize.load(Ordering::Relaxed) {
+            return Err("backend failure with materialized output".into());
         }
         Ok(())
     }
@@ -703,6 +707,65 @@ fn retirement_archives_before_root_release_and_retries_after_restart() {
         client.call(Command::Status("old".into())).unwrap().outcome,
         Some(Outcome::Ready)
     );
+}
+
+#[test]
+fn materialized_output_does_not_clear_a_worker_failure_on_completion_or_restart() {
+    let mut server = Server::start();
+    server
+        .backend
+        .fail_after_materialize
+        .store(true, Ordering::Relaxed);
+    let client = server.client();
+    client
+        .call(Command::Submit(request("failed", "multi")))
+        .unwrap();
+    eventually(|| {
+        matches!(
+            client
+                .call(Command::Status("failed".into()))
+                .unwrap()
+                .outcome,
+            Some(Outcome::Failed(_))
+        )
+    });
+    let failure = client
+        .call(Command::Status("failed".into()))
+        .unwrap()
+        .outcome;
+    assert!(
+        client
+            .call(Command::AuthorizeActivation("failed".into()))
+            .is_err()
+    );
+    server.shutdown();
+    server.restart();
+    assert_eq!(
+        client
+            .call(Command::Status("failed".into()))
+            .unwrap()
+            .outcome,
+        failure
+    );
+    assert_eq!(server.backend.started.lock().unwrap().len(), 1);
+    client.call(Command::Retry("failed".into())).unwrap();
+    assert_eq!(
+        client
+            .call(Command::Status("failed".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Ready)
+    );
+    assert!(
+        client
+            .call(Command::AuthorizeActivation("failed".into()))
+            .is_err()
+    );
+    client.call(Command::Admit("failed".into())).unwrap();
+    client
+        .call(Command::AuthorizeActivation("failed".into()))
+        .unwrap();
+    server.shutdown();
 }
 
 #[test]
