@@ -24,6 +24,11 @@ backend; consumers retain fleet policy and deployment stages.
   Dedicated bounded planners leave completions and control commands responsive.
   Planning deadlines fail only that request; a tardy planner retains its slot and
   roots until it exits. Retry then returns the request to held admission.
+- Requests and replies fit a one-MiB frame. Planning rejects root-output evidence
+  that cannot fit a reply before admission, keeping the terminal failure available
+  through status. Wire diagnostics are bounded on UTF-8 boundaries; their full
+  detail remains in the journal. Oversized retained replies return an explicit
+  error rather than silently dropping a durable operation's acknowledgement.
 - Capacity counts pending requests, including held/preparing requests, rather than
   terminal history. Explicit `Retire` archives terminal identity, outcome and graph
   before removing membership and releasing request-owned roots. Status remains

@@ -26,6 +26,7 @@ const MAX_FRAME: u64 = 1024 * 1024;
 
 mod ipc;
 pub mod preparation;
+mod wire;
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
 pub trait Backend: Send + Sync + 'static {
@@ -392,11 +393,7 @@ fn queue_reply(
     stream: UnixStream,
     result: &Reply,
 ) -> Result<(), String> {
-    let mut raw = serde_json::to_vec(result).map_err(|e| e.to_string())?;
-    raw.push(b'\n');
-    if raw.len() as u64 <= MAX_FRAME {
-        outgoing.push(ipc::Outgoing::new(stream, raw));
-    }
+    outgoing.push(ipc::Outgoing::new(stream, wire::encode(result)?));
     Ok(())
 }
 
@@ -430,6 +427,7 @@ pub fn serve(
         || config.workers > 64
         || config.queue_limit == 0
         || config.policy.is_empty()
+        || config.policy.len() > wire::FIELD_LIMIT
         || !(1..=16).contains(&config.planning_workers)
         || !(1..=86_400).contains(&config.planning_timeout_seconds)
     {
@@ -667,6 +665,7 @@ pub fn serve(
                         if graph.len() > 200_000 {
                             return Err("backend graph limit exceeded".into());
                         }
+                        wire::validate_outputs(&request, &graph)?;
                         backend.retain(&request, &graph)?;
                         Ok(graph)
                     }))
@@ -787,6 +786,12 @@ fn apply(
     };
     match command {
         Command::Submit(request) | Command::Register(request) => {
+            if [&request.attempt, &request.target, &request.source]
+                .iter()
+                .any(|field| field.len() > wire::FIELD_LIMIT)
+            {
+                return Err("request identity exceeds protocol limit".into());
+            }
             if !next.requests.contains_key(&request.attempt)
                 && active_requests(&next)? >= config.queue_limit
             {
@@ -855,6 +860,7 @@ fn active_requests(train: &Train) -> Result<usize, String> {
 fn reply(config: &Config, train: &Train, outcome: Option<Outcome>, subject: Option<&str>) -> Reply {
     let outputs = subject
         .and_then(|id| train.requests.get(id))
+        .filter(|record| record.prepared)
         .map(|record| {
             record
                 .request

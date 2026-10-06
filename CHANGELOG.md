@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request-owned roots and preserves activation supersession tombstones.
 - Reserve a new minor after published `0.4.0`; the candidate version is not a
   publication claim and cannot replace that registry release before qualification.
+- Bound root-output evidence before admission and return explicit oversized-reply
+  errors. Keep terminal diagnostics readable over IPC while retaining their full
+  detail in the durable journal.
 
 ## [Unreleased]
 

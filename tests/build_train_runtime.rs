@@ -73,6 +73,37 @@ impl Backend for TestBackend {
                 },
             )]));
         }
+        if request.target == "oversized-output" {
+            return Ok(BTreeMap::from([(
+                goal("oversized-output"),
+                Definition {
+                    output_path: format!("/store/{}", "x".repeat(1_100_000)),
+                    dependencies: BTreeSet::new(),
+                    operation: Operation::Build,
+                },
+            )]));
+        }
+        if request.target == "many-roots" {
+            return Ok(request
+                .roots
+                .iter()
+                .cloned()
+                .map(|goal| {
+                    let path = goal.derivation.trim_end_matches(".drv").to_owned();
+                    (
+                        goal,
+                        Definition {
+                            output_path: path,
+                            dependencies: BTreeSet::new(),
+                            operation: Operation::Build,
+                        },
+                    )
+                })
+                .collect());
+        }
+        if request.target == "verbose-failure" {
+            return Err(format!("backend diagnostic: {}", "é".repeat(600_000)));
+        }
         let entries: Vec<(&str, Vec<&str>)> = match request.target.as_str() {
             "atlas" => vec![
                 ("atlas", vec!["busy", "exclusive", "shared"]),
@@ -212,6 +243,82 @@ fn responsive(client: &Client, command: Command) -> Reply {
     rx.recv_timeout(Duration::from_secs(1))
         .expect("control plane blocked behind graph preparation")
         .unwrap()
+}
+
+#[test]
+fn oversized_root_evidence_fails_before_admission_and_keeps_status_available() {
+    let server = Server::start();
+    let client = server.client();
+    let error = client
+        .call(Command::Register(request("oversized", "oversized-output")))
+        .unwrap_err();
+    assert!(
+        error.contains("root output evidence exceeds protocol limit"),
+        "{error}"
+    );
+    let status = responsive(&client, Command::Status("oversized".into()));
+    assert!(matches!(status.outcome, Some(Outcome::Failed(_))));
+    assert!(status.outputs.is_empty());
+    assert!(server.backend.started.lock().unwrap().is_empty());
+    responsive(&client, Command::Inspect);
+}
+
+#[test]
+fn accepted_multi_root_frame_cannot_create_an_undeliverable_reply() {
+    let server = Server::start();
+    let client = server.client();
+    let mut request = request("many", "many-roots");
+    request.roots = (0..10_000)
+        .map(|i| {
+            goal(&format!(
+                "/nix/store/00000000000000000000000000000000-package-{i:05}.drv"
+            ))
+        })
+        .collect();
+    let envelope = serde_json::json!({
+        "version": VERSION, "policy": client.policy, "command": Command::Register(request.clone())
+    });
+    assert!(serde_json::to_vec(&envelope).unwrap().len() + 1 < 1024 * 1024);
+    let error = client.call(Command::Register(request)).unwrap_err();
+    assert!(
+        error.contains("root output evidence exceeds protocol limit"),
+        "{error}"
+    );
+    let status = responsive(&client, Command::Status("many".into()));
+    assert!(matches!(status.outcome, Some(Outcome::Failed(_))));
+    assert!(status.outputs.is_empty());
+    assert!(server.backend.started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn oversized_failure_details_are_bounded_without_losing_terminal_status() {
+    let server = Server::start();
+    let client = server.client();
+    let error = client
+        .call(Command::Register(request("verbose", "verbose-failure")))
+        .unwrap_err();
+    assert!(error.starts_with("backend diagnostic:"), "{error}");
+    assert!(error.contains("truncated"));
+    assert!(error.len() < 8192);
+    let status = responsive(&client, Command::Status("verbose".into()));
+    let Some(Outcome::Failed(detail)) = status.outcome else {
+        panic!("missing terminal failure");
+    };
+    assert!(detail.starts_with("backend diagnostic:"));
+    assert!(detail.contains("truncated"));
+    assert!(detail.len() < 8192);
+    let state: Train =
+        serde_json::from_slice(&std::fs::read(server.config.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    assert!(
+        state.requests["verbose"]
+            .preparation_error
+            .as_ref()
+            .unwrap()
+            .len()
+            > 1024 * 1024
+    );
+    responsive(&client, Command::Inspect);
 }
 
 #[test]
