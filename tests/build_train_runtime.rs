@@ -355,6 +355,48 @@ fn unread_reply_does_not_block_other_control_clients() {
 }
 
 #[test]
+fn oversized_legacy_fence_returns_a_diagnostic_and_survives_restart() {
+    let mut server = Server::start();
+    server.shutdown();
+    let mut state = Train::new(server.config.policy.clone(), server.config.aging_seconds);
+    // Version 2 previously accepted this identity within a one-MiB request.
+    // Its fence repeats the identity, so the retained reply no longer fits.
+    let mut legacy = request("legacy", "atlas");
+    legacy.attempt = "x".repeat(600_000);
+    state.register(legacy.clone(), false).unwrap();
+    let token = state.fence(&legacy.attempt).unwrap();
+    std::fs::write(
+        server.config.state_dir.join("train.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    server.stop.store(false, Ordering::Relaxed);
+    let config = server.config.clone();
+    let backend = server.backend.clone();
+    let stop = server.stop.clone();
+    let worker = std::thread::spawn(move || serve(config, backend, stop));
+    eventually(|| server.config.socket.exists());
+    let first = server.client().call(Command::Inspect);
+    let second = server.client().call(Command::Inspect);
+    server.stop.store(true, Ordering::Relaxed);
+    let exit = worker.join().unwrap();
+    for response in [first, second] {
+        let error = response.unwrap_err();
+        assert!(
+            error.contains("coordinator reply exceeds protocol limit"),
+            "{error}"
+        );
+        assert!(error.contains("journal"), "{error}");
+    }
+    exit.unwrap();
+    let retained: Train =
+        serde_json::from_slice(&std::fs::read(server.config.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    assert_eq!(retained.fence.unwrap().token, token);
+    assert!(server.backend.started.lock().unwrap().is_empty());
+}
+
+#[test]
 fn partial_request_does_not_block_status_cancellation_fences_or_worker_completion() {
     use std::io::Write;
     use std::os::unix::net::UnixStream;

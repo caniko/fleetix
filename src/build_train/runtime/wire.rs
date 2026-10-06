@@ -98,7 +98,11 @@ pub(super) fn encode(result: &Reply) -> Result<Vec<u8>, String> {
             let outputs = BTreeMap::new();
             let fallback = ReplyFrame {
                 outputs: &outputs,
-                error: Some("coordinator reply exceeds protocol limit; durable command may already be recorded; inspect request status before retrying".into()),
+                // A historical fence can itself exceed the frame budget. Its
+                // exact identity remains in the journal; never truncate a token
+                // or claim the absence of a durable fence through this error.
+                fence: None,
+                error: Some("coordinator reply exceeds protocol limit; durable command may already be recorded; inspect the persisted journal and request status before retrying".into()),
                 ..frame
             };
             serialize(&fallback, MAX_FRAME as usize - 1)?
