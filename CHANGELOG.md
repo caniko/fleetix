@@ -5,24 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Build-train candidate (unreleased; next minor 0.5.0)
+## [Unreleased]
+
+## [0.5.0] - 2026-10-06
 
 - Add a dependency-aware shared-construction library and optional authenticated
   builder-local coordinator, with late joins, bounded fairness, independent
   request completion, exact-output sharing, restart reconciliation, cancellation,
   durable activation fences and exact preparation receipts. The implementation
-  awaits release qualification; real Nix/performance acceptance remains separate.
+  retains separate consumer gates for production Nix and performance acceptance.
 - Prepare graphs on bounded independent planners, keep control commands responsive,
   and recover held preparation across restart. Count active requests separately
   from terminal history; explicit retirement archives evidence before releasing
   request-owned roots and preserves activation supersession tombstones.
-- Reserve a new minor after published `0.4.0`; the candidate version is not a
-  publication claim and cannot replace that registry release before qualification.
+- Introduce the construction API in a new minor after the topology-only `0.4.0`
+  release, preserving protocol and journal version 2.
 - Bound root-output evidence before admission and return explicit oversized-reply
   errors. Keep terminal diagnostics readable over IPC while retaining their full
   detail in the durable journal.
-
-## [Unreleased]
 
 ## [0.4.0] - 2026-10-02
 
@@ -114,3 +114,6 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
 - Pre-commit hooks for treefmt, cargo fmt, clippy, audit, MSRV, and nix flake
   check
 - simit project metadata configuration
+
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/caniko/fleetix/compare/0.4.0...0.5.0
