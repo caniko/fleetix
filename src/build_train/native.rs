@@ -220,6 +220,9 @@ fn validated_request_paths(
 }
 
 impl Backend for NixBackend {
+    fn validate_request(&self, request: &Request) -> Result<(), String> {
+        validated_request_paths(request, &Graph::new()).map(|_| ())
+    }
     fn plan(&self, request: &Request) -> Result<Graph, String> {
         self.0
             .plan(&request.roots.iter().map(output).collect::<Vec<_>>())

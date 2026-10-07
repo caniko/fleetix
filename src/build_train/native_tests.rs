@@ -253,6 +253,101 @@ fn invalid_root_identities_never_create_request_namespaces() {
 }
 
 #[test]
+fn malformed_native_intake_is_rejected_without_poisoning_restart() {
+    use runtime::Command;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut service = service();
+    service.coordinator.socket = temp.path().join("runtime/coordinator.sock");
+    service.coordinator.state_dir = temp.path().join("state");
+    service.native.gc_roots = temp.path().join("roots");
+    let config = service.coordinator;
+    let backend = Arc::new(NixBackend(service.native));
+    let client = Client {
+        socket: config.socket.clone(),
+        policy: config.policy.clone(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let start = || {
+        let (config, backend, stop) = (config.clone(), backend.clone(), stop.clone());
+        std::thread::spawn(move || runtime::serve(config, backend, stop))
+    };
+    let ready = |worker: &std::thread::JoinHandle<Result<(), String>>| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !worker.is_finished() {
+            if client.call(Command::Inspect).is_ok() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    };
+    let worker = start();
+    assert!(ready(&worker));
+    let valid = "/nix/store/00000000000000000000000000000000-source";
+    let mut statuses = Vec::new();
+    for (index, field) in ["source", "derivation", "output"].into_iter().enumerate() {
+        let mut request = Request {
+            attempt: format!("invalid-{index}"),
+            target: "builder".into(),
+            source: format!("{valid}#target"),
+            roots: BTreeSet::from([Goal {
+                derivation: format!("{valid}.drv"),
+                output: "out".into(),
+            }]),
+            activates: false,
+        };
+        match field {
+            "source" => request.source = "/checkout/source#target".into(),
+            "derivation" => {
+                request.roots = BTreeSet::from([Goal {
+                    derivation: "00000000000000000000000000000000-relative.drv".into(),
+                    output: "out".into(),
+                }])
+            }
+            _ => {
+                request.roots = BTreeSet::from([Goal {
+                    derivation: format!("{valid}.drv"),
+                    output: "bad/name".into(),
+                }])
+            }
+        }
+        let attempt = request.attempt.clone();
+        let command = if index == 1 {
+            Command::Submit(request)
+        } else {
+            Command::Register(request)
+        };
+        assert!(client.call(command).is_err());
+        statuses.push(client.call(Command::Status(attempt)));
+    }
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap().unwrap();
+    stop.store(false, Ordering::Relaxed);
+    let worker = start();
+    let restarted = ready(&worker);
+    stop.store(true, Ordering::Relaxed);
+    let restart_result = worker.join().unwrap();
+    assert!(
+        restarted,
+        "malformed intake blocked coordinator restart: {restart_result:?}"
+    );
+    restart_result.unwrap();
+    assert!(
+        statuses
+            .into_iter()
+            .all(|status| status.is_err_and(|error| error.contains("unknown")))
+    );
+    assert!(!backend.0.gc_roots.exists());
+    let journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(config.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    assert!(journal["requests"].as_object().unwrap().is_empty());
+}
+
+#[test]
 fn root_release_is_request_scoped_retryable_and_rejects_foreign_entries() {
     let temp = tempfile::tempdir().unwrap();
     let mut native = service().native;

@@ -32,6 +32,13 @@ pub use rollover::rollover;
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
 pub trait Backend: Send + Sync + 'static {
+    /// Side-effect-free identity validation before durable intake. Retention
+    /// runs only after the journal owns the request; deterministic malformed
+    /// identities must never become recovery obligations. Existing specialist
+    /// backends may rely solely on the coordinator's generic validation.
+    fn validate_request(&self, _request: &Request) -> Result<(), String> {
+        Ok(())
+    }
     /// Bounded graph inspection. The coordinator runs this on dedicated planners.
     fn plan(&self, request: &Request) -> Result<Graph, String>;
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String>;
@@ -958,6 +965,7 @@ fn apply(
                         "retired attempt cannot be resubmitted; use a new attempt identity".into(),
                     );
                 }
+                backend.validate_request(&request)?;
                 next.register(request.clone(), !held)?;
                 // Intake owns source/derivation roots too. Validate and journal
                 // its immutable identity before retention can create any root;

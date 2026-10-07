@@ -83,7 +83,10 @@ fleetix build-train register --connection /etc/fleetix-train/connection.json --r
 ```
 
 Registration is durable and held: it retains source/derivation evidence but has
-no scheduling priority and cannot dispatch. The full ownership graph is journaled
+no scheduling priority and cannot dispatch. Side-effect-free native source and
+derivation/named-output validation precedes durable intake; malformed identities
+create neither a journaled request nor a root namespace. Valid intake is journaled
+before its initial roots are created. The full ownership graph is journaled
 before dependency/output roots are created; preparation stays held until retention
 finishes. Cancellation, timeout and partial retention failure preserve enough
 evidence for retirement after the planner exits, including across restart.

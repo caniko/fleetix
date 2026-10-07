@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Validate native intake identities before journaling, so a rejected malformed
+  request cannot become an unrecoverable startup-retention obligation.
 - Reject noncanonical source, derivation and output-root evidence before creating
   request namespaces; unsuccessful terminal registration reattachments now fail
   the standalone command while preserving status evidence.
