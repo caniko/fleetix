@@ -63,13 +63,13 @@
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         strictDeps = true;
         nativeBuildInputs = [pkgs.pkl];
-        cargoExtraArgs = "--all-features";
+        cargoExtraArgs = "--workspace --all-features";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
     in {
       inherit craneLib commonArgs;
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-      libraryArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--no-default-features";});
+      libraryArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--workspace --no-default-features";});
     });
   in {
     lib = fleetixLib;
@@ -102,7 +102,16 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
-            cargoExtraArgs = "--features cli";
+            cargoExtraArgs = "--package fleetix --features cli";
+          });
+
+        fleetix-sidecar = craneLib.buildPackage (commonArgs
+          // {
+            inherit cargoArtifacts;
+            pname = "fleetix-sidecar";
+            version = (builtins.fromTOML (builtins.readFile ./crates/fleetix-sidecar/Cargo.toml)).package.version;
+            cargoExtraArgs = "--package fleetix-sidecar --features cli";
+            meta.mainProgram = "fleetix-sidecar";
           });
 
         # Export any Pkl file to an importable Nix expression sidecar.
@@ -139,7 +148,7 @@
         };
       in {
         default = fleetixCrate;
-        inherit fleetixCrate exportNix pklToNix;
+        inherit fleetixCrate fleetix-sidecar exportNix pklToNix;
       }
     );
 
@@ -158,6 +167,11 @@
         type = "app";
         program = "${self.packages.${system}.pklToNix}/bin/fleetix-pkl-to-nix";
         meta.description = "Convert Pkl JSON output to an importable Nix expression";
+      };
+      sidecar = {
+        type = "app";
+        program = "${self.packages.${system}.fleetix-sidecar}/bin/fleetix-sidecar";
+        meta.description = "Generate or check Nix sidecars with the standalone Rust CLI";
       };
     });
 
@@ -186,7 +200,7 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--all-features";
+            cargoExtraArgs = "--workspace --all-features";
           }
         );
 
@@ -194,7 +208,7 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--all-features";
+            cargoExtraArgs = "--workspace --all-features";
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           }
         );
@@ -203,7 +217,7 @@
           commonArgs
           // {
             cargoArtifacts = libraryArtifacts;
-            cargoExtraArgs = "--no-default-features";
+            cargoExtraArgs = "--workspace --no-default-features";
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           }
         );

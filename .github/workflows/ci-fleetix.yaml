@@ -41,16 +41,16 @@ jobs:
         run: |
           # Expand formatter variables inside the Nix shell.
           # shellcheck disable=SC2016
-          nix develop -c sh -c 'formatter=$(nix eval --impure --raw --expr "let root = toString ./.; flake = builtins.getFlake (if builtins.pathExists ./.git then \"git+file://\" + root else root); in if flake ? formatter.\${builtins.currentSystem} then flake.formatter.\${builtins.currentSystem}.drvPath else \"\"") || exit; if [ -n "$formatter" ]; then formatter_path=$(nix build --no-link --print-out-paths "$formatter^out") || exit; test -x "$formatter_path/bin/treefmt" || { echo "project formatter does not provide bin/treefmt" >&2; exit 1; }; exec "$formatter_path/bin/treefmt" --ci; fi; if [ -f nix/treefmt.nix ] || [ -f treefmt.toml ] || [ -f .treefmt.toml ]; then echo "treefmt policy requires a flake formatter output; run simit init flake" >&2; exit 1; fi; exec cargo fmt --all -- --check'
+          nix develop -c sh -c 'formatter=$(nix eval --impure --raw --expr "let root = toString ./.; flake = builtins.getFlake (if builtins.pathExists ./.git then \"git+file://\" + root else root); in if flake ? formatter.\${builtins.currentSystem} then flake.formatter.\${builtins.currentSystem}.drvPath else \"\"") || exit; if [ -n "$formatter" ]; then formatter_path=$(nix build --no-link --print-out-paths "$formatter^out") || exit; if [ -x "$formatter_path/bin/treefmt" ]; then exec "$formatter_path/bin/treefmt" --ci; fi; fi; if command -v treefmt >/dev/null 2>&1; then exec treefmt --ci; else exec cargo fmt --all -- --check; fi'
 
       - name: Check flake
         run: nix flake check
 
       - name: Test all features
-        run: nix develop -c cargo test --all-features
+        run: nix develop -c cargo test -p fleetix --all-features
 
       - name: Test no default features
-        run: nix develop -c cargo test --no-default-features
+        run: nix develop -c cargo test -p fleetix --no-default-features
 
       - name: Check cargo-audit tool
         run: nix develop -c cargo-audit --version
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -eu
           test "$(nix develop .#msrv -c rustc --version | cut -d ' ' -f 2)" = '1.88.0'
-          nix develop .#msrv -c cargo check --all-targets --all-features
+          nix develop .#msrv -c cargo check -p fleetix --all-targets --all-features
 
       - name: Fetch RustSec advisory database
         run: |
@@ -74,13 +74,13 @@ jobs:
           nix develop -c cargo audit --db "$db" --no-fetch --stale
 
       - name: Build docs
-        run: nix develop .#docs -c cargo doc --no-deps --all-features
+        run: nix develop .#docs -c cargo doc -p fleetix --no-deps --all-features
 
       - name: Clippy all features
-        run: nix develop -c cargo clippy --all-targets --all-features -- --deny warnings
+        run: nix develop -c cargo clippy -p fleetix --all-targets --all-features -- --deny warnings
 
       - name: Clippy no default features
-        run: nix develop -c cargo clippy --all-targets --no-default-features -- --deny warnings
+        run: nix develop -c cargo clippy -p fleetix --all-targets --no-default-features -- --deny warnings
 
       - name: Package crate
-        run: nix develop -c cargo package --allow-dirty --list
+        run: nix develop -c cargo package -p fleetix --allow-dirty --list

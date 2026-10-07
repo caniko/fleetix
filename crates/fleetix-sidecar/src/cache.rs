@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 // Bump when the receipt schema changes; the producer covers renderer upgrades.
 const FORMAT: u32 = 2;
 
-// Fleetix is also embedded in downstream CLIs. Fingerprint the running
+// The sidecar library is also embedded in downstream CLIs. Fingerprint the running
 // producer once, so renderer/pklr upgrades invalidate receipts even when the
 // crate version or source file names have not changed.
 fn producer() -> Option<&'static str> {

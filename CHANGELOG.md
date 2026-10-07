@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `fleetix-sidecar`, an independent Rust CLI and library in a Fleetix Cargo
+  workspace. Generate Pkl-to-Nix files without running Nix; check exact output
+  bytes without rewriting sidecars or cache entries.
+
+### Changed
+
+- Move the existing renderer, dependency-aware cache and atomic sidecar writer
+  into the shared crate. Preserve `fleetix::pkl_to_nix` and the Fleetix CLI so
+  Canix's configuration commands retain the same implementation and output.
+- Qualify both workspace members in the Rust Nix gates and expose the standalone
+  `fleetix-sidecar` package. Registry rollout requires publishing that prerequisite
+  before its consuming Fleetix release.
+
 ## [0.5.2] - 2026-10-07
 
 ### Fixed

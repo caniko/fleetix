@@ -354,6 +354,7 @@ name = "fleetix"
 version = "0.5.2"
 dependencies = [
  "clap",
+ "fleetix-sidecar",
  "fs2",
  "indexmap",
  "libc",
@@ -365,6 +366,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+]
+
+[[package]]
+name = "fleetix-sidecar"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "miette",
+ "pklx",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

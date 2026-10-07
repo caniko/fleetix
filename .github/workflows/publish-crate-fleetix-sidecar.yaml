@@ -55,7 +55,7 @@ jobs:
           fi
 
           # cargo pkgid scopes the version lookup to the crate this workflow publishes.
-          version="$(nix develop -c cargo pkgid -p fleetix | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)"
+          version="$(nix develop -c cargo pkgid -p fleetix-sidecar | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)"
           if [ -z "$version" ]; then
             echo "Could not read package version from cargo pkgid" >&2
             exit 1
@@ -87,10 +87,10 @@ jobs:
         run: nix flake check
 
       - name: Test all features
-        run: nix develop -c cargo test --all-features
+        run: nix develop -c cargo test -p fleetix-sidecar --all-features
 
       - name: Test no default features
-        run: nix develop -c cargo test --no-default-features
+        run: nix develop -c cargo test -p fleetix-sidecar --no-default-features
 
       - name: Check cargo-audit tool
         run: nix develop -c cargo-audit --version
@@ -99,7 +99,7 @@ jobs:
         run: |
           set -eu
           test "$(nix develop .#msrv -c rustc --version | cut -d ' ' -f 2)" = '1.88.0'
-          nix develop .#msrv -c cargo check --all-targets --all-features
+          nix develop .#msrv -c cargo check -p fleetix-sidecar --all-targets --all-features
 
       - name: Fetch RustSec advisory database
         run: |
@@ -117,20 +117,20 @@ jobs:
         run: nix develop .#docs -c cargo doc --no-deps --all-features
 
       - name: Clippy all features
-        run: nix develop -c cargo clippy --all-targets --all-features -- --deny warnings
+        run: nix develop -c cargo clippy -p fleetix-sidecar --all-targets --all-features -- --deny warnings
 
       - name: Clippy no default features
-        run: nix develop -c cargo clippy --all-targets --no-default-features -- --deny warnings
+        run: nix develop -c cargo clippy -p fleetix-sidecar --all-targets --no-default-features -- --deny warnings
 
       - name: Dry-run publish
-        run: nix develop -c cargo publish --dry-run
+        run: nix develop -c cargo publish -p fleetix-sidecar --dry-run
 
       - name: Publish
         env:
           CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
         run: |
           set -euo pipefail
-          crate_name='fleetix'
+          crate_name='fleetix-sidecar'
           version="${GITHUB_REF_NAME:-${FORGE_REF_NAME:-${CODEBERG_REF_NAME:-}}}"
           if [ -z "$version" ]; then
             ref="${GITHUB_REF:-${FORGE_REF:-${CODEBERG_REF:-}}}"
@@ -169,4 +169,4 @@ jobs:
             exit 1
           fi
           export CARGO_REGISTRY_TOKEN="${CARGO_REGISTRY_TOKEN:-$CRATES_IO_API_TOKEN}"
-          nix develop -c cargo publish
+          nix develop -c cargo publish -p fleetix-sidecar
