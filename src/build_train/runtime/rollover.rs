@@ -60,6 +60,7 @@ fn read_snapshot(history: &Path, marker: &Marker) -> Result<Snapshot, String> {
     }
     let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
     if snapshot.version != VERSION
+        || snapshot.train.version != VERSION
         || snapshot.previous != marker.previous
         || snapshot.next != marker.next
         || snapshot.train.policy != marker.previous.policy
@@ -119,6 +120,9 @@ pub fn rollover(
         File::open(previous.state_dir.join("train.json")).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    if current.version != VERSION {
+        return Err("unsupported rollover journal version; evidence retained".into());
+    }
     let marker: Option<Marker> = match File::open(&marker_path) {
         Ok(file) => Some(serde_json::from_reader(file).map_err(|e| e.to_string())?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,

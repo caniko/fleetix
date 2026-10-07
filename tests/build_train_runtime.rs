@@ -1337,6 +1337,21 @@ fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work
         rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap(),
         receipt
     );
+    let journal_path = next.state_dir.join("train.json");
+    let mut incompatible: serde_json::Value = serde_json::from_slice(&journal).unwrap();
+    incompatible["version"] = serde_json::json!(fleetix::build_train::VERSION + 1);
+    let raw = serde_json::to_vec(&incompatible).unwrap();
+    std::fs::write(&journal_path, &raw).unwrap();
+    assert!(
+        rollover(&old, &next, server.backend.as_ref(), &fence.token)
+            .unwrap_err()
+            .contains("unsupported rollover journal version")
+    );
+    assert_eq!(std::fs::read(&journal_path).unwrap(), raw);
+    assert_eq!(
+        server.backend.released_requests.lock().unwrap().as_slice(),
+        ["m"]
+    );
 }
 
 #[test]
