@@ -101,6 +101,23 @@ impl Outgoing {
     }
 }
 
+/// Observe full disconnect/error without reading, writing or treating a peer's
+/// write-half shutdown as detachment while it still waits to read our reply.
+pub(super) fn connected(stream: &UnixStream) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: 0,
+        revents: 0,
+    };
+    // SAFETY: the borrowed stream keeps its descriptor live; poll receives one
+    // initialized writable entry and a zero timeout, so this never blocks.
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result < 0 {
+        return std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+    }
+    descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
+}
+
 fn wait(
     stream: &UnixStream,
     events: i16,
@@ -252,5 +269,20 @@ pub(super) fn exchange(
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waiter_disconnect_probe_preserves_live_and_write_half_closed_clients() {
+        let (server, client) = UnixStream::pair().unwrap();
+        assert!(connected(&server));
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(connected(&server));
+        drop(client);
+        assert!(!connected(&server));
     }
 }

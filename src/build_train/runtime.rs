@@ -708,6 +708,10 @@ pub fn serve(
         }
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
         outgoing.retain_mut(ipc::Outgoing::pending);
+        waiters.retain(|_, streams| {
+            streams.retain(ipc::connected);
+            !streams.is_empty()
+        });
         if !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _)) => {

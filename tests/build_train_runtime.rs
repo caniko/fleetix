@@ -434,6 +434,61 @@ fn oversized_failure_details_are_bounded_without_losing_terminal_status() {
 }
 
 #[test]
+fn detached_registration_waiters_release_connection_and_reattachment_capacity() {
+    let mut server = Server::with_limit(8);
+    server.shutdown();
+    server.config.planning_timeout_seconds = 60;
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    *server.backend.plan_released.lock().unwrap() = false;
+    server.restart();
+    let client = server.client();
+    let stop = AtomicBool::new(false);
+    // Fill both the eight-per-attempt waiter budget and the global 64-socket
+    // budget with detached clients while the first planner remains blocked.
+    for attempt in 0..8 {
+        let request = request(&format!("detached-{attempt}"), "murph");
+        for _ in 0..8 {
+            let error = client
+                .register_for(request.clone(), Duration::from_millis(60), &stop)
+                .unwrap_err();
+            assert!(
+                error.contains("deadline"),
+                "unexpected registration error: {error}"
+            );
+        }
+    }
+    responsive(&client, Command::Inspect);
+    for attempt in 0..8 {
+        assert_eq!(
+            responsive(&client, Command::Status(format!("detached-{attempt}"))).outcome,
+            Some(Outcome::Pending)
+        );
+    }
+    let error = client
+        .register_for(
+            request("detached-0", "murph"),
+            Duration::from_millis(60),
+            &stop,
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("deadline"),
+        "reattachment slots were not freed: {error}"
+    );
+    responsive(&client, Command::Cancel("detached-7".into()));
+    assert_eq!(
+        responsive(&client, Command::Status("detached-7".into())).outcome,
+        Some(Outcome::Cancelled)
+    );
+    responsive(&client, Command::Retry("detached-7".into()));
+    assert_eq!(
+        responsive(&client, Command::Status("detached-7".into())).outcome,
+        Some(Outcome::Pending)
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
+}
+
+#[test]
 fn unread_reply_does_not_block_other_control_clients() {
     use std::io::Write;
     use std::os::unix::net::UnixStream;

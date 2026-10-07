@@ -96,7 +96,9 @@ evidence for retirement after the planner exits, including across restart.
 deadline and expected queueing. Timeout, SIGINT or SIGTERM only detaches: inspect
 the same attempt with `status` before retrying; repeat `register` with the same
 frozen request to await preparation. Library clients use `Client::register_for`
-for the same explicit, interruptible deadline.
+for the same explicit, interruptible deadline. The coordinator prunes fully
+disconnected registration sockets while preserving their durable requests, so
+detachment releases waiting-client capacity for reattachment and controls.
 
 After the caller's live checks pass:
 

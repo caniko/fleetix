@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prune fully detached registration waiters while preparation continues, freeing
+  per-attempt and global connection budgets without cancelling durable requests
+  or dropping live clients that have only closed their write half.
 - Validate native intake identities before journaling, so a rejected malformed
   request cannot become an unrecoverable startup-retention obligation. Enforce
   Nix's store-name length and leading-component rules at that same boundary.
