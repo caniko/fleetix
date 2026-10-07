@@ -213,6 +213,9 @@ in {
     environment.etc."fleetix-train/service.json".source = activeServiceConfig;
     environment.etc."fleetix-train/next-service.json".source = serviceConfig;
     environment.etc."fleetix-train/next-connection.json".text = builtins.toJSON connection;
+    # Realize and retain the replacement executable before offline handover,
+    # while the active unit keeps the original package's closure referenced.
+    system.extraDependencies = lib.optional (retained != null) cfg.package;
     systemd.tmpfiles.rules = [
       "d /nix/var/nix/gcroots/per-user/${activeUser} 0700 ${activeUser} - -"
       "d ${activeConnection.gc_roots} 0700 ${activeUser} - -"

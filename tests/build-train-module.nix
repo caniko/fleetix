@@ -90,4 +90,5 @@ in
   assert staged.systemd.services.fleetix-build-train.serviceConfig.ExecStart == "${lib.getExe pkgs.hello} build-train serve --config ${retainedConfig}";
   assert staged.environment.etc."fleetix-train/service.json".source == retainedConfig;
   assert staged.environment.etc."fleetix-train/next-service.json".source != staged.environment.etc."fleetix-train/service.json".source;
+  assert lib.elem pkgs.coreutils staged.system.extraDependencies;
     pkgs.writeText "fleetix-build-train-module" "Private operator service, independent planning limits, custom paths and retained activation policy verified\n"
