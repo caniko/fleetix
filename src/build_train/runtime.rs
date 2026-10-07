@@ -958,8 +958,24 @@ fn apply(
                         "retired attempt cannot be resubmitted; use a new attempt identity".into(),
                     );
                 }
-                backend.retain(&request, &Graph::new())?;
                 next.register(request.clone(), !held)?;
+                // Intake owns source/derivation roots too. Validate and journal
+                // its immutable identity before retention can create any root;
+                // a partial retention failure remains a known terminal request.
+                save(config, &next)?;
+                *train = next.clone();
+                if let Err(error) = backend.retain(&request, &Graph::new()) {
+                    next.preparation_failed(&request.attempt, error.clone())?;
+                    save(config, &next)?;
+                    *train = next;
+                    return Err(error);
+                }
+                return Ok(reply(
+                    config,
+                    train,
+                    Some(train.outcome(&request.attempt)?),
+                    Some(&request.attempt),
+                ));
             }
             outcome = Some(next.outcome(&request.attempt)?);
         }

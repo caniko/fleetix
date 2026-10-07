@@ -52,6 +52,9 @@ Defaults preserve existing deployments:
 
 `runtimeDirectory`, `stateDirectory` and `gcRoots` configure ownership locations.
 An in-place policy rollover requires those locations to remain unchanged.
+The NixOS service preserves its private runtime directory on stop so offline
+rollover can acquire the same socket lease as the operator. Reboot clears `/run`;
+start and stop the service to provision that namespace before offline rollover.
 
 ## Request lifecycle
 

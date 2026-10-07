@@ -42,6 +42,8 @@ struct TestBackend {
     retain_entered: AtomicBool,
     retain_released: Mutex<bool>,
     retain_gate: Condvar,
+    initial_retains: Mutex<Vec<String>>,
+    initial_retain_fails: AtomicBool,
 }
 impl Backend for TestBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
@@ -136,6 +138,15 @@ impl Backend for TestBackend {
             .collect())
     }
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String> {
+        if graph.is_empty() {
+            self.initial_retains
+                .lock()
+                .unwrap()
+                .push(request.attempt.clone());
+            if self.initial_retain_fails.load(Ordering::Relaxed) {
+                return Err("injected initial retention failure".into());
+            }
+        }
         let mut owned = self.retained.lock().unwrap();
         let paths = owned.entry(request.attempt.clone()).or_default();
         let mut todo: Vec<_> = request.roots.iter().cloned().collect();
@@ -284,6 +295,66 @@ fn responsive(client: &Client, command: Command) -> Reply {
     rx.recv_timeout(Duration::from_secs(1))
         .expect("control plane blocked behind graph preparation")
         .unwrap()
+}
+
+#[test]
+fn invalid_or_unjournaled_intake_never_creates_preparation_roots() {
+    let server = Server::start();
+    let client = server.client();
+    let mut invalid = request("invalid", "murph");
+    invalid.target.clear();
+    assert!(
+        client
+            .call(Command::Register(invalid))
+            .unwrap_err()
+            .contains("nonempty")
+    );
+    assert!(server.backend.initial_retains.lock().unwrap().is_empty());
+
+    let path = server.config.state_dir.join("train.json");
+    let saved = server.config.state_dir.join("train.saved");
+    std::fs::rename(&path, &saved).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let result = client.call(Command::Register(request("unsaved", "murph")));
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&saved, &path).unwrap();
+    assert!(result.is_err());
+    assert!(server.backend.initial_retains.lock().unwrap().is_empty());
+    assert!(
+        client
+            .call(Command::Status("unsaved".into()))
+            .unwrap_err()
+            .contains("unknown")
+    );
+}
+
+#[test]
+fn partial_initial_retention_failure_keeps_retirable_intake_after_restart() {
+    let mut server = Server::start();
+    let client = server.client();
+    server
+        .backend
+        .initial_retain_fails
+        .store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .call(Command::Register(request("m", "murph")))
+            .unwrap_err()
+            .contains("initial retention")
+    );
+    assert!(matches!(
+        client.call(Command::Status("m".into())).unwrap().outcome,
+        Some(Outcome::Failed(_))
+    ));
+    server.shutdown();
+    server
+        .backend
+        .initial_retain_fails
+        .store(false, Ordering::Relaxed);
+    server.restart();
+    client.call(Command::Retire("m".into())).unwrap();
+    assert_eq!(*server.backend.released_requests.lock().unwrap(), ["m"]);
+    assert!(server.backend.started.lock().unwrap().is_empty());
 }
 
 #[test]

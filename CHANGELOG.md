@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Validate and durably journal initial intake before retaining source/derivation
+  roots. Invalid or unjournaled requests create no roots; partial initial
+  retention failure remains a known, retirable terminal request.
+- Preserve the private runtime directory when the NixOS service stops, retaining
+  the operator-owned socket lease namespace required for offline rollover.
 - Persist the full planning ownership graph before creating dependency/output
   roots, so cancelled, timed-out and partially failed preparation can be retired
   after restart without orphaning roots. Dispatch stays held through retention.

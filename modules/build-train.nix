@@ -163,6 +163,9 @@ in {
         User = cfg.user;
         ExecStart = "${lib.getExe cfg.package} build-train serve --config ${serviceConfig}";
         RuntimeDirectory = cfg.runtimeDirectory;
+        # Offline rollover runs as the operator after the service stops, and
+        # must keep the same socket lease inode and operator-owned parent.
+        RuntimeDirectoryPreserve = "yes";
         RuntimeDirectoryMode = "0700";
         StateDirectory = cfg.stateDirectory;
         StateDirectoryMode = "0700";

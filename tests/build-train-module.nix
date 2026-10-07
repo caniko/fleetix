@@ -33,6 +33,7 @@
 in
   assert service.serviceConfig.User == "operator";
   assert service.serviceConfig.RuntimeDirectoryMode == "0700";
+  assert service.serviceConfig.RuntimeDirectoryPreserve == "yes";
   assert service.serviceConfig.StateDirectoryMode == "0700";
   assert service.serviceConfig.UMask == "0077";
   assert service.serviceConfig.TimeoutStopSec == 21630;
@@ -46,6 +47,7 @@ in
   assert lib.elem "d ${connection.gc_roots} 0700 operator - -" config.systemd.tmpfiles.rules;
   assert builtins.any (entry: !entry.assertion && lib.hasInfix "two native queries" entry.message) invalid.assertions;
   assert customConnection.socket == "/run/custom-train/coordinator.sock";
+  assert custom.systemd.services.fleetix-build-train.serviceConfig.RuntimeDirectoryPreserve == "yes";
   assert customConnection.preparation_dir == "/var/lib/custom-train/preparation";
   assert customConnection.policy != connection.policy;
     pkgs.writeText "fleetix-build-train-module" "Private operator service, independent planning limits, custom paths and retained activation policy verified\n"
