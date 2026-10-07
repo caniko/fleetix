@@ -49,6 +49,7 @@ jobs:
           git fetch --force --tags origin "refs/tags/${tag}:refs/tags/${tag}"
           git verify-tag "$tag"
           validated_sha="$(git rev-list -n 1 "$tag")"
+          test "$validated_sha" = "${GITHUB_SHA:?missing workflow event SHA}" || { echo "Signed tag commit does not match the workflow event SHA; refusing a moved tag" >&2; exit 1; }
           git checkout --detach "$validated_sha"
           test "$(nix develop -c cargo pkgid -p fleetix-sidecar | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)" = "$tag" || { echo "fleetix-sidecar 0.6.0 does not match tag $tag" >&2; exit 1; }
           test "$(nix develop -c cargo pkgid -p fleetix | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)" = "$tag" || { echo "fleetix 0.6.0 does not match tag $tag" >&2; exit 1; }
