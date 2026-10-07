@@ -80,7 +80,19 @@ fleetix build-train register --connection /etc/fleetix-train/connection.json --r
 ```
 
 Registration is durable and held: it retains source/derivation evidence but has
-no scheduling priority and cannot dispatch. After the caller's live checks pass:
+no scheduling priority and cannot dispatch. The full ownership graph is journaled
+before dependency/output roots are created; preparation stays held until retention
+finishes. Cancellation, timeout and partial retention failure preserve enough
+evidence for retirement after the planner exits, including across restart.
+
+`register --wait-seconds N` bounds delivery, planner queueing and preparation
+(default 86400, range 1–86400). Select a wait that covers the service's planning
+deadline and expected queueing. Timeout, SIGINT or SIGTERM only detaches: inspect
+the same attempt with `status` before retrying; repeat `register` with the same
+frozen request to await preparation. Library clients use `Client::register_for`
+for the same explicit, interruptible deadline.
+
+After the caller's live checks pass:
 
 ```text
 fleetix build-train admit --connection /etc/fleetix-train/connection.json --attempt deployment-attempt-unique-id

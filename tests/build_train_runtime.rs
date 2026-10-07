@@ -36,6 +36,12 @@ struct TestBackend {
     release_fails: AtomicBool,
     fail_after_materialize: AtomicBool,
     released_requests: Mutex<Vec<String>>,
+    retained: Mutex<BTreeMap<String, BTreeSet<Goal>>>,
+    retain_fails: AtomicBool,
+    block_retain: AtomicBool,
+    retain_entered: AtomicBool,
+    retain_released: Mutex<bool>,
+    retain_gate: Condvar,
 }
 impl Backend for TestBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
@@ -129,7 +135,28 @@ impl Backend for TestBackend {
             })
             .collect())
     }
-    fn retain(&self, _: &Request, _: &Graph) -> Result<(), String> {
+    fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String> {
+        let mut owned = self.retained.lock().unwrap();
+        let paths = owned.entry(request.attempt.clone()).or_default();
+        let mut todo: Vec<_> = request.roots.iter().cloned().collect();
+        while let Some(goal) = todo.pop() {
+            if let Some(definition) = graph.get(&goal) {
+                if paths.insert(goal) {
+                    todo.extend(definition.dependencies.iter().cloned());
+                }
+            }
+        }
+        drop(owned);
+        if !graph.is_empty() && self.block_retain.load(Ordering::Relaxed) {
+            self.retain_entered.store(true, Ordering::Relaxed);
+            let mut released = self.retain_released.lock().unwrap();
+            while !*released {
+                released = self.retain_gate.wait(released).unwrap();
+            }
+        }
+        if !graph.is_empty() && self.retain_fails.load(Ordering::Relaxed) {
+            return Err("injected partial retention failure".into());
+        }
         Ok(())
     }
     fn valid(&self, goal: &Goal, _: &Definition) -> Result<bool, String> {
@@ -157,7 +184,14 @@ impl Backend for TestBackend {
         }
         Ok(())
     }
-    fn release(&self, request: &Request, _: &Graph) -> Result<(), String> {
+    fn release(&self, request: &Request, graph: &Graph) -> Result<(), String> {
+        let mut owned = self.retained.lock().unwrap();
+        if owned
+            .get(&request.attempt)
+            .is_some_and(|paths| paths.iter().any(|goal| !graph.contains_key(goal)))
+        {
+            return Err("retained graph evidence missing".into());
+        }
         if self.release_fails.load(Ordering::Relaxed) {
             return Err("injected root release failure".into());
         }
@@ -165,6 +199,7 @@ impl Backend for TestBackend {
             .lock()
             .unwrap()
             .push(request.attempt.clone());
+        owned.remove(&request.attempt);
         Ok(())
     }
 }
@@ -234,6 +269,8 @@ impl Server {
         self.backend.gate.notify_all();
         *self.backend.plan_released.lock().unwrap() = true;
         self.backend.plan_gate.notify_all();
+        *self.backend.retain_released.lock().unwrap() = true;
+        self.backend.retain_gate.notify_all();
         self.worker.take().unwrap().join().unwrap().unwrap();
     }
 }
@@ -904,6 +941,112 @@ fn preparation_deadline_retains_planner_capacity_and_requires_explicit_retry() {
         client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
     });
 }
+
+#[test]
+fn discarded_and_partially_retained_plans_remain_retirable_after_restart() {
+    for reason in ["cancelled", "timed-out", "partial-retention"] {
+        let mut server = Server::start();
+        server.shutdown();
+        server.config.planning_timeout_seconds = 1;
+        server.backend.block_plan.store(true, Ordering::Relaxed);
+        *server.backend.plan_released.lock().unwrap() = false;
+        server.restart();
+        let client = server.client();
+        let joining = client.clone();
+        let registration =
+            std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+        eventually(|| server.backend.plan_entered.load(Ordering::Relaxed));
+        if reason == "cancelled" {
+            client.call(Command::Cancel("m".into())).unwrap();
+        } else if reason == "timed-out" {
+            eventually(|| {
+                matches!(
+                    client.call(Command::Status("m".into())).unwrap().outcome,
+                    Some(Outcome::Failed(_))
+                )
+            });
+        } else {
+            server.backend.retain_fails.store(true, Ordering::Relaxed);
+        }
+        *server.backend.plan_released.lock().unwrap() = true;
+        server.backend.plan_gate.notify_all();
+        let result = registration.join().unwrap();
+        if reason == "cancelled" {
+            assert_eq!(result.unwrap().outcome, Some(Outcome::Cancelled));
+        } else {
+            assert!(result.is_err());
+        }
+        server.shutdown();
+        server.backend.retain_fails.store(false, Ordering::Relaxed);
+        server.restart();
+        assert!(
+            client.call(Command::Retire("m".into())).is_ok(),
+            "cannot retire {reason}"
+        );
+        assert_eq!(*server.backend.released_requests.lock().unwrap(), ["m"]);
+        assert!(server.backend.retained.lock().unwrap().is_empty());
+        assert!(server.backend.started.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn retention_journals_ownership_before_roots_and_remains_held_on_cancellation_or_timeout() {
+    for cancelled in [true, false] {
+        let mut server = Server::start();
+        server.shutdown();
+        server.config.planning_timeout_seconds = 1;
+        server.backend.block_retain.store(true, Ordering::Relaxed);
+        *server.backend.retain_released.lock().unwrap() = false;
+        server.restart();
+        let client = server.client();
+        let joining = client.clone();
+        let registration =
+            std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+        eventually(|| server.backend.retain_entered.load(Ordering::Relaxed));
+        let state: Train = serde_json::from_reader(
+            std::fs::File::open(server.config.state_dir.join("train.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(!state.requests["m"].prepared);
+        assert!(
+            state
+                .retained_graph("m")
+                .unwrap()
+                .contains_key(&goal("shared"))
+        );
+        if cancelled {
+            client.call(Command::Cancel("m".into())).unwrap();
+        } else {
+            eventually(|| {
+                matches!(
+                    client.call(Command::Status("m".into())).unwrap().outcome,
+                    Some(Outcome::Failed(_))
+                )
+            });
+        }
+        assert!(
+            client
+                .call(Command::Retire("m".into()))
+                .unwrap_err()
+                .contains("planner has not exited")
+        );
+        assert!(server.backend.started.lock().unwrap().is_empty());
+        *server.backend.retain_released.lock().unwrap() = true;
+        server.backend.retain_gate.notify_all();
+        let result = registration.join().unwrap();
+        if cancelled {
+            assert_eq!(result.unwrap().outcome, Some(Outcome::Cancelled));
+        } else {
+            assert!(result.unwrap_err().contains("deadline"));
+        }
+        server.shutdown();
+        server.backend.block_retain.store(false, Ordering::Relaxed);
+        server.restart();
+        client.call(Command::Retire("m".into())).unwrap();
+        assert!(server.backend.retained.lock().unwrap().is_empty());
+        assert!(server.backend.started.lock().unwrap().is_empty());
+    }
+}
 impl Drop for Server {
     fn drop(&mut self) {
         if self.worker.is_some() {
@@ -931,6 +1074,72 @@ fn disconnected_request_continues_and_late_join_changes_actual_worker_order() {
     let started = server.backend.started.lock().unwrap().clone();
     assert_eq!(&started[..3], ["busy", "shared", "murph"]);
     assert_eq!(started.iter().filter(|s| *s == "shared").count(), 1);
+}
+
+#[cfg(all(feature = "cli", feature = "build-train-cli"))]
+#[test]
+fn standalone_registration_deadline_detaches_and_allows_explicit_reattachment() {
+    let server = Server::start();
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    let connection = server._temp.path().join("connection.json");
+    let request_path = server._temp.path().join("request.json");
+    std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
+        "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
+        "preparation_dir": server._temp.path().join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+    })).unwrap()).unwrap();
+    std::fs::write(
+        &request_path,
+        serde_json::to_vec(&request("m", "murph")).unwrap(),
+    )
+    .unwrap();
+    let invoke = |seconds: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_fleetix"))
+            .args([
+                "build-train",
+                "register",
+                "--wait-seconds",
+                seconds,
+                "--connection",
+            ])
+            .arg(&connection)
+            .arg("--request")
+            .arg(&request_path)
+            .output()
+            .unwrap()
+    };
+    let started = Instant::now();
+    let expired = invoke("1");
+    assert!(!expired.status.success());
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        String::from_utf8_lossy(&expired.stderr).contains("detached"),
+        "{}",
+        String::from_utf8_lossy(&expired.stderr)
+    );
+    assert_eq!(
+        server
+            .client()
+            .call(Command::Status("m".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Pending)
+    );
+    let backend = Arc::clone(&server.backend);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        *backend.plan_released.lock().unwrap() = true;
+        backend.plan_gate.notify_all();
+    });
+    let reattached = invoke("620");
+    release.join().unwrap();
+    assert!(
+        reattached.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reattached.stderr)
+    );
+    let reply: Reply = serde_json::from_slice(&reattached.stdout).unwrap();
+    assert!(reply.outputs.contains_key(&goal("murph")));
+    assert!(server.backend.started.lock().unwrap().is_empty());
 }
 
 #[cfg(all(feature = "cli", feature = "build-train-cli"))]

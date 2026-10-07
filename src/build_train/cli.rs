@@ -26,6 +26,9 @@ pub enum TrainCommand {
         /// JSON Request with exact derivation/named-output roots and immutable source.
         #[arg(long)]
         request: PathBuf,
+        /// Bound registration delivery, planner queueing and preparation; expiry only detaches.
+        #[arg(long, default_value_t = 86400, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        wait_seconds: u64,
     },
     /// Admit a held request after the caller's live safety and resource checks pass.
     Admit {
@@ -151,11 +154,16 @@ pub fn execute(command: TrainCommand) -> Result<Execution, String> {
         TrainCommand::Register {
             connection,
             request,
+            wait_seconds,
         } => {
             let request: Request =
                 serde_json::from_slice(&std::fs::read(request).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
-            call(&connection, Command::Register(request))
+            let stop = signals()?;
+            Connection::load(&connection)?
+                .client()
+                .register_for(request, Duration::from_secs(wait_seconds), &stop)
+                .map(Execution::Reply)
         }
         TrainCommand::Admit {
             connection,

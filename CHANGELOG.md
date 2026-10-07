@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Persist the full planning ownership graph before creating dependency/output
+  roots, so cancelled, timed-out and partially failed preparation can be retired
+  after restart without orphaning roots. Dispatch stays held through retention.
+- Let standalone registration use an explicit, interruptible `--wait-seconds`
+  deadline (default 86400) covering queueing and planning instead of truncating
+  valid service preparation to five minutes. Expiry detaches without cancellation.
 - Keep existing unbounded library waits interruptible during stalled socket
   delivery, so legacy clients detach promptly without cancelling construction.
 - Reject unrepresentable drain durations before establishing an activation fence
