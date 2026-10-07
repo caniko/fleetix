@@ -166,9 +166,18 @@ impl Client {
                 return Err("detached; construction continues; cancel explicitly".into());
             }
             let outcome = self
-                .call(Command::Status(attempt.into()))?
+                .call_until_stoppable(
+                    Command::Status(attempt.into()),
+                    std::time::Instant::now() + Duration::from_secs(300),
+                    Some(stop),
+                )
+                .map_err(|error| {
+                    format!(
+                        "wait failed; detached; construction continues; cancel explicitly: {error}"
+                    )
+                })?
                 .outcome
-                .ok_or("missing outcome")?;
+                .ok_or("missing outcome; detached; construction continues; cancel explicitly")?;
             if outcome != Outcome::Pending {
                 return Ok(outcome);
             }
@@ -224,7 +233,9 @@ impl Client {
     /// Close dispatch atomically before waiting. Timeout leaves the named fence
     /// intact so a disconnected activation cannot accidentally restart builders.
     pub fn drain(&self, attempt: &str, wait: Duration) -> Result<Fence, String> {
-        let deadline = std::time::Instant::now() + wait;
+        let deadline = std::time::Instant::now()
+            .checked_add(wait)
+            .ok_or("invalid drain wait duration")?;
         // Zero means inspect-and-fail without waiting for workers. Allow only a
         // bounded control-plane round trip to establish the durable fence.
         let fence_deadline = if wait.is_zero() {

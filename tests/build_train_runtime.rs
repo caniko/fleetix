@@ -1626,6 +1626,54 @@ fn wait_interrupt_detaches_during_stalled_socket_delivery() {
 }
 
 #[test]
+fn legacy_wait_interrupt_detaches_during_stalled_socket_delivery() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let interrupt = Arc::clone(&stop);
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        interrupt.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(1));
+    });
+    let started = Instant::now();
+    let error = client.wait("a", &stop).unwrap_err();
+    let elapsed = started.elapsed();
+    peer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "legacy wait interrupt took {elapsed:?}"
+    );
+    assert!(error.contains("detached") && error.contains("cancel explicitly"));
+}
+
+#[test]
+fn unrepresentable_drain_duration_fails_without_fencing() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("a", "atlas")))
+        .unwrap();
+    let error = client.drain("a", Duration::MAX).unwrap_err();
+    assert!(error.contains("invalid drain wait duration"), "{error}");
+    let status = client.call(Command::Inspect).unwrap();
+    assert!(status.fence.is_none());
+    assert_eq!(
+        client.call(Command::Status("a".into())).unwrap().outcome,
+        Some(Outcome::Pending)
+    );
+}
+
+#[test]
 fn preparation_is_process_shared_exact_keyed_and_caches_only_passes() {
     use preparation::{Evidence, Key};
     let temp = tempfile::tempdir().unwrap();

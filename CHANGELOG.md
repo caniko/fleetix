@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fleetix-sidecar` package. Registry rollout requires publishing that prerequisite
   before its consuming Fleetix release.
 
+### Fixed
+
+- Keep existing unbounded library waits interruptible during stalled socket
+  delivery, so legacy clients detach promptly without cancelling construction.
+- Reject unrepresentable drain durations before establishing an activation fence
+  instead of panicking in the library frontend.
+
 ## [0.5.2] - 2026-10-07
 
 ### Fixed
