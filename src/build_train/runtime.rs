@@ -894,6 +894,11 @@ pub fn serve(
     }
     // The lease anchor is deliberately retained.
     fs::remove_file(&config.socket).map_err(|e| e.to_string())?;
+    // A concurrent fork can temporarily inherit even CLOEXEC descriptions.
+    // After draining and removing the endpoint, release our kernel locks
+    // explicitly so those copies cannot delay a legitimate service restart.
+    FileExt::unlock(&socket_lease).map_err(|e| e.to_string())?;
+    FileExt::unlock(&lease).map_err(|e| e.to_string())?;
     Ok(())
 }
 

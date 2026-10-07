@@ -195,7 +195,10 @@ fn validated_request_paths(
     let paths = request_paths(request, graph);
     // The engine's parser also accepts store basenames in derivation JSON.
     // Root targets must already be absolute, canonical store children: never
-    // pass a relative basename through to the root symlink writer.
+    // pass a relative basename through to the root symlink writer. Match Nix's
+    // checkName/StorePath::MaxPathLen as well: overlong root filenames are a
+    // deterministic retention error, not a transient filesystem failure.
+    // https://github.com/NixOS/nix/blob/2.28.5/src/libstore/path.cc
     for path in &paths {
         let (hash, name) = path
             .strip_prefix("/nix/store/")
@@ -206,6 +209,8 @@ fn validated_request_paths(
                 .bytes()
                 .all(|c| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&c))
             || name.is_empty()
+            || name.len() > 211
+            || matches!(name.split('-').next(), Some("." | ".."))
             || !name
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || b"+-._?=".contains(&c))

@@ -818,6 +818,49 @@ fn retirement_archives_before_root_release_and_retries_after_restart() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn graceful_stop_releases_leases_even_with_inherited_file_descriptions() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut server = Server::start();
+    // A concurrent fork inherits the open file description until exec, even
+    // with CLOEXEC set. Duplicate those exact descriptions deterministically.
+    let locks = [
+        server.config.state_dir.join("coordinator.lock"),
+        server.config.socket.with_extension("lock"),
+    ];
+    let descriptors: Vec<i32> = std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            std::fs::read_link(entry.path()).is_ok_and(|target| locks.contains(&target))
+        })
+        .map(|entry| entry.file_name().to_str().unwrap().parse().unwrap())
+        .collect();
+    let mut inherited = Vec::new();
+    for fd in descriptors {
+        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        assert!(duplicate >= 0);
+        inherited.push(unsafe { std::fs::File::from_raw_fd(duplicate) });
+    }
+    assert_eq!(inherited.len(), 2);
+    server.shutdown();
+    for file in &inherited {
+        // A separately opened description must now be able to lock the anchor;
+        // the inherited descriptions remain open for this entire assertion.
+        let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+        let fresh = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&fresh)
+            .expect("stopped coordinator left a lease in an inherited descriptor");
+    }
+    server.restart();
+    responsive(&server.client(), Command::Inspect);
+}
+
+#[test]
 fn materialized_output_does_not_clear_a_worker_failure_on_completion_or_restart() {
     let mut server = Server::start();
     server

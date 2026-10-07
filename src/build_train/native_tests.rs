@@ -213,14 +213,30 @@ fn invalid_root_identities_never_create_request_namespaces() {
         }]),
         activates: false,
     };
-    for bad in [
+    let invalid_paths: Vec<String> = [
         "00000000000000000000000000000000-source",
         "/checkout/source",
         "/nix/store/00000000000000000000000000000000-source/subpath",
         "/nix/store/../00000000000000000000000000000000-source",
-    ] {
+        "/nix/store/00000000000000000000000000000000-.",
+        "/nix/store/00000000000000000000000000000000-..",
+        "/nix/store/00000000000000000000000000000000-.-bad",
+        "/nix/store/00000000000000000000000000000000-..-bad",
+    ]
+    .into_iter()
+    .map(String::from)
+    .chain([format!(
+        "/nix/store/00000000000000000000000000000000-{}",
+        "x".repeat(212)
+    )])
+    .collect();
+    for bad in invalid_paths {
         let mut invalid = request.clone();
         invalid.source = format!("{bad}#target");
+        assert!(
+            backend.validate_request(&invalid).is_err(),
+            "malformed source accepted at intake: {bad}"
+        );
         assert!(backend.retain(&invalid, &Graph::new()).is_err());
         assert!(
             !backend.0.gc_roots.join("requests").exists(),
@@ -228,7 +244,11 @@ fn invalid_root_identities_never_create_request_namespaces() {
         );
         invalid = request.clone();
         invalid.roots = BTreeSet::from([Goal {
-            derivation: format!("{bad}.drv"),
+            derivation: if bad.ends_with("-.") || bad.ends_with("-..") {
+                bad.clone()
+            } else {
+                format!("{bad}.drv")
+            },
             output: "out".into(),
         }]);
         assert!(backend.retain(&invalid, &Graph::new()).is_err());
@@ -239,7 +259,7 @@ fn invalid_root_identities_never_create_request_namespaces() {
         let graph = Graph::from([(
             request.roots.iter().next().unwrap().clone(),
             Definition {
-                output_path: bad.into(),
+                output_path: bad.clone(),
                 dependencies: BTreeSet::new(),
                 operation: Operation::Build,
             },
@@ -250,6 +270,14 @@ fn invalid_root_identities_never_create_request_namespaces() {
             "invalid output created namespace: {bad}"
         );
     }
+    let mut boundary = request;
+    boundary.source = format!(
+        "/nix/store/00000000000000000000000000000000-{}#target",
+        "x".repeat(211)
+    );
+    backend.validate_request(&boundary).unwrap();
+    boundary.source = "/nix/store/00000000000000000000000000000000-...-valid#target".into();
+    backend.validate_request(&boundary).unwrap();
 }
 
 #[test]
@@ -288,7 +316,10 @@ fn malformed_native_intake_is_rejected_without_poisoning_restart() {
     assert!(ready(&worker));
     let valid = "/nix/store/00000000000000000000000000000000-source";
     let mut statuses = Vec::new();
-    for (index, field) in ["source", "derivation", "output"].into_iter().enumerate() {
+    for (index, field) in ["source", "derivation", "output", "long-source"]
+        .into_iter()
+        .enumerate()
+    {
         let mut request = Request {
             attempt: format!("invalid-{index}"),
             target: "builder".into(),
@@ -306,6 +337,12 @@ fn malformed_native_intake_is_rejected_without_poisoning_restart() {
                     derivation: "00000000000000000000000000000000-relative.drv".into(),
                     output: "out".into(),
                 }])
+            }
+            "long-source" => {
+                request.source = format!(
+                    "/nix/store/00000000000000000000000000000000-{}#target",
+                    "x".repeat(256)
+                )
             }
             _ => {
                 request.roots = BTreeSet::from([Goal {

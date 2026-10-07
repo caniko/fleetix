@@ -38,7 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Validate native intake identities before journaling, so a rejected malformed
-  request cannot become an unrecoverable startup-retention obligation.
+  request cannot become an unrecoverable startup-retention obligation. Enforce
+  Nix's store-name length and leading-component rules at that same boundary.
+- Explicitly release drained coordinator leases on graceful stop so temporary
+  fork-inherited file descriptions cannot block the replacement coordinator.
 - Reject noncanonical source, derivation and output-root evidence before creating
   request namespaces; unsuccessful terminal registration reattachments now fail
   the standalone command while preserving status evidence.
