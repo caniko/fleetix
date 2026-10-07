@@ -21,6 +21,7 @@
   config = evaluate {};
   service = config.systemd.services.fleetix-build-train;
   connection = builtins.fromJSON config.environment.etc."fleetix-train/connection.json".text;
+  rootsType = (import ../modules/build-train.nix {inherit config lib pkgs;}).options.fleetix.services.buildTrain.gcRoots.type;
   invalid = evaluate {fleetix.services.buildTrain.planningTimeoutSeconds = 30;};
   custom = evaluate {
     fleetix.services.buildTrain = {
@@ -73,6 +74,19 @@ in
   assert connection.builder == "builder";
   assert connection.socket == "/run/fleetix-train/coordinator.sock";
   assert connection.gc_roots == "/nix/var/nix/gcroots/per-user/operator/fleetix-train";
+  assert rootsType.check connection.gc_roots;
+  assert rootsType.check "/nix/var/nix/gcroots/custom/.private-train";
+  assert lib.all (path: !rootsType.check path) [
+    "/nix/var/nix/gcroots"
+    "/nix/var/nix/gcroots/"
+    "/nix/var/nix/gcroots/../fleetix-roots"
+    "/nix/var/nix/gcroots/custom/./fleetix-roots"
+    "/nix/var/nix/gcroots/custom/../fleetix-roots"
+    "/nix/var/nix/gcroots/custom//fleetix-roots"
+    "/nix/var/nix/gcroots/custom/fleetix-roots/"
+    "/nix/var/nix/gcroots/custom roots"
+    "/nix/var/nix/gcroots/custom\nroots"
+  ];
   assert lib.elem "d ${connection.gc_roots} 0700 operator - -" config.systemd.tmpfiles.rules;
   assert builtins.any (entry: !entry.assertion && lib.hasInfix "two native queries" entry.message) invalid.assertions;
   assert customConnection.socket == "/run/custom-train/coordinator.sock";

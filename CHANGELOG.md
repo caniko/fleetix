@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Nix's store-name length and leading-component rules at that same boundary.
 - Explicitly release drained coordinator leases on graceful stop so temporary
   fork-inherited file descriptions cannot block the replacement coordinator.
+- Reject non-normalized GC-root namespaces during NixOS option checking, before
+  invalid tmpfiles paths can reach activation.
 - Reject noncanonical source, derivation and output-root evidence before creating
   request namespaces; unsuccessful terminal registration reattachments now fail
   the standalone command while preserving status evidence.

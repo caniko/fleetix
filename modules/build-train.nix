@@ -131,9 +131,11 @@ in {
       description = "Private durable directory name under /var/lib. Preserve it across policy rollover.";
     };
     gcRoots = lib.mkOption {
-      type = lib.types.strMatching "/nix/var/nix/gcroots/.+";
+      type = lib.types.addCheck (lib.types.strMatching "/nix/var/nix/gcroots/[A-Za-z0-9_+./-]+") (path:
+        lib.all (component: component != "" && component != "." && component != "..")
+        (lib.splitString "/" (lib.removePrefix "/nix/var/nix/gcroots/" path)));
       default = "/nix/var/nix/gcroots/per-user/${cfg.user}/fleetix-train";
-      description = "Private direct-root namespace; preserve its ownership across policy rollover.";
+      description = "Normalized private descendant of /nix/var/nix/gcroots, without empty, dot or parent components; preserve its ownership across policy rollover.";
     };
     workers = lib.mkOption {
       type = lib.types.ints.between 1 64;
