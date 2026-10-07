@@ -1,0 +1,215 @@
+use super::*;
+use std::collections::BTreeSet;
+use std::os::unix::fs::{DirBuilderExt, symlink};
+
+fn service() -> Service {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/build-train-service.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn policy_matches_original_nix_contract() {
+    let service = service();
+    assert_eq!(
+        policy_identity(&service).unwrap(),
+        service.coordinator.policy
+    );
+}
+
+#[test]
+fn scheduling_and_execution_limits_remain_policy_bound() {
+    let service = service();
+    let expected = policy_identity(&service).unwrap();
+    for mutate in [
+        |s: &mut Service| s.coordinator.workers += 1,
+        |s: &mut Service| s.coordinator.planning_workers += 1,
+        |s: &mut Service| s.coordinator.queue_limit += 1,
+        |s: &mut Service| s.coordinator.aging_seconds += 1,
+        |s: &mut Service| s.coordinator.planning_timeout_seconds += 1,
+        |s: &mut Service| s.native.timeout_seconds += 1,
+        |s: &mut Service| s.native.query_timeout_seconds += 1,
+        |s: &mut Service| s.memory_max.push('0'),
+        |s: &mut Service| s.admission_contract.push('x'),
+        |s: &mut Service| s.native.substitutes = !s.native.substitutes,
+        |s: &mut Service| s.coordinator.state_dir.push("changed"),
+    ] {
+        let mut changed = service.clone();
+        mutate(&mut changed);
+        assert_ne!(policy_identity(&changed).unwrap(), expected);
+    }
+    let mut changed = service;
+    changed.coordinator.policy = "not-part-of-itself".into();
+    assert_eq!(policy_identity(&changed).unwrap(), expected);
+}
+
+#[test]
+fn rollover_rejects_changed_ownership_and_invalid_contracts_before_touching_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut previous = service();
+    previous.coordinator.state_dir = temp.path().join("state");
+    previous.coordinator.socket = temp.path().join("coordinator.sock");
+    previous.coordinator.policy = policy_identity(&previous).unwrap();
+    std::fs::create_dir(&previous.coordinator.state_dir).unwrap();
+    let journal = previous.coordinator.state_dir.join("train.json");
+    std::fs::write(&journal, "original recovery evidence").unwrap();
+    for field in ["builder", "roots", "policy", "deadline"] {
+        let mut next = previous.clone();
+        match field {
+            "builder" => next.builder = "replacement-builder".into(),
+            "roots" => next.native.gc_roots = temp.path().join("foreign-roots"),
+            "deadline" => next.coordinator.planning_timeout_seconds = 1,
+            _ => {}
+        }
+        next.coordinator.policy = policy_identity(&next).unwrap();
+        if field == "policy" {
+            next.coordinator.policy = "unverified-policy".into();
+        }
+        assert!(rollover(previous.clone(), next, "token").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&journal).unwrap(),
+            "original recovery evidence"
+        );
+        assert!(
+            !previous
+                .coordinator
+                .state_dir
+                .join("rollover.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn connection_discovery_fails_closed_except_for_absent_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("connection.json");
+    assert!(
+        Connection::discover("atlas", None, &path)
+            .unwrap()
+            .is_none()
+    );
+    assert!(Connection::discover("atlas", Some(&path), &path).is_err());
+    symlink(temp.path().join("missing.json"), &path).unwrap();
+    assert!(Connection::discover("atlas", None, &path).is_err());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, "malformed").unwrap();
+    assert!(Connection::discover("atlas", None, &path).is_err());
+    let service = service();
+    let connection = Connection {
+        builder: service.builder,
+        policy: service.coordinator.policy,
+        socket: service.coordinator.socket,
+        gc_roots: service.native.gc_roots,
+        preparation_dir: "/var/lib/fleetix-train/preparation".into(),
+    };
+    std::fs::write(&path, serde_json::to_vec(&connection).unwrap()).unwrap();
+    assert_eq!(
+        Connection::discover("atlas", None, &path)
+            .unwrap()
+            .unwrap()
+            .policy,
+        connection.policy
+    );
+    assert!(Connection::discover("murph", None, &path).is_err());
+}
+
+#[test]
+fn archived_ownership_excludes_unused_siblings_and_retains_build_evidence() {
+    let root = Goal {
+        derivation: "root.drv".into(),
+        output: "out".into(),
+    };
+    let headers = Goal {
+        derivation: "shared.drv".into(),
+        output: "dev".into(),
+    };
+    let sibling = Goal {
+        output: "out".into(),
+        ..headers.clone()
+    };
+    let request = Request {
+        attempt: "a".into(),
+        target: "target".into(),
+        source: "source#target".into(),
+        roots: BTreeSet::from([root.clone()]),
+        activates: true,
+    };
+    let definition = |path: &str, dependencies| Definition {
+        output_path: path.into(),
+        dependencies,
+        operation: Operation::Restore,
+    };
+    let graph = Graph::from([
+        (
+            root,
+            definition("root-out", BTreeSet::from([headers.clone()])),
+        ),
+        (headers, definition("shared-dev", BTreeSet::new())),
+        (sibling.clone(), definition("unused-out", BTreeSet::new())),
+    ]);
+    let mut archived = graph.clone();
+    archived.remove(&sibling);
+    assert_eq!(
+        request_paths(&request, &graph),
+        request_paths(&request, &archived)
+    );
+    assert_eq!(
+        request_paths(&request, &graph),
+        BTreeSet::from([
+            "source".into(),
+            "root.drv".into(),
+            "root-out".into(),
+            "shared.drv".into(),
+            "shared-dev".into()
+        ])
+    );
+}
+
+#[test]
+fn root_release_is_request_scoped_retryable_and_rejects_foreign_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut native = service().native;
+    native.gc_roots = temp.path().join("roots");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&native.gc_roots)
+        .unwrap();
+    let backend = NixBackend(native);
+    let shared = "/nix/store/00000000000000000000000000000000-shared";
+    let request = |attempt: &str| Request {
+        attempt: attempt.into(),
+        target: "builder".into(),
+        source: shared.into(),
+        roots: BTreeSet::new(),
+        activates: false,
+    };
+    let a = request("a");
+    let b = request("b");
+    let root_a = backend.request_native(&a, true).unwrap().gc_roots;
+    let root_b = backend.request_native(&b, true).unwrap().gc_roots;
+    for directory in [&root_a, &root_b] {
+        symlink(
+            shared,
+            directory.join(Path::new(shared).file_name().unwrap()),
+        )
+        .unwrap();
+    }
+    backend.release(&a, &Graph::new()).unwrap();
+    backend.release(&a, &Graph::new()).unwrap();
+    assert!(!root_a.exists());
+    assert_eq!(
+        std::fs::read_link(root_b.join(Path::new(shared).file_name().unwrap())).unwrap(),
+        Path::new(shared)
+    );
+    let foreign = "/nix/store/11111111111111111111111111111111-foreign";
+    let link = root_b.join(Path::new(foreign).file_name().unwrap());
+    symlink(foreign, &link).unwrap();
+    assert!(backend.release(&b, &Graph::new()).is_err());
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new(foreign));
+    std::fs::remove_file(link).unwrap();
+    std::fs::write(root_b.join("unexpected"), "foreign data").unwrap();
+    assert!(backend.release(&b, &Graph::new()).is_err());
+    assert!(root_b.join("unexpected").exists());
+}

@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::{ffi::OsStrExt, net::UnixStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 // Bound both descriptor/memory use and work per event-loop turn. Slow delivery
@@ -100,8 +101,16 @@ impl Outgoing {
     }
 }
 
-fn wait(stream: &UnixStream, events: i16, deadline: Instant) -> Result<(), String> {
+fn wait(
+    stream: &UnixStream,
+    events: i16,
+    deadline: Instant,
+    stop: Option<&AtomicBool>,
+) -> Result<(), String> {
     loop {
+        if stop.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            return Err("coordinator IPC interrupted".into());
+        }
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or("coordinator IPC deadline exceeded")?;
@@ -109,6 +118,11 @@ fn wait(stream: &UnixStream, events: i16, deadline: Instant) -> Result<(), Strin
             fd: stream.as_raw_fd(),
             events,
             revents: 0,
+        };
+        let remaining = if stop.is_some() {
+            remaining.min(Duration::from_millis(100))
+        } else {
+            remaining
         };
         let milliseconds = remaining
             .as_millis()
@@ -133,7 +147,11 @@ fn wait(stream: &UnixStream, events: i16, deadline: Instant) -> Result<(), Strin
     }
 }
 
-fn connect(path: &Path, deadline: Instant) -> Result<UnixStream, String> {
+fn connect(
+    path: &Path,
+    deadline: Instant,
+    stop: Option<&AtomicBool>,
+) -> Result<UnixStream, String> {
     let name = path.as_os_str().as_bytes();
     // SAFETY: sockaddr_un consists entirely of integer fields and a byte array.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
@@ -172,7 +190,7 @@ fn connect(path: &Path, deadline: Instant) -> Result<UnixStream, String> {
             // immediately instead of retrying a potentially unbounded connect.
             return Err(error.to_string());
         }
-        wait(&stream, libc::POLLOUT, deadline)?;
+        wait(&stream, libc::POLLOUT, deadline, stop)?;
         let mut error = 0i32;
         let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
         // SAFETY: initialized, correctly sized writable SO_ERROR storage.
@@ -200,10 +218,11 @@ pub(super) fn exchange(
     socket: &Path,
     mut request: &[u8],
     deadline: Instant,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<u8>, String> {
-    let mut stream = connect(socket, deadline)?;
+    let mut stream = connect(socket, deadline, stop)?;
     while !request.is_empty() {
-        wait(&stream, libc::POLLOUT, deadline)?;
+        wait(&stream, libc::POLLOUT, deadline, stop)?;
         match stream.write(request) {
             Ok(0) => return Err("coordinator closed during request delivery".into()),
             Ok(size) => request = &request[size..],
@@ -215,7 +234,7 @@ pub(super) fn exchange(
     let mut reply = Vec::new();
     let mut buffer = [0u8; 8192];
     loop {
-        wait(&stream, libc::POLLIN, deadline)?;
+        wait(&stream, libc::POLLIN, deadline, stop)?;
         match stream.read(&mut buffer) {
             Ok(0) => return Err("truncated coordinator reply".into()),
             Ok(size) => {

@@ -7,14 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
 ### Added
 
+- Expose native shared construction directly from Fleetix, with optional native
+  and CLI features, standalone held registration/admission/completion, activation
+  fencing and recovery commands, and a builder-local NixOS module.
+- Bound completion waits across socket delivery and polling. Timeout and signals
+  detach without cancelling durable work; unsuccessful terminal waits fail the
+  process while status retains their evidence.
 - Add `fleetix-sidecar`, an independent Rust CLI and library in a Fleetix Cargo
   workspace. Generate Pkl-to-Nix files without running Nix; check exact output
   bytes without rewriting sidecars or cache entries.
 
 ### Changed
 
+- Preserve version-2 service/policy/protocol contracts while moving the generic
+  native adapter into Fleetix. Existing ownership locations remain defaults;
+  deployers can explicitly select their private directories and root namespace.
+- Coordinate workspace publication in dependency order through Simit, with both
+  crates using version 0.6.0 so the sidecar prerequisite publishes before Fleetix.
 - Move the existing renderer, dependency-aware cache and atomic sidecar writer
   into the shared crate. Preserve `fleetix::pkl_to_nix` and the Fleetix CLI so
   Canix's configuration commands retain the same implementation and output.
@@ -154,5 +167,6 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/caniko/fleetix/compare/0.5.2...0.6.0
 [0.5.0]: https://github.com/caniko/fleetix/compare/0.4.0...0.5.0

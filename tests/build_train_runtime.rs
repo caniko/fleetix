@@ -933,6 +933,94 @@ fn disconnected_request_continues_and_late_join_changes_actual_worker_order() {
     assert_eq!(started.iter().filter(|s| *s == "shared").count(), 1);
 }
 
+#[cfg(all(feature = "cli", feature = "build-train-cli"))]
+#[test]
+fn standalone_cli_joins_held_admission_waits_independently_and_reports_cancellation() {
+    let server = Server::start();
+    let directory = server._temp.path();
+    let connection = directory.join("connection.json");
+    std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
+        "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
+        "preparation_dir": directory.join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+    })).unwrap()).unwrap();
+    let invoke = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_fleetix"))
+            .args(["build-train"])
+            .args(args)
+            .arg("--connection")
+            .arg(&connection)
+            .output()
+            .unwrap()
+    };
+    for (id, target) in [("a", "atlas"), ("m", "murph")] {
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, serde_json::to_vec(&request(id, target)).unwrap()).unwrap();
+        let result = invoke(&["register", "--request", path.to_str().unwrap()]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if id == "a" {
+            assert_eq!(server.client().call(Command::Inspect).unwrap().running, 0);
+            assert!(invoke(&["admit", "--attempt", id]).status.success());
+            eventually(|| server.backend.started.lock().unwrap().as_slice() == ["busy"]);
+        }
+    }
+    let timed_out = invoke(&["wait", "--attempt", "m", "--wait-seconds", "1"]);
+    assert!(!timed_out.status.success());
+    assert!(String::from_utf8_lossy(&timed_out.stderr).contains("detached"));
+    assert_eq!(
+        server
+            .client()
+            .call(Command::Status("m".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Pending)
+    );
+    assert!(invoke(&["admit", "--attempt", "m"]).status.success());
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    assert!(
+        invoke(&["wait", "--attempt", "m", "--wait-seconds", "5"])
+            .status
+            .success()
+    );
+    let started = server.backend.started.lock().unwrap().clone();
+    assert_eq!(&started[..3], ["busy", "shared", "murph"]);
+    assert_eq!(started.iter().filter(|s| *s == "shared").count(), 1);
+    server
+        .client()
+        .call(Command::Register(request("cancelled", "murph")))
+        .unwrap();
+    assert!(
+        invoke(&["cancel", "--attempt", "cancelled"])
+            .status
+            .success()
+    );
+    let cancelled = invoke(&["wait", "--attempt", "cancelled", "--wait-seconds", "5"]);
+    assert!(!cancelled.status.success());
+    assert!(String::from_utf8_lossy(&cancelled.stderr).contains("cancelled"));
+    server
+        .backend
+        .fail_after_materialize
+        .store(true, Ordering::Relaxed);
+    server
+        .client()
+        .call(Command::Register(request("failed", "multi")))
+        .unwrap();
+    assert!(invoke(&["admit", "--attempt", "failed"]).status.success());
+    let failed = invoke(&["wait", "--attempt", "failed", "--wait-seconds", "5"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("construction failed"));
+    assert!(invoke(&["status", "--attempt", "failed"]).status.success());
+    assert!(invoke(&["retry", "--attempt", "failed"]).status.success());
+    let unadmitted = invoke(&["authorize-activation", "--attempt", "failed"]);
+    assert!(!unadmitted.status.success());
+    assert!(String::from_utf8_lossy(&unadmitted.stderr).contains("admission"));
+    assert!(invoke(&["cancel", "--attempt", "failed"]).status.success());
+}
+
 #[test]
 fn socket_ownership_is_exclusive_even_with_another_state_directory() {
     let server = Server::start();
@@ -1445,6 +1533,96 @@ fn drain_deadline_bounds_a_stalled_status_reply_and_reports_its_fence() {
         error.contains("a-1") && error.contains("retained"),
         "{error}"
     );
+}
+
+#[test]
+fn bounded_wait_detaches_without_cancelling_held_work() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    let stop = AtomicBool::new(false);
+    let error = client
+        .wait_for("m", Duration::from_millis(50), &stop)
+        .unwrap_err();
+    assert!(
+        error.contains("detached") && error.contains("timed out"),
+        "{error}"
+    );
+    assert_eq!(
+        client.call(Command::Status("m".into())).unwrap().outcome,
+        Some(Outcome::Pending)
+    );
+    client.call(Command::Admit("m".into())).unwrap();
+    assert_eq!(
+        client.wait_for("m", Duration::from_secs(5), &stop).unwrap(),
+        Outcome::Ready
+    );
+}
+
+#[test]
+fn bounded_wait_caps_stalled_socket_delivery_and_preserves_interrupt_semantics() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        assert!(command.contains("status"));
+        std::thread::sleep(Duration::from_secs(1));
+    });
+    let started = Instant::now();
+    let error = client
+        .wait_for("a", Duration::from_millis(100), &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_millis(800));
+    assert!(error.contains("detached"), "{error}");
+    peer.join().unwrap();
+    let error = client
+        .wait_for("a", Duration::from_secs(5), &AtomicBool::new(true))
+        .unwrap_err();
+    assert!(error.contains("cancel explicitly"), "{error}");
+}
+
+#[test]
+fn wait_interrupt_detaches_during_stalled_socket_delivery() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let interrupt = Arc::clone(&stop);
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        interrupt.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(1));
+    });
+    let started = Instant::now();
+    let error = client
+        .wait_for("a", Duration::from_secs(5), &stop)
+        .unwrap_err();
+    let elapsed = started.elapsed();
+    peer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "interrupt took {elapsed:?}"
+    );
+    assert!(error.contains("detached") && error.contains("cancel explicitly"));
 }
 
 #[test]

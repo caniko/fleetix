@@ -125,6 +125,15 @@ impl Client {
     }
 
     fn call_until(&self, command: Command, deadline: std::time::Instant) -> Result<Reply, String> {
+        self.call_until_stoppable(command, deadline, None)
+    }
+
+    fn call_until_stoppable(
+        &self,
+        command: Command,
+        deadline: std::time::Instant,
+        stop: Option<&AtomicBool>,
+    ) -> Result<Reply, String> {
         let mut raw = serde_json::to_vec(&Envelope {
             version: VERSION,
             policy: self.policy.clone(),
@@ -139,6 +148,7 @@ impl Client {
             &self.socket,
             &raw,
             deadline.min(std::time::Instant::now() + Duration::from_secs(300)),
+            stop,
         )?)
         .map_err(|e| e.to_string())?;
         if reply.version != VERSION || reply.policy != self.policy {
@@ -163,6 +173,51 @@ impl Client {
                 return Ok(outcome);
             }
             thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Wait under one absolute deadline, including socket delivery. Expiry and
+    /// interruption only detach; the durable request must be cancelled explicitly.
+    pub fn wait_for(
+        &self,
+        attempt: &str,
+        wait: Duration,
+        stop: &AtomicBool,
+    ) -> Result<Outcome, String> {
+        let deadline = std::time::Instant::now()
+            .checked_add(wait)
+            .ok_or("invalid completion wait duration")?;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return Err("detached; construction continues; cancel explicitly".into());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "wait timed out; detached; construction continues; cancel explicitly".into(),
+                );
+            }
+            let outcome = self
+                .call_until_stoppable(Command::Status(attempt.into()), deadline, Some(stop))
+                .map_err(|error| {
+                    let reason = if std::time::Instant::now() >= deadline {
+                        "wait timed out"
+                    } else {
+                        "wait failed"
+                    };
+                    format!(
+                        "{reason}; detached; construction continues; cancel explicitly: {error}"
+                    )
+                })?
+                .outcome
+                .ok_or("missing outcome; detached; construction continues; cancel explicitly")?;
+            if outcome != Outcome::Pending {
+                return Ok(outcome);
+            }
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(Duration::from_millis(100)),
+            );
         }
     }
 

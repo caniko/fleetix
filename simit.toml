@@ -1,5 +1,7 @@
 [ci]
 workspace = true
+workspace_strategy = "aggregate"
+publish_strategy = "coordinated"
 runner = "ubuntu-24.04"
 with_msrv = true
 with_audit = true

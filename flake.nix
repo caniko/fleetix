@@ -57,7 +57,10 @@
       commonArgs = {
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
-          filter = path: type: craneLib.filterCargoSources path type || pkgs.lib.hasPrefix (toString ./lib + "/") path;
+          filter = path: type:
+            craneLib.filterCargoSources path type
+            || pkgs.lib.hasPrefix (toString ./lib + "/") path
+            || pkgs.lib.hasPrefix (toString ./tests/fixtures + "/") path;
         };
         pname = "fleetix";
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
@@ -80,6 +83,15 @@
     # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
     nixosModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     nixosModules.local-access = import ./modules/local-access.nix;
+    nixosModules.build-train = {
+      lib,
+      pkgs,
+      ...
+    }: {
+      key = "fleetix.nixosModules.build-train";
+      imports = [./modules/build-train.nix];
+      fleetix.services.buildTrain.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.fleetixCrate;
+    };
     homeModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     homeModules.trust-observer = import ./modules/trust-observer.nix;
     homeModules.mcp = {
@@ -102,7 +114,8 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
-            cargoExtraArgs = "--package fleetix --features cli";
+            cargoExtraArgs = "--package fleetix --features cli,build-train-cli";
+            meta.mainProgram = "fleetix";
           });
 
         fleetix-sidecar = craneLib.buildPackage (commonArgs
@@ -187,6 +200,11 @@
           };
         };
       in {
+        build-train-policy = let
+          contract = import ./tests/build-train-policy.nix;
+        in
+          pkgs.writeText "fleetix-build-train-policy.json" (builtins.toJSON contract);
+        build-train-module = import ./tests/build-train-module.nix {inherit pkgs;};
         gpu-contract = assert import ./tests/gpu.nix;
           pkgs.writeText "fleetix-gpu-contract" "ok";
         gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};

@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-![CI](https://img.shields.io/badge/CI-managed-2088ff) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/fleetix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/fleetix)
 
 <!-- simit:badges:end -->
 
@@ -139,6 +139,8 @@ available in the registry.
 The CI environment retains the repository's Nix module checks; Rust consumers
 still resolve and build the published library entirely through Cargo.
 See [product boundaries](ARCHITECTURE.md) for the deployment extraction contract.
+See [shared native construction](BUILD_TRAIN.md) for the optional build-train
+library, standalone request lifecycle and builder-local NixOS service.
 
 `fleetix::pkl` exposes generic Rust helpers for downstream crates that keep
 their canonical config in Pkl:

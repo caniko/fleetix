@@ -12,6 +12,14 @@ use std::fmt;
 #[cfg(all(unix, feature = "build-train-runtime"))]
 pub mod runtime;
 
+/// Native Nix construction and immutable deployment contracts.
+#[cfg(all(unix, feature = "build-train-native"))]
+pub mod native;
+
+/// Standalone coordinator frontend, also reusable by architecture adapters.
+#[cfg(all(unix, feature = "build-train-cli"))]
+pub mod cli;
+
 /// Version of the durable state and coordinator protocol. Version 2 introduces
 /// unprepared durable requests and archives; version 1 coordinators must never
 /// interpret these requests as complete graph intake.

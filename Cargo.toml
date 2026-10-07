@@ -1,6 +1,6 @@
 [package]
 name = "fleetix"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
@@ -21,6 +21,7 @@ include = [
   "/MCP.md",
   "/SERVICE_PROFILES.md",
   "/ARCHITECTURE.md",
+  "/BUILD_TRAIN.md",
   "/CHANGELOG.md",
   "/LICENSE*",
   "/Cargo.toml",
@@ -36,7 +37,7 @@ default-members = [".", "crates/fleetix-sidecar"]
 resolver = "2"
 
 [workspace.dependencies]
-fleetix-sidecar = { version = "0.1.0", path = "crates/fleetix-sidecar", default-features = false }
+fleetix-sidecar = { version = "0.6.0", path = "crates/fleetix-sidecar", default-features = false }
 pklx = "0.1.0"
 miette = "7"
 serde = { version = "1", features = ["derive"] }
@@ -64,6 +65,8 @@ sha2.workspace = true
 toml_edit = { version = "0.23", features = ["serde"], optional = true }
 fs2 = { version = "0.4", optional = true }
 libc = { version = "0.2", optional = true }
+nix-manager-core = { version = "0.3.0", optional = true }
+signal-hook = { version = "0.4", optional = true }
 
 [features]
 default = ["cli"]
@@ -72,6 +75,8 @@ pkl = ["dep:pklx", "dep:tokio", "dep:fleetix-sidecar"]
 health = ["pkl"]
 mcp = ["dep:toml_edit", "dep:fs2"]
 build-train-runtime = ["dep:fs2", "dep:libc"]
+build-train-native = ["build-train-runtime", "dep:nix-manager-core"]
+build-train-cli = ["build-train-native", "dep:clap", "dep:signal-hook"]
 
 [dependencies.clap]
 workspace = true

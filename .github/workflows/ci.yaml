@@ -47,10 +47,10 @@ jobs:
         run: nix flake check
 
       - name: Test all features
-        run: nix develop -c cargo test -p fleetix --all-features
+        run: nix develop -c cargo test --workspace --all-features
 
       - name: Test no default features
-        run: nix develop -c cargo test -p fleetix --no-default-features
+        run: nix develop -c cargo test --workspace --no-default-features
 
       - name: Check cargo-audit tool
         run: nix develop -c cargo-audit --version
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -eu
           test "$(nix develop .#msrv -c rustc --version | cut -d ' ' -f 2)" = '1.88.0'
-          nix develop .#msrv -c cargo check -p fleetix --all-targets --all-features
+          nix develop .#msrv -c cargo check --workspace --all-targets --all-features
 
       - name: Fetch RustSec advisory database
         run: |
@@ -74,13 +74,10 @@ jobs:
           nix develop -c cargo audit --db "$db" --no-fetch --stale
 
       - name: Build docs
-        run: nix develop .#docs -c cargo doc -p fleetix --no-deps --all-features
+        run: nix develop .#docs -c cargo doc --workspace --no-deps --all-features
 
       - name: Clippy all features
-        run: nix develop -c cargo clippy -p fleetix --all-targets --all-features -- --deny warnings
+        run: nix develop -c cargo clippy --workspace --all-targets --all-features -- --deny warnings
 
       - name: Clippy no default features
-        run: nix develop -c cargo clippy -p fleetix --all-targets --no-default-features -- --deny warnings
-
-      - name: Package crate
-        run: nix develop -c cargo package -p fleetix --allow-dirty --list
+        run: nix develop -c cargo clippy --workspace --all-targets --no-default-features -- --deny warnings
