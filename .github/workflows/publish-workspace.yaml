@@ -112,11 +112,35 @@ jobs:
             *) echo "Could not check crates.io for ${crate_name} ${version} before publishing (HTTP $status)" >&2; exit 1;;
           esac
           nix develop -c cargo publish -p fleetix-sidecar
-          # Bounded propagation wait: dependents need this version visible.
+
+      - name: Wait for exact registry resolution
+        run: |
+          set -euo pipefail
+          crate_name='fleetix-sidecar'
+          version="${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/}}"
+          probe="$(mktemp -d)"
+          trap 'rm -rf "$probe"' EXIT
+          mkdir "$probe/src"
+          touch "$probe/src/lib.rs"
+          printf '[package]\nname = "simit-registry-probe"\nversion = "0.0.0"\nedition = "2021"\n[workspace]\n[dependencies]\n%s = { version = "=%s", registry = "crates-io", default-features = false }\n' "$crate_name" "$version" > "$probe/Cargo.toml"
+          # The web API may be ready before the index. Fetch an exact registry
+          # dependency from a workspace-isolated manifest, without a cached lock.
+          # Cargo.lock retains binary-only packages too; metadata omits them.
           for attempt in $(seq 1 20); do
-            code="$(curl --retry 2 -sS -o /dev/null -w '%{http_code}' -A 'simit publish-workspace propagation' "https://crates.io/api/v1/crates/${crate_name}/${version}" || echo 000)"
-            case "$code" in 200) echo "propagated ${crate_name} ${version} (attempt $attempt)"; break;; 404) echo "waiting for ${crate_name} ${version} (attempt $attempt/20)"; sleep 30;; 401|403) echo "authorization failure while waiting (HTTP $code)" >&2; exit 1;; *) echo "unexpected registry status $code while waiting" >&2; exit 1;; esac
-            if [ "$attempt" = 20 ]; then echo "propagation timeout for ${crate_name} ${version}" >&2; exit 1; fi
+            rm -f "$probe/Cargo.lock"
+            if timeout --kill-after=5s 60s nix develop -c cargo fetch --manifest-path "$probe/Cargo.toml" > "$probe/fetch.log" 2> "$probe/error.log" && awk -v wanted_name="$crate_name" -v wanted_version="$version" '
+              function matches() { return name == wanted_name && version == wanted_version && source == "registry+https://github.com/rust-lang/crates.io-index" }
+              /^\[\[package\]\]/ { if (matches()) found = 1; name = version = source = "" }
+              /^(name|version|source) = "/ { value = $3; gsub(/"/, "", value); if ($1 == "name") name = value; else if ($1 == "version") version = value; else source = value }
+              END { exit !(found || matches()) }
+            ' "$probe/Cargo.lock"; then
+              echo "resolved and fetched ${crate_name} ${version} from crates.io (attempt $attempt)"
+              break
+            fi
+            cat "$probe/error.log" >&2
+            if [ "$attempt" = 20 ]; then echo "registry resolution timeout for ${crate_name} ${version}" >&2; exit 1; fi
+            echo "waiting for exact registry resolution of ${crate_name} ${version} (attempt $attempt/20)"
+            sleep 30
           done
 
   publish-fleetix:
@@ -178,11 +202,35 @@ jobs:
             *) echo "Could not check crates.io for ${crate_name} ${version} before publishing (HTTP $status)" >&2; exit 1;;
           esac
           nix develop -c cargo publish -p fleetix
-          # Bounded propagation wait: dependents need this version visible.
+
+      - name: Wait for exact registry resolution
+        run: |
+          set -euo pipefail
+          crate_name='fleetix'
+          version="${GITHUB_REF_NAME:-${GITHUB_REF#refs/tags/}}"
+          probe="$(mktemp -d)"
+          trap 'rm -rf "$probe"' EXIT
+          mkdir "$probe/src"
+          touch "$probe/src/lib.rs"
+          printf '[package]\nname = "simit-registry-probe"\nversion = "0.0.0"\nedition = "2021"\n[workspace]\n[dependencies]\n%s = { version = "=%s", registry = "crates-io", default-features = false }\n' "$crate_name" "$version" > "$probe/Cargo.toml"
+          # The web API may be ready before the index. Fetch an exact registry
+          # dependency from a workspace-isolated manifest, without a cached lock.
+          # Cargo.lock retains binary-only packages too; metadata omits them.
           for attempt in $(seq 1 20); do
-            code="$(curl --retry 2 -sS -o /dev/null -w '%{http_code}' -A 'simit publish-workspace propagation' "https://crates.io/api/v1/crates/${crate_name}/${version}" || echo 000)"
-            case "$code" in 200) echo "propagated ${crate_name} ${version} (attempt $attempt)"; break;; 404) echo "waiting for ${crate_name} ${version} (attempt $attempt/20)"; sleep 30;; 401|403) echo "authorization failure while waiting (HTTP $code)" >&2; exit 1;; *) echo "unexpected registry status $code while waiting" >&2; exit 1;; esac
-            if [ "$attempt" = 20 ]; then echo "propagation timeout for ${crate_name} ${version}" >&2; exit 1; fi
+            rm -f "$probe/Cargo.lock"
+            if timeout --kill-after=5s 60s nix develop -c cargo fetch --manifest-path "$probe/Cargo.toml" > "$probe/fetch.log" 2> "$probe/error.log" && awk -v wanted_name="$crate_name" -v wanted_version="$version" '
+              function matches() { return name == wanted_name && version == wanted_version && source == "registry+https://github.com/rust-lang/crates.io-index" }
+              /^\[\[package\]\]/ { if (matches()) found = 1; name = version = source = "" }
+              /^(name|version|source) = "/ { value = $3; gsub(/"/, "", value); if ($1 == "name") name = value; else if ($1 == "version") version = value; else source = value }
+              END { exit !(found || matches()) }
+            ' "$probe/Cargo.lock"; then
+              echo "resolved and fetched ${crate_name} ${version} from crates.io (attempt $attempt)"
+              break
+            fi
+            cat "$probe/error.log" >&2
+            if [ "$attempt" = 20 ]; then echo "registry resolution timeout for ${crate_name} ${version}" >&2; exit 1; fi
+            echo "waiting for exact registry resolution of ${crate_name} ${version} (attempt $attempt/20)"
+            sleep 30
           done
 
   publish-report:
