@@ -9,6 +9,13 @@ Deployment execution is an extraction target, not an API shipped by the current
 release. Existing `Deployment` topology data describes service
 intent/ingress; operational plans need a separate versioned contract.
 
+The optional `build-train-native` layer is the shared construction slice:
+Fleetix composes published `nix-manager-core`, exposes explicit immutable service
+and connection contracts, and supplies the standalone lifecycle and NixOS module.
+See [BUILD_TRAIN.md](BUILD_TRAIN.md). Publication, target transfer, live resource
+admission and activation remain caller-owned until their deployment slices are
+extracted.
+
 ## Layering
 
 - Fleetix operates independently of canix-toolbelt and Canix. It takes explicit

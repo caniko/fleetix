@@ -36,6 +36,14 @@ struct TestBackend {
     release_fails: AtomicBool,
     fail_after_materialize: AtomicBool,
     released_requests: Mutex<Vec<String>>,
+    retained: Mutex<BTreeMap<String, BTreeSet<Goal>>>,
+    retain_fails: AtomicBool,
+    block_retain: AtomicBool,
+    retain_entered: AtomicBool,
+    retain_released: Mutex<bool>,
+    retain_gate: Condvar,
+    initial_retains: Mutex<Vec<String>>,
+    initial_retain_fails: AtomicBool,
 }
 impl Backend for TestBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
@@ -129,7 +137,37 @@ impl Backend for TestBackend {
             })
             .collect())
     }
-    fn retain(&self, _: &Request, _: &Graph) -> Result<(), String> {
+    fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String> {
+        if graph.is_empty() {
+            self.initial_retains
+                .lock()
+                .unwrap()
+                .push(request.attempt.clone());
+            if self.initial_retain_fails.load(Ordering::Relaxed) {
+                return Err("injected initial retention failure".into());
+            }
+        }
+        let mut owned = self.retained.lock().unwrap();
+        let paths = owned.entry(request.attempt.clone()).or_default();
+        let mut todo: Vec<_> = request.roots.iter().cloned().collect();
+        while let Some(goal) = todo.pop() {
+            if let Some(definition) = graph.get(&goal) {
+                if paths.insert(goal) {
+                    todo.extend(definition.dependencies.iter().cloned());
+                }
+            }
+        }
+        drop(owned);
+        if !graph.is_empty() && self.block_retain.load(Ordering::Relaxed) {
+            self.retain_entered.store(true, Ordering::Relaxed);
+            let mut released = self.retain_released.lock().unwrap();
+            while !*released {
+                released = self.retain_gate.wait(released).unwrap();
+            }
+        }
+        if !graph.is_empty() && self.retain_fails.load(Ordering::Relaxed) {
+            return Err("injected partial retention failure".into());
+        }
         Ok(())
     }
     fn valid(&self, goal: &Goal, _: &Definition) -> Result<bool, String> {
@@ -157,7 +195,14 @@ impl Backend for TestBackend {
         }
         Ok(())
     }
-    fn release(&self, request: &Request, _: &Graph) -> Result<(), String> {
+    fn release(&self, request: &Request, graph: &Graph) -> Result<(), String> {
+        let mut owned = self.retained.lock().unwrap();
+        if owned
+            .get(&request.attempt)
+            .is_some_and(|paths| paths.iter().any(|goal| !graph.contains_key(goal)))
+        {
+            return Err("retained graph evidence missing".into());
+        }
         if self.release_fails.load(Ordering::Relaxed) {
             return Err("injected root release failure".into());
         }
@@ -165,6 +210,7 @@ impl Backend for TestBackend {
             .lock()
             .unwrap()
             .push(request.attempt.clone());
+        owned.remove(&request.attempt);
         Ok(())
     }
 }
@@ -234,6 +280,8 @@ impl Server {
         self.backend.gate.notify_all();
         *self.backend.plan_released.lock().unwrap() = true;
         self.backend.plan_gate.notify_all();
+        *self.backend.retain_released.lock().unwrap() = true;
+        self.backend.retain_gate.notify_all();
         self.worker.take().unwrap().join().unwrap().unwrap();
     }
 }
@@ -247,6 +295,66 @@ fn responsive(client: &Client, command: Command) -> Reply {
     rx.recv_timeout(Duration::from_secs(1))
         .expect("control plane blocked behind graph preparation")
         .unwrap()
+}
+
+#[test]
+fn invalid_or_unjournaled_intake_never_creates_preparation_roots() {
+    let server = Server::start();
+    let client = server.client();
+    let mut invalid = request("invalid", "murph");
+    invalid.target.clear();
+    assert!(
+        client
+            .call(Command::Register(invalid))
+            .unwrap_err()
+            .contains("nonempty")
+    );
+    assert!(server.backend.initial_retains.lock().unwrap().is_empty());
+
+    let path = server.config.state_dir.join("train.json");
+    let saved = server.config.state_dir.join("train.saved");
+    std::fs::rename(&path, &saved).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let result = client.call(Command::Register(request("unsaved", "murph")));
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&saved, &path).unwrap();
+    assert!(result.is_err());
+    assert!(server.backend.initial_retains.lock().unwrap().is_empty());
+    assert!(
+        client
+            .call(Command::Status("unsaved".into()))
+            .unwrap_err()
+            .contains("unknown")
+    );
+}
+
+#[test]
+fn partial_initial_retention_failure_keeps_retirable_intake_after_restart() {
+    let mut server = Server::start();
+    let client = server.client();
+    server
+        .backend
+        .initial_retain_fails
+        .store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .call(Command::Register(request("m", "murph")))
+            .unwrap_err()
+            .contains("initial retention")
+    );
+    assert!(matches!(
+        client.call(Command::Status("m".into())).unwrap().outcome,
+        Some(Outcome::Failed(_))
+    ));
+    server.shutdown();
+    server
+        .backend
+        .initial_retain_fails
+        .store(false, Ordering::Relaxed);
+    server.restart();
+    client.call(Command::Retire("m".into())).unwrap();
+    assert_eq!(*server.backend.released_requests.lock().unwrap(), ["m"]);
+    assert!(server.backend.started.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -323,6 +431,61 @@ fn oversized_failure_details_are_bounded_without_losing_terminal_status() {
             > 1024 * 1024
     );
     responsive(&client, Command::Inspect);
+}
+
+#[test]
+fn detached_registration_waiters_release_connection_and_reattachment_capacity() {
+    let mut server = Server::with_limit(8);
+    server.shutdown();
+    server.config.planning_timeout_seconds = 60;
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    *server.backend.plan_released.lock().unwrap() = false;
+    server.restart();
+    let client = server.client();
+    let stop = AtomicBool::new(false);
+    // Fill both the eight-per-attempt waiter budget and the global 64-socket
+    // budget with detached clients while the first planner remains blocked.
+    for attempt in 0..8 {
+        let request = request(&format!("detached-{attempt}"), "murph");
+        for _ in 0..8 {
+            let error = client
+                .register_for(request.clone(), Duration::from_millis(60), &stop)
+                .unwrap_err();
+            assert!(
+                error.contains("deadline"),
+                "unexpected registration error: {error}"
+            );
+        }
+    }
+    responsive(&client, Command::Inspect);
+    for attempt in 0..8 {
+        assert_eq!(
+            responsive(&client, Command::Status(format!("detached-{attempt}"))).outcome,
+            Some(Outcome::Pending)
+        );
+    }
+    let error = client
+        .register_for(
+            request("detached-0", "murph"),
+            Duration::from_millis(60),
+            &stop,
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("deadline"),
+        "reattachment slots were not freed: {error}"
+    );
+    responsive(&client, Command::Cancel("detached-7".into()));
+    assert_eq!(
+        responsive(&client, Command::Status("detached-7".into())).outcome,
+        Some(Outcome::Cancelled)
+    );
+    responsive(&client, Command::Retry("detached-7".into()));
+    assert_eq!(
+        responsive(&client, Command::Status("detached-7".into())).outcome,
+        Some(Outcome::Pending)
+    );
+    assert!(server.backend.started.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -710,6 +873,49 @@ fn retirement_archives_before_root_release_and_retries_after_restart() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn graceful_stop_releases_leases_even_with_inherited_file_descriptions() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut server = Server::start();
+    // A concurrent fork inherits the open file description until exec, even
+    // with CLOEXEC set. Duplicate those exact descriptions deterministically.
+    let locks = [
+        server.config.state_dir.join("coordinator.lock"),
+        server.config.socket.with_extension("lock"),
+    ];
+    let descriptors: Vec<i32> = std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            std::fs::read_link(entry.path()).is_ok_and(|target| locks.contains(&target))
+        })
+        .map(|entry| entry.file_name().to_str().unwrap().parse().unwrap())
+        .collect();
+    let mut inherited = Vec::new();
+    for fd in descriptors {
+        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        assert!(duplicate >= 0);
+        inherited.push(unsafe { std::fs::File::from_raw_fd(duplicate) });
+    }
+    assert_eq!(inherited.len(), 2);
+    server.shutdown();
+    for file in &inherited {
+        // A separately opened description must now be able to lock the anchor;
+        // the inherited descriptions remain open for this entire assertion.
+        let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+        let fresh = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&fresh)
+            .expect("stopped coordinator left a lease in an inherited descriptor");
+    }
+    server.restart();
+    responsive(&server.client(), Command::Inspect);
+}
+
+#[test]
 fn materialized_output_does_not_clear_a_worker_failure_on_completion_or_restart() {
     let mut server = Server::start();
     server
@@ -904,6 +1110,112 @@ fn preparation_deadline_retains_planner_capacity_and_requires_explicit_retry() {
         client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
     });
 }
+
+#[test]
+fn discarded_and_partially_retained_plans_remain_retirable_after_restart() {
+    for reason in ["cancelled", "timed-out", "partial-retention"] {
+        let mut server = Server::start();
+        server.shutdown();
+        server.config.planning_timeout_seconds = 1;
+        server.backend.block_plan.store(true, Ordering::Relaxed);
+        *server.backend.plan_released.lock().unwrap() = false;
+        server.restart();
+        let client = server.client();
+        let joining = client.clone();
+        let registration =
+            std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+        eventually(|| server.backend.plan_entered.load(Ordering::Relaxed));
+        if reason == "cancelled" {
+            client.call(Command::Cancel("m".into())).unwrap();
+        } else if reason == "timed-out" {
+            eventually(|| {
+                matches!(
+                    client.call(Command::Status("m".into())).unwrap().outcome,
+                    Some(Outcome::Failed(_))
+                )
+            });
+        } else {
+            server.backend.retain_fails.store(true, Ordering::Relaxed);
+        }
+        *server.backend.plan_released.lock().unwrap() = true;
+        server.backend.plan_gate.notify_all();
+        let result = registration.join().unwrap();
+        if reason == "cancelled" {
+            assert_eq!(result.unwrap().outcome, Some(Outcome::Cancelled));
+        } else {
+            assert!(result.is_err());
+        }
+        server.shutdown();
+        server.backend.retain_fails.store(false, Ordering::Relaxed);
+        server.restart();
+        assert!(
+            client.call(Command::Retire("m".into())).is_ok(),
+            "cannot retire {reason}"
+        );
+        assert_eq!(*server.backend.released_requests.lock().unwrap(), ["m"]);
+        assert!(server.backend.retained.lock().unwrap().is_empty());
+        assert!(server.backend.started.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn retention_journals_ownership_before_roots_and_remains_held_on_cancellation_or_timeout() {
+    for cancelled in [true, false] {
+        let mut server = Server::start();
+        server.shutdown();
+        server.config.planning_timeout_seconds = 1;
+        server.backend.block_retain.store(true, Ordering::Relaxed);
+        *server.backend.retain_released.lock().unwrap() = false;
+        server.restart();
+        let client = server.client();
+        let joining = client.clone();
+        let registration =
+            std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+        eventually(|| server.backend.retain_entered.load(Ordering::Relaxed));
+        let state: Train = serde_json::from_reader(
+            std::fs::File::open(server.config.state_dir.join("train.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(!state.requests["m"].prepared);
+        assert!(
+            state
+                .retained_graph("m")
+                .unwrap()
+                .contains_key(&goal("shared"))
+        );
+        if cancelled {
+            client.call(Command::Cancel("m".into())).unwrap();
+        } else {
+            eventually(|| {
+                matches!(
+                    client.call(Command::Status("m".into())).unwrap().outcome,
+                    Some(Outcome::Failed(_))
+                )
+            });
+        }
+        assert!(
+            client
+                .call(Command::Retire("m".into()))
+                .unwrap_err()
+                .contains("planner has not exited")
+        );
+        assert!(server.backend.started.lock().unwrap().is_empty());
+        *server.backend.retain_released.lock().unwrap() = true;
+        server.backend.retain_gate.notify_all();
+        let result = registration.join().unwrap();
+        if cancelled {
+            assert_eq!(result.unwrap().outcome, Some(Outcome::Cancelled));
+        } else {
+            assert!(result.unwrap_err().contains("deadline"));
+        }
+        server.shutdown();
+        server.backend.block_retain.store(false, Ordering::Relaxed);
+        server.restart();
+        client.call(Command::Retire("m".into())).unwrap();
+        assert!(server.backend.retained.lock().unwrap().is_empty());
+        assert!(server.backend.started.lock().unwrap().is_empty());
+    }
+}
 impl Drop for Server {
     fn drop(&mut self) {
         if self.worker.is_some() {
@@ -931,6 +1243,211 @@ fn disconnected_request_continues_and_late_join_changes_actual_worker_order() {
     let started = server.backend.started.lock().unwrap().clone();
     assert_eq!(&started[..3], ["busy", "shared", "murph"]);
     assert_eq!(started.iter().filter(|s| *s == "shared").count(), 1);
+}
+
+#[cfg(all(feature = "cli", feature = "build-train-cli"))]
+#[test]
+fn standalone_registration_deadline_detaches_and_allows_explicit_reattachment() {
+    let server = Server::start();
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    let connection = server._temp.path().join("connection.json");
+    let request_path = server._temp.path().join("request.json");
+    std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
+        "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
+        "preparation_dir": server._temp.path().join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+    })).unwrap()).unwrap();
+    std::fs::write(
+        &request_path,
+        serde_json::to_vec(&request("m", "murph")).unwrap(),
+    )
+    .unwrap();
+    let invoke = |seconds: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_fleetix"))
+            .args([
+                "build-train",
+                "register",
+                "--wait-seconds",
+                seconds,
+                "--connection",
+            ])
+            .arg(&connection)
+            .arg("--request")
+            .arg(&request_path)
+            .output()
+            .unwrap()
+    };
+    let started = Instant::now();
+    let expired = invoke("1");
+    assert!(!expired.status.success());
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        String::from_utf8_lossy(&expired.stderr).contains("detached"),
+        "{}",
+        String::from_utf8_lossy(&expired.stderr)
+    );
+    assert_eq!(
+        server
+            .client()
+            .call(Command::Status("m".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Pending)
+    );
+    let backend = Arc::clone(&server.backend);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        *backend.plan_released.lock().unwrap() = true;
+        backend.plan_gate.notify_all();
+    });
+    let reattached = invoke("620");
+    release.join().unwrap();
+    assert!(
+        reattached.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reattached.stderr)
+    );
+    let reply: Reply = serde_json::from_slice(&reattached.stdout).unwrap();
+    assert!(reply.outputs.contains_key(&goal("murph")));
+    assert!(server.backend.started.lock().unwrap().is_empty());
+}
+
+#[cfg(all(feature = "cli", feature = "build-train-cli"))]
+#[test]
+fn standalone_registration_reattachment_rejects_failed_and_cancelled_outcomes() {
+    let server = Server::start();
+    let directory = server._temp.path();
+    let connection = directory.join("connection.json");
+    std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
+        "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
+        "preparation_dir": directory.join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+    })).unwrap()).unwrap();
+    for (id, cancelled) in [("cancelled", true), ("failed", false)] {
+        let request = request(id, "murph");
+        if cancelled {
+            server
+                .client()
+                .call(Command::Register(request.clone()))
+                .unwrap();
+            server.client().call(Command::Cancel(id.into())).unwrap();
+        } else {
+            server
+                .backend
+                .initial_retain_fails
+                .store(true, Ordering::Relaxed);
+            assert!(
+                server
+                    .client()
+                    .call(Command::Register(request.clone()))
+                    .is_err()
+            );
+        }
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+        let result = std::process::Command::new(env!("CARGO_BIN_EXE_fleetix"))
+            .args(["build-train", "register", "--connection"])
+            .arg(&connection)
+            .arg("--request")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "terminal {id} registration reported success"
+        );
+        let status = server.client().call(Command::Status(id.into())).unwrap();
+        assert!(matches!(
+            status.outcome,
+            Some(Outcome::Cancelled | Outcome::Failed(_))
+        ));
+    }
+}
+
+#[cfg(all(feature = "cli", feature = "build-train-cli"))]
+#[test]
+fn standalone_cli_joins_held_admission_waits_independently_and_reports_cancellation() {
+    let server = Server::start();
+    let directory = server._temp.path();
+    let connection = directory.join("connection.json");
+    std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
+        "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
+        "preparation_dir": directory.join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+    })).unwrap()).unwrap();
+    let invoke = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_fleetix"))
+            .args(["build-train"])
+            .args(args)
+            .arg("--connection")
+            .arg(&connection)
+            .output()
+            .unwrap()
+    };
+    for (id, target) in [("a", "atlas"), ("m", "murph")] {
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, serde_json::to_vec(&request(id, target)).unwrap()).unwrap();
+        let result = invoke(&["register", "--request", path.to_str().unwrap()]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if id == "a" {
+            assert_eq!(server.client().call(Command::Inspect).unwrap().running, 0);
+            assert!(invoke(&["admit", "--attempt", id]).status.success());
+            eventually(|| server.backend.started.lock().unwrap().as_slice() == ["busy"]);
+        }
+    }
+    let timed_out = invoke(&["wait", "--attempt", "m", "--wait-seconds", "1"]);
+    assert!(!timed_out.status.success());
+    assert!(String::from_utf8_lossy(&timed_out.stderr).contains("detached"));
+    assert_eq!(
+        server
+            .client()
+            .call(Command::Status("m".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Pending)
+    );
+    assert!(invoke(&["admit", "--attempt", "m"]).status.success());
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    assert!(
+        invoke(&["wait", "--attempt", "m", "--wait-seconds", "5"])
+            .status
+            .success()
+    );
+    let started = server.backend.started.lock().unwrap().clone();
+    assert_eq!(&started[..3], ["busy", "shared", "murph"]);
+    assert_eq!(started.iter().filter(|s| *s == "shared").count(), 1);
+    server
+        .client()
+        .call(Command::Register(request("cancelled", "murph")))
+        .unwrap();
+    assert!(
+        invoke(&["cancel", "--attempt", "cancelled"])
+            .status
+            .success()
+    );
+    let cancelled = invoke(&["wait", "--attempt", "cancelled", "--wait-seconds", "5"]);
+    assert!(!cancelled.status.success());
+    assert!(String::from_utf8_lossy(&cancelled.stderr).contains("cancelled"));
+    server
+        .backend
+        .fail_after_materialize
+        .store(true, Ordering::Relaxed);
+    server
+        .client()
+        .call(Command::Register(request("failed", "multi")))
+        .unwrap();
+    assert!(invoke(&["admit", "--attempt", "failed"]).status.success());
+    let failed = invoke(&["wait", "--attempt", "failed", "--wait-seconds", "5"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("construction failed"));
+    assert!(invoke(&["status", "--attempt", "failed"]).status.success());
+    assert!(invoke(&["retry", "--attempt", "failed"]).status.success());
+    let unadmitted = invoke(&["authorize-activation", "--attempt", "failed"]);
+    assert!(!unadmitted.status.success());
+    assert!(String::from_utf8_lossy(&unadmitted.stderr).contains("admission"));
+    assert!(invoke(&["cancel", "--attempt", "failed"]).status.success());
 }
 
 #[test]
@@ -1444,6 +1961,144 @@ fn drain_deadline_bounds_a_stalled_status_reply_and_reports_its_fence() {
     assert!(
         error.contains("a-1") && error.contains("retained"),
         "{error}"
+    );
+}
+
+#[test]
+fn bounded_wait_detaches_without_cancelling_held_work() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("m", "murph")))
+        .unwrap();
+    let stop = AtomicBool::new(false);
+    let error = client
+        .wait_for("m", Duration::from_millis(50), &stop)
+        .unwrap_err();
+    assert!(
+        error.contains("detached") && error.contains("timed out"),
+        "{error}"
+    );
+    assert_eq!(
+        client.call(Command::Status("m".into())).unwrap().outcome,
+        Some(Outcome::Pending)
+    );
+    client.call(Command::Admit("m".into())).unwrap();
+    assert_eq!(
+        client.wait_for("m", Duration::from_secs(5), &stop).unwrap(),
+        Outcome::Ready
+    );
+}
+
+#[test]
+fn bounded_wait_caps_stalled_socket_delivery_and_preserves_interrupt_semantics() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        assert!(command.contains("status"));
+        std::thread::sleep(Duration::from_secs(1));
+    });
+    let started = Instant::now();
+    let error = client
+        .wait_for("a", Duration::from_millis(100), &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_millis(800));
+    assert!(error.contains("detached"), "{error}");
+    peer.join().unwrap();
+    let error = client
+        .wait_for("a", Duration::from_secs(5), &AtomicBool::new(true))
+        .unwrap_err();
+    assert!(error.contains("cancel explicitly"), "{error}");
+}
+
+#[test]
+fn wait_interrupt_detaches_during_stalled_socket_delivery() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let interrupt = Arc::clone(&stop);
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        interrupt.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(1));
+    });
+    let started = Instant::now();
+    let error = client
+        .wait_for("a", Duration::from_secs(5), &stop)
+        .unwrap_err();
+    let elapsed = started.elapsed();
+    peer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "interrupt took {elapsed:?}"
+    );
+    assert!(error.contains("detached") && error.contains("cancel explicitly"));
+}
+
+#[test]
+fn legacy_wait_interrupt_detaches_during_stalled_socket_delivery() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("coordinator.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let client = Client {
+        socket,
+        policy: "p".into(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let interrupt = Arc::clone(&stop);
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        interrupt.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(1));
+    });
+    let started = Instant::now();
+    let error = client.wait("a", &stop).unwrap_err();
+    let elapsed = started.elapsed();
+    peer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "legacy wait interrupt took {elapsed:?}"
+    );
+    assert!(error.contains("detached") && error.contains("cancel explicitly"));
+}
+
+#[test]
+fn unrepresentable_drain_duration_fails_without_fencing() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Register(request("a", "atlas")))
+        .unwrap();
+    let error = client.drain("a", Duration::MAX).unwrap_err();
+    assert!(error.contains("invalid drain wait duration"), "{error}");
+    let status = client.call(Command::Inspect).unwrap();
+    assert!(status.fence.is_none());
+    assert_eq!(
+        client.call(Command::Status("a".into())).unwrap().outcome,
+        Some(Outcome::Pending)
     );
 }
 

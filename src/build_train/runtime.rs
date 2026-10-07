@@ -32,6 +32,13 @@ pub use rollover::rollover;
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
 pub trait Backend: Send + Sync + 'static {
+    /// Side-effect-free identity validation before durable intake. Retention
+    /// runs only after the journal owns the request; deterministic malformed
+    /// identities must never become recovery obligations. Existing specialist
+    /// backends may rely solely on the coordinator's generic validation.
+    fn validate_request(&self, _request: &Request) -> Result<(), String> {
+        Ok(())
+    }
     /// Bounded graph inspection. The coordinator runs this on dedicated planners.
     fn plan(&self, request: &Request) -> Result<Graph, String>;
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String>;
@@ -125,6 +132,19 @@ impl Client {
     }
 
     fn call_until(&self, command: Command, deadline: std::time::Instant) -> Result<Reply, String> {
+        self.call_until_stoppable(
+            command,
+            deadline.min(std::time::Instant::now() + Duration::from_secs(300)),
+            None,
+        )
+    }
+
+    fn call_until_stoppable(
+        &self,
+        command: Command,
+        deadline: std::time::Instant,
+        stop: Option<&AtomicBool>,
+    ) -> Result<Reply, String> {
         let mut raw = serde_json::to_vec(&Envelope {
             version: VERSION,
             policy: self.policy.clone(),
@@ -135,12 +155,9 @@ impl Client {
             return Err("request exceeds protocol limit".into());
         }
         raw.push(b'\n');
-        let reply: Reply = serde_json::from_slice(&ipc::exchange(
-            &self.socket,
-            &raw,
-            deadline.min(std::time::Instant::now() + Duration::from_secs(300)),
-        )?)
-        .map_err(|e| e.to_string())?;
+        let reply: Reply =
+            serde_json::from_slice(&ipc::exchange(&self.socket, &raw, deadline, stop)?)
+                .map_err(|e| e.to_string())?;
         if reply.version != VERSION || reply.policy != self.policy {
             return Err("coordinator protocol or policy changed".into());
         }
@@ -150,15 +167,43 @@ impl Client {
         Ok(reply)
     }
 
+    /// Await held registration and graph preparation under the caller's explicit
+    /// deadline. Delivery failure only detaches; inspect the durable attempt before
+    /// retrying, because the coordinator may have accepted it.
+    pub fn register_for(
+        &self,
+        request: Request,
+        wait: Duration,
+        stop: &AtomicBool,
+    ) -> Result<Reply, String> {
+        let deadline = std::time::Instant::now()
+            .checked_add(wait)
+            .ok_or("invalid registration wait duration")?;
+        let attempt = request.attempt.clone();
+        self.call_until_stoppable(Command::Register(request), deadline, Some(stop))
+            .map_err(|error| format!(
+                "registration outcome uncertain for request {attempt}; detached; inspect before retry: {error}"
+            ))
+    }
+
     pub fn wait(&self, attempt: &str, stop: &AtomicBool) -> Result<Outcome, String> {
         loop {
             if stop.load(Ordering::Relaxed) {
                 return Err("detached; construction continues; cancel explicitly".into());
             }
             let outcome = self
-                .call(Command::Status(attempt.into()))?
+                .call_until_stoppable(
+                    Command::Status(attempt.into()),
+                    std::time::Instant::now() + Duration::from_secs(300),
+                    Some(stop),
+                )
+                .map_err(|error| {
+                    format!(
+                        "wait failed; detached; construction continues; cancel explicitly: {error}"
+                    )
+                })?
                 .outcome
-                .ok_or("missing outcome")?;
+                .ok_or("missing outcome; detached; construction continues; cancel explicitly")?;
             if outcome != Outcome::Pending {
                 return Ok(outcome);
             }
@@ -166,10 +211,61 @@ impl Client {
         }
     }
 
+    /// Wait under one absolute deadline, including socket delivery. Expiry and
+    /// interruption only detach; the durable request must be cancelled explicitly.
+    pub fn wait_for(
+        &self,
+        attempt: &str,
+        wait: Duration,
+        stop: &AtomicBool,
+    ) -> Result<Outcome, String> {
+        let deadline = std::time::Instant::now()
+            .checked_add(wait)
+            .ok_or("invalid completion wait duration")?;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return Err("detached; construction continues; cancel explicitly".into());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "wait timed out; detached; construction continues; cancel explicitly".into(),
+                );
+            }
+            let outcome = self
+                .call_until_stoppable(
+                    Command::Status(attempt.into()),
+                    deadline.min(std::time::Instant::now() + Duration::from_secs(300)),
+                    Some(stop),
+                )
+                .map_err(|error| {
+                    let reason = if std::time::Instant::now() >= deadline {
+                        "wait timed out"
+                    } else {
+                        "wait failed"
+                    };
+                    format!(
+                        "{reason}; detached; construction continues; cancel explicitly: {error}"
+                    )
+                })?
+                .outcome
+                .ok_or("missing outcome; detached; construction continues; cancel explicitly")?;
+            if outcome != Outcome::Pending {
+                return Ok(outcome);
+            }
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(Duration::from_millis(100)),
+            );
+        }
+    }
+
     /// Close dispatch atomically before waiting. Timeout leaves the named fence
     /// intact so a disconnected activation cannot accidentally restart builders.
     pub fn drain(&self, attempt: &str, wait: Duration) -> Result<Fence, String> {
-        let deadline = std::time::Instant::now() + wait;
+        let deadline = std::time::Instant::now()
+            .checked_add(wait)
+            .ok_or("invalid drain wait duration")?;
         // Zero means inspect-and-fail without waiting for workers. Allow only a
         // bounded control-plane round trip to establish the durable fence.
         let fence_deadline = if wait.is_zero() {
@@ -390,6 +486,11 @@ struct Planner {
     timed_out: bool,
 }
 
+enum Preparation {
+    Planned(Result<Graph, String>),
+    Retained(Result<(), String>),
+}
+
 fn queue_reply(
     outgoing: &mut Vec<ipc::Outgoing>,
     stream: UnixStream,
@@ -514,27 +615,72 @@ pub fn serve(
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let (completed_tx, completed_rx) =
         mpsc::channel::<(Dispatch, Result<(), String>, BTreeSet<Goal>)>();
-    let (planned_tx, planned_rx) = mpsc::channel::<(String, Result<Graph, String>)>();
+    let (planned_tx, planned_rx) = mpsc::channel::<(String, Preparation)>();
     let mut planners: BTreeMap<String, Planner> = BTreeMap::new();
     let mut waiters: BTreeMap<String, Vec<UnixStream>> = BTreeMap::new();
     let mut incoming = Vec::<ipc::Incoming>::new();
     let mut outgoing = Vec::<ipc::Outgoing>::new();
     let mut workers = Vec::new();
     while !stop.load(Ordering::Relaxed) || train.running() != 0 || !planners.is_empty() {
-        while let Ok((attempt, result)) = planned_rx.try_recv() {
+        while let Ok((attempt, receipt)) = planned_rx.try_recv() {
             let planner = planners.remove(&attempt).ok_or("unknown planner receipt")?;
             let _ = planner.worker.join();
             let mut next = train.clone();
             if !planner.timed_out && !next.requests[&attempt].cancelled {
-                let request = next.requests[&attempt].request.clone();
-                if let Err(error) = result.and_then(|graph| next.submit(request, graph, now())) {
+                let result = match receipt {
+                    Preparation::Planned(result) => result.and_then(|graph| {
+                        let request = next.requests[&attempt].request.clone();
+                        next.submit(request.clone(), graph.clone(), now())?;
+                        // Journal the complete ownership closure before retention can
+                        // create even one root. Keep dispatch held until retention
+                        // succeeds; cancellation, timeout, panic and restart can all
+                        // retire partial roots using this version-2 journal evidence.
+                        next.requests
+                            .get_mut(&attempt)
+                            .ok_or("missing request")?
+                            .prepared = false;
+                        save(&config, &next)?;
+                        let backend = Arc::clone(&backend);
+                        let tx = planned_tx.clone();
+                        let id = attempt.clone();
+                        let worker = thread::spawn(move || {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    backend.retain(&request, &graph)
+                                }))
+                                .unwrap_or_else(|_| Err("backend retention panicked".into()));
+                            let _ = tx.send((id, Preparation::Retained(result)));
+                        });
+                        planners.insert(
+                            attempt.clone(),
+                            Planner {
+                                worker,
+                                started: planner.started,
+                                timed_out: false,
+                            },
+                        );
+                        Ok(())
+                    }),
+                    Preparation::Retained(result) => result.and_then(|()| {
+                        next.requests
+                            .get_mut(&attempt)
+                            .ok_or("missing request")?
+                            .prepared = true;
+                        Ok(())
+                    }),
+                };
+                if let Err(error) = result {
                     next = train.clone();
                     next.preparation_failed(&attempt, error)?;
                 }
-                save(&config, &next)?;
+                if !planners.contains_key(&attempt) {
+                    save(&config, &next)?;
+                }
                 train = next;
             }
-            flush_waiters(&config, &train, &mut waiters, &mut outgoing, &attempt)?;
+            if !planners.contains_key(&attempt) {
+                flush_waiters(&config, &train, &mut waiters, &mut outgoing, &attempt)?;
+            }
         }
         for (attempt, planner) in &mut planners {
             if !planner.timed_out
@@ -562,6 +708,10 @@ pub fn serve(
         }
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
         outgoing.retain_mut(ipc::Outgoing::pending);
+        waiters.retain(|_, streams| {
+            streams.retain(ipc::connected);
+            !streams.is_empty()
+        });
         if !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -679,11 +829,10 @@ pub fn serve(
                             return Err("backend graph limit exceeded".into());
                         }
                         wire::validate_outputs(&request, &graph)?;
-                        backend.retain(&request, &graph)?;
                         Ok(graph)
                     }))
                     .unwrap_or_else(|_| Err("backend planner panicked".into()));
-                    let _ = tx.send((id, result));
+                    let _ = tx.send((id, Preparation::Planned(result)));
                 });
                 planners.insert(
                     attempt,
@@ -749,6 +898,11 @@ pub fn serve(
     }
     // The lease anchor is deliberately retained.
     fs::remove_file(&config.socket).map_err(|e| e.to_string())?;
+    // A concurrent fork can temporarily inherit even CLOEXEC descriptions.
+    // After draining and removing the endpoint, release our kernel locks
+    // explicitly so those copies cannot delay a legitimate service restart.
+    FileExt::unlock(&socket_lease).map_err(|e| e.to_string())?;
+    FileExt::unlock(&lease).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -820,8 +974,25 @@ fn apply(
                         "retired attempt cannot be resubmitted; use a new attempt identity".into(),
                     );
                 }
-                backend.retain(&request, &Graph::new())?;
+                backend.validate_request(&request)?;
                 next.register(request.clone(), !held)?;
+                // Intake owns source/derivation roots too. Validate and journal
+                // its immutable identity before retention can create any root;
+                // a partial retention failure remains a known terminal request.
+                save(config, &next)?;
+                *train = next.clone();
+                if let Err(error) = backend.retain(&request, &Graph::new()) {
+                    next.preparation_failed(&request.attempt, error.clone())?;
+                    save(config, &next)?;
+                    *train = next;
+                    return Err(error);
+                }
+                return Ok(reply(
+                    config,
+                    train,
+                    Some(train.outcome(&request.attempt)?),
+                    Some(&request.attempt),
+                ));
             }
             outcome = Some(next.outcome(&request.attempt)?);
         }

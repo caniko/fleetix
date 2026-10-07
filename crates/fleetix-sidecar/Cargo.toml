@@ -1,0 +1,34 @@
+[package]
+name = "fleetix-sidecar"
+version = "0.6.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Standalone Pkl-to-Nix sidecar generator and reusable Fleetix library"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/caniko/fleetix"
+documentation = "https://docs.rs/fleetix-sidecar"
+keywords = ["pkl", "nix", "config", "fleet"]
+categories = ["config", "command-line-utilities"]
+include = ["/src/**", "/tests/**", "/README.md", "/LICENSE*", "/Cargo.toml"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[bin]]
+name = "fleetix-sidecar"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+
+[dependencies]
+pklx.workspace = true
+tokio.workspace = true
+miette.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+sha2.workspace = true
+clap = { workspace = true, optional = true }

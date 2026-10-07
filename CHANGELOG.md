@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+### Added
+
+- Expose native shared construction directly from Fleetix, with optional native
+  and CLI features, standalone held registration/admission/completion, activation
+  fencing and recovery commands, and a builder-local NixOS module.
+- Bound completion waits across socket delivery and polling. Timeout and signals
+  detach without cancelling durable work; unsuccessful terminal waits fail the
+  process while status retains their evidence.
+- Add `fleetix-sidecar`, an independent Rust CLI and library in a Fleetix Cargo
+  workspace. Generate Pkl-to-Nix files without running Nix; check exact output
+  bytes without rewriting sidecars or cache entries.
+
+### Changed
+
+- Preserve version-2 service/policy/protocol contracts while moving the generic
+  native adapter into Fleetix. Existing ownership locations remain defaults;
+  deployers can explicitly select their private directories and root namespace.
+- Coordinate workspace publication in dependency order through Simit, with both
+  crates using version 0.6.0 so the sidecar prerequisite publishes before Fleetix.
+- Move the existing renderer, dependency-aware cache and atomic sidecar writer
+  into the shared crate. Preserve `fleetix::pkl_to_nix` and the Fleetix CLI so
+  Canix's configuration commands retain the same implementation and output.
+- Qualify both workspace members in the Rust Nix gates and expose the standalone
+  `fleetix-sidecar` package. Registry rollout requires publishing that prerequisite
+  before its consuming Fleetix release.
+
+### Fixed
+
+- Prune fully detached registration waiters while preparation continues, freeing
+  per-attempt and global connection budgets without cancelling durable requests
+  or dropping live clients that have only closed their write half.
+- Validate native intake identities before journaling, so a rejected malformed
+  request cannot become an unrecoverable startup-retention obligation. Enforce
+  Nix's store-name length and leading-component rules at that same boundary.
+- Explicitly release drained coordinator leases on graceful stop so temporary
+  fork-inherited file descriptions cannot block the replacement coordinator.
+- Reject non-normalized GC-root namespaces during NixOS option checking, before
+  invalid tmpfiles paths can reach activation.
+- Reject noncanonical source, derivation and output-root evidence before creating
+  request namespaces; unsuccessful terminal registration reattachments now fail
+  the standalone command while preserving status evidence.
+- Pin the active service executable, connection, operator and unit resource
+  policy with `retainedDeployment` while staging an offline policy change.
+  Bind operator identity inside the version-2 admission component and reject
+  in-place operator custody transfers.
+- Validate and durably journal initial intake before retaining source/derivation
+  roots. Invalid or unjournaled requests create no roots; partial initial
+  retention failure remains a known, retirable terminal request.
+- Preserve the private runtime directory when the NixOS service stops, retaining
+  the operator-owned socket lease namespace required for offline rollover.
+- Persist the full planning ownership graph before creating dependency/output
+  roots, so cancelled, timed-out and partially failed preparation can be retired
+  after restart without orphaning roots. Dispatch stays held through retention.
+- Let standalone registration use an explicit, interruptible `--wait-seconds`
+  deadline (default 86400) covering queueing and planning instead of truncating
+  valid service preparation to five minutes. Expiry detaches without cancellation.
+- Keep existing unbounded library waits interruptible during stalled socket
+  delivery, so legacy clients detach promptly without cancelling construction.
+- Reject unrepresentable drain durations before establishing an activation fence
+  instead of panicking in the library frontend.
+
 ## [0.5.2] - 2026-10-07
 
 ### Fixed
@@ -139,5 +202,6 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/caniko/fleetix/compare/0.5.2...0.6.0
 [0.5.0]: https://github.com/caniko/fleetix/compare/0.4.0...0.5.0

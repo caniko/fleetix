@@ -57,19 +57,22 @@
       commonArgs = {
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
-          filter = path: type: craneLib.filterCargoSources path type || pkgs.lib.hasPrefix (toString ./lib + "/") path;
+          filter = path: type:
+            craneLib.filterCargoSources path type
+            || pkgs.lib.hasPrefix (toString ./lib + "/") path
+            || pkgs.lib.hasPrefix (toString ./tests/fixtures + "/") path;
         };
         pname = "fleetix";
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         strictDeps = true;
         nativeBuildInputs = [pkgs.pkl];
-        cargoExtraArgs = "--all-features";
+        cargoExtraArgs = "--workspace --all-features";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
     in {
       inherit craneLib commonArgs;
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-      libraryArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--no-default-features";});
+      libraryArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--workspace --no-default-features";});
     });
   in {
     lib = fleetixLib;
@@ -80,6 +83,15 @@
     # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
     nixosModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     nixosModules.local-access = import ./modules/local-access.nix;
+    nixosModules.build-train = {
+      lib,
+      pkgs,
+      ...
+    }: {
+      key = "fleetix.nixosModules.build-train";
+      imports = [./modules/build-train.nix];
+      fleetix.services.buildTrain.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.fleetixCrate;
+    };
     homeModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     homeModules.trust-observer = import ./modules/trust-observer.nix;
     homeModules.mcp = {
@@ -102,7 +114,17 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
-            cargoExtraArgs = "--features cli";
+            cargoExtraArgs = "--package fleetix --features cli,build-train-cli";
+            meta.mainProgram = "fleetix";
+          });
+
+        fleetix-sidecar = craneLib.buildPackage (commonArgs
+          // {
+            inherit cargoArtifacts;
+            pname = "fleetix-sidecar";
+            version = (builtins.fromTOML (builtins.readFile ./crates/fleetix-sidecar/Cargo.toml)).package.version;
+            cargoExtraArgs = "--package fleetix-sidecar --features cli";
+            meta.mainProgram = "fleetix-sidecar";
           });
 
         # Export any Pkl file to an importable Nix expression sidecar.
@@ -139,7 +161,7 @@
         };
       in {
         default = fleetixCrate;
-        inherit fleetixCrate exportNix pklToNix;
+        inherit fleetixCrate fleetix-sidecar exportNix pklToNix;
       }
     );
 
@@ -159,6 +181,11 @@
         program = "${self.packages.${system}.pklToNix}/bin/fleetix-pkl-to-nix";
         meta.description = "Convert Pkl JSON output to an importable Nix expression";
       };
+      sidecar = {
+        type = "app";
+        program = "${self.packages.${system}.fleetix-sidecar}/bin/fleetix-sidecar";
+        meta.description = "Generate or check Nix sidecars with the standalone Rust CLI";
+      };
     });
 
     checks = forSystems (
@@ -173,6 +200,11 @@
           };
         };
       in {
+        build-train-policy = let
+          contract = import ./tests/build-train-policy.nix;
+        in
+          pkgs.writeText "fleetix-build-train-policy.json" (builtins.toJSON contract);
+        build-train-module = import ./tests/build-train-module.nix {inherit pkgs;};
         gpu-contract = assert import ./tests/gpu.nix;
           pkgs.writeText "fleetix-gpu-contract" "ok";
         gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
@@ -186,7 +218,7 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--all-features";
+            cargoExtraArgs = "--workspace --all-features";
           }
         );
 
@@ -194,7 +226,7 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--all-features";
+            cargoExtraArgs = "--workspace --all-features";
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           }
         );
@@ -203,7 +235,7 @@
           commonArgs
           // {
             cargoArtifacts = libraryArtifacts;
-            cargoExtraArgs = "--no-default-features";
+            cargoExtraArgs = "--workspace --no-default-features";
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           }
         );

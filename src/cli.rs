@@ -13,6 +13,7 @@ pub const EXIT_EVALUATION: u8 = 1;
 pub const EXIT_VALIDATION: u8 = 2;
 pub const EXIT_IO: u8 = 3;
 pub const EXIT_NOT_FOUND: u8 = 4;
+pub const EXIT_BUILD_TRAIN: u8 = 5;
 
 #[derive(Debug)]
 pub struct CliError {
@@ -65,6 +66,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Shared dependency-aware native construction and coordinator recovery.
+    #[cfg(all(unix, feature = "build-train-cli"))]
+    #[command(subcommand)]
+    BuildTrain(crate::build_train::cli::TrainCommand),
     /// Reconcile managed MCP entries into harness configuration files.
     Mcp {
         #[arg(long)]
@@ -212,6 +217,9 @@ struct LinkView {
 
 pub async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
+        #[cfg(all(unix, feature = "build-train-cli"))]
+        Command::BuildTrain(command) => crate::build_train::cli::run(command)
+            .map_err(|error| CliError::new(EXIT_BUILD_TRAIN, error))?,
         Command::Mcp {
             manifest,
             state,
