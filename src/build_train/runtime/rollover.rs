@@ -49,6 +49,34 @@ fn json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     serde_json::to_vec(value).map_err(|e| e.to_string())
 }
 
+fn read_snapshot(history: &Path, marker: &Marker) -> Result<Snapshot, String> {
+    if marker.snapshot.len() != 64 || !marker.snapshot.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid rollover snapshot identity".into());
+    }
+    let raw = fs::read(history.join(&marker.snapshot).join("snapshot.json"))
+        .map_err(|e| e.to_string())?;
+    if format!("{:x}", Sha256::digest(&raw)) != marker.snapshot {
+        return Err("rollover snapshot checksum changed".into());
+    }
+    let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    if snapshot.version != VERSION
+        || snapshot.previous != marker.previous
+        || snapshot.next != marker.next
+        || snapshot.train.policy != marker.previous.policy
+        || snapshot.train.aging_seconds != marker.previous.aging_seconds
+        || snapshot.train.running() != 0
+        || snapshot
+            .train
+            .fence
+            .as_ref()
+            .is_none_or(|f| f.token != marker.token)
+        || active_requests(&snapshot.train)? != 0
+    {
+        return Err("rollover snapshot contract changed".into());
+    }
+    Ok(snapshot)
+}
+
 /// Archive a stopped, drained, fenced train and initialize a different policy.
 ///
 /// Every request must already be terminal; cancel pending requests explicitly
@@ -109,6 +137,10 @@ pub fn rollover(
                 let receipt: Marker = serde_json::from_reader(file).map_err(|e| e.to_string())?;
                 if receipt.previous == *previous && receipt.next == *next && receipt.token == token
                 {
+                    read_snapshot(&history, &receipt)?;
+                    if path != history.join(&receipt.snapshot).join("receipt.json") {
+                        return Err("rollover receipt is outside its snapshot namespace".into());
+                    }
                     return Ok(path);
                 }
             }
@@ -126,12 +158,7 @@ pub fn rollover(
                 "interrupted rollover has different configs, fence or snapshot identity".into(),
             );
         }
-        let raw = fs::read(history.join(&marker.snapshot).join("snapshot.json"))
-            .map_err(|e| e.to_string())?;
-        if format!("{:x}", Sha256::digest(&raw)) != marker.snapshot {
-            return Err("rollover snapshot checksum changed".into());
-        }
-        let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+        let snapshot = read_snapshot(&history, &marker)?;
         (marker, snapshot)
     } else {
         if current.version != VERSION
@@ -181,6 +208,11 @@ pub fn rollover(
         let directory = history.join(&digest);
         private_dir(&directory)?;
         crate::fsutil::atomic_write(&directory.join("snapshot.json"), &raw)
+            .map_err(|e| e.to_string())?;
+        // atomic_write syncs the snapshot directory, but its entry in the
+        // history parent must also survive before the interruption marker does.
+        File::open(&history)
+            .and_then(|d| d.sync_all())
             .map_err(|e| e.to_string())?;
         let marker = Marker {
             previous: previous.clone(),

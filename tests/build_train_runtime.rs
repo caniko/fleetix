@@ -1297,6 +1297,49 @@ fn successive_rollovers_keep_each_policy_history_and_survive_post_publication_in
 }
 
 #[test]
+fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work() {
+    let mut server = Server::start();
+    let old = server.config.clone();
+    let next = Config {
+        policy: "new-policy".into(),
+        ..old.clone()
+    };
+    let client = server.client();
+    client.call(Command::Submit(request("m", "murph"))).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    let fence = client.drain("m", Duration::from_secs(1)).unwrap();
+    server.shutdown();
+    let receipt = rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap();
+    let journal = std::fs::read(next.state_dir.join("train.json")).unwrap();
+    let path = receipt.parent().unwrap().join("snapshot.json");
+    let original = std::fs::read(&path).unwrap();
+    let mut changed = original.clone();
+    changed.push(b' ');
+    std::fs::write(&path, changed).unwrap();
+    assert!(
+        rollover(&old, &next, server.backend.as_ref(), &fence.token)
+            .unwrap_err()
+            .contains("checksum changed")
+    );
+    assert_eq!(
+        journal,
+        std::fs::read(next.state_dir.join("train.json")).unwrap()
+    );
+    assert!(!old.state_dir.join("rollover.json").exists());
+    assert_eq!(
+        server.backend.released_requests.lock().unwrap().as_slice(),
+        ["m"]
+    );
+    std::fs::write(path, original).unwrap();
+    assert_eq!(
+        rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap(),
+        receipt
+    );
+}
+
+#[test]
 fn bounded_drain_keeps_fence_and_cancellation_removes_only_one_interest() {
     let server = Server::start();
     let client = server.client();
