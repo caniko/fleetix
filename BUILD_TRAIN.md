@@ -121,18 +121,33 @@ construction-side readiness but does not acquire the host execution lease or
 activate anything. `release-fence --token TOKEN` requires the exact retained
 token and a verified owner outcome.
 
-The service deliberately retains its old immutable policy across configuration
-changes. Before builder activation, retain and GC-root the original service
-configuration and verify coordinator/Nix/admission/resource compatibility.
+Policy changes require explicit staging of the retained deployment. Before
+builder activation, retain and GC-root the original service
+configuration and verify coordinator/Nix/admission/resource compatibility. Stage
+policy changes with `fleetix.services.buildTrain.retainedDeployment` set to the
+original `package`, `user` and immutable store `serviceConfig`. This keeps the
+active unit (including crash restarts), `/etc/fleetix-train/service.json` and
+`connection.json` on the original contract. The desired replacement is exposed
+as `next-service.json` and `next-connection.json`; drain and cancel using the
+active connection. The retained package and config remain in the system closure.
+
+The module binds the operator account into the opaque admission component of
+the version-2 policy. Historical contracts and their positional serialization
+remain valid. An operator change is an ownership-domain migration, not an
+in-place policy rollover: finish and retire the original deployment, then
+provision a separate private namespace for the new account. Do not transfer
+request-root or journal custody through `retainedDeployment`.
 
 For an incompatible policy upgrade, hold the shared host activation lease, drain
 the train, cancel pending requests individually and stop the old service. Then:
 
 ```text
-fleetix build-train rollover --previous-config /nix/store/…-original-service.json --config /etc/fleetix-train/service.json --token exact-retained-token
+fleetix build-train rollover --previous-config /nix/store/…-original-service.json --config /etc/fleetix-train/next-service.json --token exact-retained-token
 ```
 
-Restart with the replacement policy only after rollover succeeds. Interrupted
+After rollover succeeds, clear `retainedDeployment`, activate the configuration
+under the same host lease, and start the service with the replacement policy.
+Never restart the retained old-policy service against the replaced journal. Interrupted
 rollover rejects startup and can be retried only with exact retained evidence.
 Completed retries preserve replacement-policy work. Historical old-policy clients
 can query `status` and `retire`; they cannot register, admit, retry or activate.

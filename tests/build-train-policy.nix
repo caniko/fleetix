@@ -18,6 +18,7 @@ let
     queryTimeoutSeconds = 60;
     substitutes = true;
     memoryMax = "1G";
+    retainedDeployment = null;
   };
   module = import ../modules/build-train.nix {
     config = {
@@ -33,6 +34,7 @@ let
         if a > b
         then a
         else b;
+      removePrefix = prefix: value: builtins.substring (builtins.stringLength prefix) (-1) value;
     };
     pkgs = {
       coreutils = "/tools/coreutils";
@@ -46,6 +48,6 @@ let
   command = module.config.systemd.services.fleetix-build-train.serviceConfig.ExecStart;
   prefix = "${cfg.package.executable} build-train serve --config ";
   service = builtins.fromJSON (builtins.substring (builtins.stringLength prefix) (-1) command);
-  expected = builtins.fromJSON (builtins.readFile ./fixtures/build-train-service.json);
+  expected = builtins.fromJSON (builtins.readFile ./fixtures/build-train-operator-service.json);
 in
   assert service == expected; service

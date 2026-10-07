@@ -160,10 +160,18 @@ pub fn execute(command: TrainCommand) -> Result<Execution, String> {
                 serde_json::from_slice(&std::fs::read(request).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
             let stop = signals()?;
-            Connection::load(&connection)?
-                .client()
-                .register_for(request, Duration::from_secs(wait_seconds), &stop)
-                .map(Execution::Reply)
+            let reply = Connection::load(&connection)?.client().register_for(
+                request,
+                Duration::from_secs(wait_seconds),
+                &stop,
+            )?;
+            match &reply.outcome {
+                Some(Outcome::Failed(error)) => Err(format!("registration failed: {error}")),
+                Some(Outcome::Cancelled) => Err(
+                    "registration cancelled; inspect the durable request before retrying".into(),
+                ),
+                _ => Ok(Execution::Reply(reply)),
+            }
         }
         TrainCommand::Admit {
             connection,

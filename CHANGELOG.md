@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject noncanonical source, derivation and output-root evidence before creating
+  request namespaces; unsuccessful terminal registration reattachments now fail
+  the standalone command while preserving status evidence.
+- Pin the active service executable, connection, operator and unit resource
+  policy with `retainedDeployment` while staging an offline policy change.
+  Bind operator identity inside the version-2 admission component and reject
+  in-place operator custody transfers.
 - Validate and durably journal initial intake before retaining source/derivation
   roots. Invalid or unjournaled requests create no roots; partial initial
   retention failure remains a known, retirable terminal request.

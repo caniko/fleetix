@@ -19,6 +19,31 @@ fn policy_matches_original_nix_contract() {
 }
 
 #[test]
+fn operator_bound_admission_keeps_version_two_parity_and_rejects_ownership_transfer() {
+    let service: Service = serde_json::from_str(include_str!(
+        "../../tests/fixtures/build-train-operator-service.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        policy_identity(&service).unwrap(),
+        service.coordinator.policy
+    );
+    let mut next = service.clone();
+    next.admission_contract = serde_json::to_string(&(
+        "fleetix-train-operator",
+        "other",
+        "qualified-resource-policy",
+    ))
+    .unwrap();
+    next.coordinator.policy = policy_identity(&next).unwrap();
+    assert_ne!(next.coordinator.policy, service.coordinator.policy);
+    assert_eq!(
+        rollover(service, next, "unused").unwrap_err(),
+        "policy rollover cannot transfer operator ownership"
+    );
+}
+
+#[test]
 fn scheduling_and_execution_limits_remain_policy_bound() {
     let service = service();
     let expected = policy_identity(&service).unwrap();
@@ -165,6 +190,66 @@ fn archived_ownership_excludes_unused_siblings_and_retains_build_evidence() {
             "shared-dev".into()
         ])
     );
+}
+
+#[test]
+fn invalid_root_identities_never_create_request_namespaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut native = service().native;
+    native.gc_roots = temp.path().join("roots");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&native.gc_roots)
+        .unwrap();
+    let backend = NixBackend(native);
+    let valid = "/nix/store/00000000000000000000000000000000-source";
+    let request = Request {
+        attempt: "invalid".into(),
+        target: "builder".into(),
+        source: valid.into(),
+        roots: BTreeSet::from([Goal {
+            derivation: format!("{valid}.drv"),
+            output: "out".into(),
+        }]),
+        activates: false,
+    };
+    for bad in [
+        "00000000000000000000000000000000-source",
+        "/checkout/source",
+        "/nix/store/00000000000000000000000000000000-source/subpath",
+        "/nix/store/../00000000000000000000000000000000-source",
+    ] {
+        let mut invalid = request.clone();
+        invalid.source = format!("{bad}#target");
+        assert!(backend.retain(&invalid, &Graph::new()).is_err());
+        assert!(
+            !backend.0.gc_roots.join("requests").exists(),
+            "invalid source created namespace: {bad}"
+        );
+        invalid = request.clone();
+        invalid.roots = BTreeSet::from([Goal {
+            derivation: format!("{bad}.drv"),
+            output: "out".into(),
+        }]);
+        assert!(backend.retain(&invalid, &Graph::new()).is_err());
+        assert!(
+            !backend.0.gc_roots.join("requests").exists(),
+            "invalid derivation created namespace: {bad}"
+        );
+        let graph = Graph::from([(
+            request.roots.iter().next().unwrap().clone(),
+            Definition {
+                output_path: bad.into(),
+                dependencies: BTreeSet::new(),
+                operation: Operation::Build,
+            },
+        )]);
+        assert!(backend.retain(&request, &graph).is_err());
+        assert!(
+            !backend.0.gc_roots.join("requests").exists(),
+            "invalid output created namespace: {bad}"
+        );
+    }
 }
 
 #[test]

@@ -188,6 +188,37 @@ fn request_paths(request: &Request, graph: &Graph) -> std::collections::BTreeSet
     paths
 }
 
+fn validated_request_paths(
+    request: &Request,
+    graph: &Graph,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let paths = request_paths(request, graph);
+    // The engine's parser also accepts store basenames in derivation JSON.
+    // Root targets must already be absolute, canonical store children: never
+    // pass a relative basename through to the root symlink writer.
+    for path in &paths {
+        let (hash, name) = path
+            .strip_prefix("/nix/store/")
+            .and_then(|s| s.split_once('-'))
+            .ok_or("root evidence must be an exact absolute store path")?;
+        if hash.len() != 32
+            || !hash
+                .bytes()
+                .all(|c| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&c))
+            || name.is_empty()
+            || !name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"+-._?=".contains(&c))
+        {
+            return Err("root evidence must be an exact absolute store path".into());
+        }
+    }
+    for goal in request.roots.iter().chain(graph.keys()) {
+        output(goal).installable().map_err(|e| e.to_string())?;
+    }
+    Ok(paths)
+}
+
 impl Backend for NixBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
         self.0
@@ -224,12 +255,10 @@ impl Backend for NixBackend {
             .map_err(|e| e.to_string())
     }
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String> {
+        let paths = validated_request_paths(request, graph)?;
         let native = self.request_native(request, true)?;
-        nix_manager_core::build::frontier::retain_paths(
-            &native.gc_roots,
-            &request_paths(request, graph),
-        )
-        .map_err(|e| e.to_string())
+        nix_manager_core::build::frontier::retain_paths(&native.gc_roots, &paths)
+            .map_err(|e| e.to_string())
     }
     fn release(&self, request: &Request, graph: &Graph) -> Result<(), String> {
         let native = self.request_native(request, false)?;
@@ -307,6 +336,19 @@ pub fn rollover(previous: Service, next: Service, token: &str) -> Result<PathBuf
     validate_service(&next)?;
     if previous.builder != next.builder || previous.native.gc_roots != next.native.gc_roots {
         return Err("policy rollover cannot move builder or request-root ownership".into());
+    }
+    // New modules bind operator custody inside the existing opaque admission
+    // string, preserving positional v2 digests for historical service files.
+    let operator = |service: &Service| {
+        serde_json::from_str::<(String, String, String)>(&service.admission_contract)
+            .ok()
+            .filter(|(marker, _, _)| marker == "fleetix-train-operator")
+            .map(|(_, user, _)| user)
+    };
+    if let (Some(previous), Some(next)) = (operator(&previous), operator(&next)) {
+        if previous != next {
+            return Err("policy rollover cannot transfer operator ownership".into());
+        }
     }
     runtime::rollover(
         &previous.coordinator,

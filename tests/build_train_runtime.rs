@@ -1215,6 +1215,57 @@ fn standalone_registration_deadline_detaches_and_allows_explicit_reattachment() 
 
 #[cfg(all(feature = "cli", feature = "build-train-cli"))]
 #[test]
+fn standalone_registration_reattachment_rejects_failed_and_cancelled_outcomes() {
+    let server = Server::start();
+    let directory = server._temp.path();
+    let connection = directory.join("connection.json");
+    std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
+        "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
+        "preparation_dir": directory.join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+    })).unwrap()).unwrap();
+    for (id, cancelled) in [("cancelled", true), ("failed", false)] {
+        let request = request(id, "murph");
+        if cancelled {
+            server
+                .client()
+                .call(Command::Register(request.clone()))
+                .unwrap();
+            server.client().call(Command::Cancel(id.into())).unwrap();
+        } else {
+            server
+                .backend
+                .initial_retain_fails
+                .store(true, Ordering::Relaxed);
+            assert!(
+                server
+                    .client()
+                    .call(Command::Register(request.clone()))
+                    .is_err()
+            );
+        }
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+        let result = std::process::Command::new(env!("CARGO_BIN_EXE_fleetix"))
+            .args(["build-train", "register", "--connection"])
+            .arg(&connection)
+            .arg("--request")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "terminal {id} registration reported success"
+        );
+        let status = server.client().call(Command::Status(id.into())).unwrap();
+        assert!(matches!(
+            status.outcome,
+            Some(Outcome::Cancelled | Outcome::Failed(_))
+        ));
+    }
+}
+
+#[cfg(all(feature = "cli", feature = "build-train-cli"))]
+#[test]
 fn standalone_cli_joins_held_admission_waits_independently_and_reports_cancellation() {
     let server = Server::start();
     let directory = server._temp.path();
