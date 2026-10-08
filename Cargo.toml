@@ -1,6 +1,6 @@
 [package]
 name = "fleetix"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Fleet topology library — typed Pkl schema, Rust bindings, Nix modules"
@@ -37,7 +37,7 @@ default-members = [".", "crates/fleetix-sidecar"]
 resolver = "2"
 
 [workspace.dependencies]
-fleetix-sidecar = { version = "0.6.0", path = "crates/fleetix-sidecar", default-features = false }
+fleetix-sidecar = { version = "0.6.1", path = "crates/fleetix-sidecar", default-features = false }
 pklx = "0.1.0"
 miette = "7"
 serde = { version = "1", features = ["derive"] }

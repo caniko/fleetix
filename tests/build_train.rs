@@ -35,6 +35,63 @@ fn request(id: &str, host: &str, root: &str) -> Request {
 }
 
 #[test]
+fn filtered_dispatch_leaves_excluded_work_pending_and_preserves_dependencies() {
+    let mut train = Train::new("overflow".into(), 10);
+    let graph = graph(&[("heavy", &[]), ("light", &[]), ("dependent", &["heavy"])]);
+    for root in ["heavy", "light", "dependent"] {
+        let mut request = request(root, "checks", root);
+        request.activates = false;
+        train.submit(request, graph.clone(), 0).unwrap();
+    }
+    let eligible = |goal: &Goal, _: &Definition| goal.derivation != "heavy";
+    let local = train
+        .dispatch_where(0, |goal, definition| !eligible(goal, definition))
+        .unwrap()
+        .unwrap();
+    assert_eq!(local.goal, goal("heavy"));
+    let remote = train.dispatch_where(0, eligible).unwrap().unwrap();
+    assert_eq!(remote.goal, goal("light"));
+    assert!(train.dispatch_where(0, eligible).unwrap().is_none());
+    train.finish(&remote, Err("independent failure".into()));
+    train.finish(&local, Ok(()));
+    let dependent = train.dispatch_where(1, eligible).unwrap().unwrap();
+    assert_eq!(dependent.goal, goal("dependent"));
+    train.finish(&dependent, Ok(()));
+    assert_eq!(train.outcome("dependent").unwrap(), Outcome::Ready);
+    assert!(matches!(
+        train.outcome("light").unwrap(),
+        Outcome::Failed(_)
+    ));
+}
+
+#[test]
+fn filtered_dispatch_does_not_consume_rejected_goals_or_duplicate_named_builds() {
+    let mut train = Train::new("overflow".into(), 10);
+    let mut definitions = graph(&[("multi", &[])]);
+    let mut dev = goal("multi");
+    dev.output = "dev".into();
+    definitions.insert(
+        dev.clone(),
+        Definition {
+            output_path: "/store/multi-dev".into(),
+            ..definitions[&goal("multi")].clone()
+        },
+    );
+    let mut request = request("a", "checks", "multi");
+    request.roots.insert(dev);
+    train.submit(request, definitions, 0).unwrap();
+    let before = serde_json::to_value(&train).unwrap();
+    assert!(train.dispatch_where(0, |_, _| false).unwrap().is_none());
+    assert_eq!(serde_json::to_value(&train).unwrap(), before);
+    let running = train.dispatch_where(0, |_, _| true).unwrap().unwrap();
+    assert!(train.dispatch(0).unwrap().is_none());
+    train.finish(&running, Ok(()));
+    let valid = train.nodes.keys().cloned().collect();
+    train.reconcile(&valid);
+    assert_eq!(train.outcome("a").unwrap(), Outcome::Ready);
+}
+
+#[test]
 fn late_join_reorders_only_pending_ready_work_and_completes_independently() {
     let mut train = Train::new("builder-policy".into(), 10);
     train

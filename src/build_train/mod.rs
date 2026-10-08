@@ -444,6 +444,19 @@ impl Train {
 
     /// Select from the ready frontier; running goals are never reprioritized.
     pub fn dispatch(&mut self, now: u64) -> Result<Option<Dispatch>, String> {
+        self.dispatch_where(now, |_, _| true)
+    }
+
+    /// Select eligible work from the ready frontier without consuming excluded
+    /// goals. The caller owns placement and execution capacity; this predicate
+    /// does not reserve either. Dependency readiness, fairness, independent
+    /// request interests and derivation-level named-output deduplication retain
+    /// exactly the same semantics as [`Self::dispatch`].
+    pub fn dispatch_where(
+        &mut self,
+        now: u64,
+        eligible: impl Fn(&Goal, &Definition) -> bool,
+    ) -> Result<Option<Dispatch>, String> {
         if self.fence.is_some() {
             return Ok(None);
         }
@@ -484,6 +497,7 @@ impl Train {
             .filter(|(goal, _)| {
                 let node = &self.nodes[*goal];
                 node.state == NodeState::Pending
+                    && eligible(goal, &node.definition)
                     && !running_derivations.contains(goal.derivation.as_str())
                     && (node.definition.operation == Operation::Restore
                         || node
