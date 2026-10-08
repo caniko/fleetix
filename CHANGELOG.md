@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-08
+
+### Added
+
+- Add filtered frontier dispatch for caller-owned build placement. Excluded goals
+  stay pending while dependency readiness, fairness, independent failures and
+  named-output builder deduplication retain their existing semantics. Backport
+  the additive API to preserve consumers of the 0.5 construction protocol.
+
 ## [0.5.2] - 2026-10-07
 
 ### Fixed
