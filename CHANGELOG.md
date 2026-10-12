@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Declare the sidecar's existing README in its crates.io package metadata.
+- Update the locked QUIC protocol dependency to address five upstream advisories
+  and replace the yanked ChaCha20 dependency with its compatible patch release.
 
 ## [0.6.0] - 2026-10-07
 
