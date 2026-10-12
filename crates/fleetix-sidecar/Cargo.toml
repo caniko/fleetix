@@ -7,6 +7,7 @@ description = "Standalone Pkl-to-Nix sidecar generator and reusable Fleetix libr
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/caniko/fleetix"
 documentation = "https://docs.rs/fleetix-sidecar"
+readme = "README.md"
 keywords = ["pkl", "nix", "config", "fleet"]
 categories = ["config", "command-line-utilities"]
 include = ["/src/**", "/tests/**", "/README.md", "/LICENSE*", "/Cargo.toml"]
