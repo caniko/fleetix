@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-08
+
+### Added
+
+- Add filtered frontier dispatch for caller-owned build placement. Excluded goals
+  stay pending while dependency readiness, fairness, independent failures and
+  named-output builder deduplication retain their existing semantics.
+
+### Changed
+
+- Generate bounded exact-source Nix qualification and independent workspace
+  archive publishing with Simit 0.20.0. Candidate builds carry no publishing
+  credential; protected publication verifies the signed source and releases the
+  sidecar prerequisite before Fleetix.
+
+### Fixed
+
+- Declare the sidecar's existing README in its crates.io package metadata.
+- Update the locked QUIC protocol dependency to address five upstream advisories
+  and replace the yanked ChaCha20 dependency with its compatible patch release.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added

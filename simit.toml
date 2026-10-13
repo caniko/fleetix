@@ -10,4 +10,40 @@ runtime = "nix"
 platform = "github"
 provider = "actions"
 publish_crates = true
-extra_env = { RUSTDOCFLAGS = "-D warnings" }
+nix_builds = [".#packages.x86_64-linux.fleetixCrate", ".#packages.x86_64-linux.fleetix-sidecar", ".#checks.x86_64-linux.fleetix-tests", ".#checks.x86_64-linux.fleetix-clippy", ".#checks.x86_64-linux.fleetix-no-default-features", ".#checks.x86_64-linux.fleetix-publication-policy", ".#checks.x86_64-linux.fleetix-fmt", ".#checks.x86_64-linux.build-train-policy", ".#checks.x86_64-linux.build-train-module", ".#checks.x86_64-linux.gpu-contract", ".#checks.x86_64-linux.gatus-profiles", ".#checks.x86_64-linux.publication-projections", ".#checks.x86_64-linux.mcp-adapters", ".#checks.x86_64-linux.validate-example-export", ".#checks.x86_64-linux.validate-modular-aggregate-export", ".#checks.x86_64-linux.fleetix-lib-helpers", ".#checks.x86_64-linux.module-integration-fixtures"]
+extra_env = { CARGO_BUILD_JOBS = "2", RUSTDOCFLAGS = "-D warnings" }
+extra_setup = ['''
+set -eu
+bash scripts/qualify-hosted-source.sh
+{
+  printf '%s\n' 'NIX_CONFIG<<SIMIT_HOSTED_NIX_CONFIG'
+  printf '%s\n' 'experimental-features = nix-command flakes' 'max-jobs = 1' 'cores = 2' 'log-lines = 200'
+  printf '%s\n' 'SIMIT_HOSTED_NIX_CONFIG'
+} >> "$GITHUB_ENV"
+if [ -n "${SIMIT_NIX_BUILD_RESULTS:-}" ]; then
+  cp "$SIMIT_NIX_BUILD_RESULTS/revision" "$SIMIT_NIX_BUILD_RESULTS/checkout-revision"
+  expected="${GITHUB_SHA:?}"
+  if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+    expected="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+  fi
+  test "$(git rev-parse HEAD)" = "$expected"
+  git diff --exit-code HEAD --
+  git rev-parse HEAD > "$SIMIT_NIX_BUILD_RESULTS/revision"
+  git rev-parse 'HEAD^{tree}' > "$SIMIT_NIX_BUILD_RESULTS/tree"
+fi
+''']
+
+[ci.nix_build]
+separate_events = true
+capture_results = true
+timeout_minutes = 60
+max_parallel = 2
+max_jobs = 1
+cores = 2
+artifact_retention_days = 32
+artifact_paths = ["/nix/var/log/nix/drvs"]
+
+[[ci.required_gates]]
+id = "generated-parity"
+run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/eac437a218b6471df772c9bf73c177988b03aed0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
+timeout_minutes = 30
