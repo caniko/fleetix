@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgrade the optional native build-train engine to published nix-manager-core
+  0.4.1, converging Forgejo API, Reqwest and Dialoguer generations while retaining
+  the native frontier, retention and recovery contracts.
+
 - Generate bounded exact-source Nix qualification and independent workspace
   archive publishing with Simit 0.20.0. Candidate builds carry no publishing
   credential; protected publication verifies the signed source and releases the
