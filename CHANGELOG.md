@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Update locked rustls to 0.23.46 to address RUSTSEC-2026-0346 through
+  RUSTSEC-2026-0349 without changing the Rust 1.88 minimum.
+
 ## [0.6.1] - 2026-10-08
 
 ### Added
@@ -16,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   named-output builder deduplication retain their existing semantics.
 
 ### Changed
+
+- Upgrade the optional native build-train engine to published nix-manager-core
+  0.4.1, converging Forgejo API, Reqwest and Dialoguer generations while retaining
+  the native frontier, retention and recovery contracts.
 
 - Generate bounded exact-source Nix qualification and independent workspace
   archive publishing with Simit 0.20.0. Candidate builds carry no publishing

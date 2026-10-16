@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: .github/workflows/ci.yaml-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.ref_type == 'tag' && github.ref || format('refs/heads/{0}', github.event.pull_request.head.ref || github.ref_name) }}
   cancel-in-progress: true
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -111,7 +111,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -122,4 +122,4 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
       - name: Required gate generated-parity
-        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/eac437a218b6471df772c9bf73c177988b03aed0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
+        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/82062ea57277bdbc71ebcf40830c62bbfa760c7b -- init ci --platform github --ci-provider actions --runtime nix --check --diff
