@@ -149,10 +149,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                 "link.no_server",
                 Some(format!("links.{link_name}")),
                 None,
-                format!(
-                    "link '{}' has no server — this is fine for peer-to-peer links",
-                    link_name
-                ),
+                format!("link '{link_name}' has no server — this is fine for peer-to-peer links"),
             );
         } else if servers.len() > 1 {
             report.error(
@@ -365,8 +362,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                             Some(format!("hosts.{host_name}.links.{link_name}.publicKey")),
                             None,
                             format!(
-                                "host '{}' on link '{}' has no publicKey — WireGuard will not work",
-                                host_name, link_name
+                                "host '{host_name}' on link '{link_name}' has no publicKey — WireGuard will not work"
                             ),
                         );
                     }

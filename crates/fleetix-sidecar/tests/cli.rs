@@ -31,7 +31,7 @@ fn standalone_generation_and_read_only_check() {
     assert_eq!(missing.status.code(), Some(2));
     assert!(!output.parent().unwrap().exists());
     let generated = run("generate", &source, &output);
-    assert!(generated.status.success(), "{:?}", generated);
+    assert!(generated.status.success(), "{generated:?}");
     let contents = fs::read(&output).unwrap();
     assert!(String::from_utf8_lossy(&contents).contains("value = 42"));
     assert!(run("check", &source, &output).status.success());
