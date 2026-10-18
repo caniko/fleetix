@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-18
+
+### Changed
+
+- Use published pklx 0.2 and Pklr 5. Evaluation options now accept a Ureq
+  `agent` instead of a Reqwest `client`. HTTP rewrites and the CLI proxy option
+  retain their existing interfaces. Evaluation runs on Tokio's blocking pool.
+- Trace binary file reads and environment enumeration in persistent sidecar
+  cache receipts as well as text reads, imports and globs.
+
+### Fixed
+
+- Remove the vulnerable ZIP 8 extraction implementation through ZIP 9.0.5
+  and update Rustls to 0.23.46 for its four October advisories.
+
 ## [0.6.1] - 2026-10-08
 
 ### Added

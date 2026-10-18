@@ -19,13 +19,13 @@ pub fn options_with_http(
         ..EvalOptions::default()
     };
     if let Some(proxy_url) = http_proxy {
-        let proxy = pklx::pklr::reqwest::Proxy::all(proxy_url)
+        let proxy = pklx::pklr::ureq::Proxy::new(proxy_url)
             .map_err(|error| miette::miette!("invalid proxy URL '{proxy_url}': {error}"))?;
-        options.client = Some(
-            pklx::pklr::reqwest::Client::builder()
-                .proxy(proxy)
+        options.agent = Some(
+            pklx::pklr::ureq::Agent::config_builder()
+                .proxy(Some(proxy))
                 .build()
-                .map_err(|error| miette::miette!("failed to build HTTP client: {error}"))?,
+                .into(),
         );
     }
     Ok(options)
@@ -97,7 +97,7 @@ pub async fn write_with_cache(
     cache_options: CacheOptions,
 ) -> Result<WriteOutcome> {
     let cache_location =
-        if cache_options.enabled && options.client.is_none() && options.http_rewrites.is_empty() {
+        if cache_options.enabled && options.agent.is_none() && options.http_rewrites.is_empty() {
             cache_options
                 .directory
                 .or_else(cache::default_dir)
