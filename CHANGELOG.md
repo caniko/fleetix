@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retain their existing interfaces. Evaluation runs on Tokio's blocking pool.
 - Trace binary file reads and environment enumeration in persistent sidecar
   cache receipts as well as text reads, imports and globs.
+- Use published Nix Manager Core 0.4.2 for the optional native build backend,
+  sharing the current Forgejo and terminal dependency cohort with consumers.
 
 ### Fixed
 
