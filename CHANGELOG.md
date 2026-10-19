@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Use published pklx 0.2 and Pklr 5. Evaluation options now accept a Ureq
+- Require pklx 0.2.1 and Pklr 5.2 for imported schema constraints.
+  Evaluation options now accept a Ureq
   `agent` instead of a Reqwest `client`. HTTP rewrites and the CLI proxy option
   retain their existing interfaces. Evaluation runs on Tokio's blocking pool.
 - Trace binary file reads and environment enumeration in persistent sidecar
