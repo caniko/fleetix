@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Remove the vulnerable ZIP 8 extraction implementation through ZIP 9.0.5
   and update Rustls to 0.23.46 for its four October advisories.
+- Update rustls-webpki to 0.103.16 and webpki-root-certs to 1.0.10 for
+  RUSTSEC-2026-0382 and RUSTSEC-2026-0383.
 
 ## [0.6.1] - 2026-10-08
 
