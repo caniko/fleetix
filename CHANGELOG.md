@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-18
+
+### Changed
+
+- Require pklx 0.2.1 and Pklr 5.2 for imported schema constraints.
+  Evaluation options now accept a Ureq
+  `agent` instead of a Reqwest `client`. HTTP rewrites and the CLI proxy option
+  retain their existing interfaces. Evaluation runs on Tokio's blocking pool.
+- Trace binary file reads and environment enumeration in persistent sidecar
+  cache receipts as well as text reads, imports and globs.
+- Use published Nix Manager Core 0.4.2 for the optional native build backend,
+  sharing the current Forgejo and terminal dependency cohort with consumers.
+
+### Fixed
+
+- Remove the vulnerable ZIP 8 extraction implementation through ZIP 9.0.5
+  and update Rustls to 0.23.46 for its four October advisories.
+- Update rustls-webpki to 0.103.16 and webpki-root-certs to 1.0.10 for
+  RUSTSEC-2026-0382 and RUSTSEC-2026-0383.
+
 ## [0.6.1] - 2026-10-08
 
 ### Added

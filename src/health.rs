@@ -102,7 +102,6 @@ fn body_matches(body: &str, assertion: &BodyAssertion) -> bool {
 }
 
 fn network_healthy(check: &LocalCheck) -> bool {
-    use pklx::pklr::reqwest;
     let Some(target) = &check.target else {
         return false;
     };
@@ -199,7 +198,7 @@ pub fn collect(
                     .target
                     .as_ref()
                     .ok_or_else(|| miette::miette!("missing local network target"))?;
-                let url = pklx::pklr::reqwest::Url::parse(&target.url).into_diagnostic()?;
+                let url = reqwest::Url::parse(&target.url).into_diagnostic()?;
                 let scheme = if matches!(check.source.probe, HealthProbe::Tcp { .. }) {
                     "tcp"
                 } else {
@@ -288,7 +287,6 @@ pub async fn publish(
     token: &str,
     observations: &[Observation],
 ) -> Result<()> {
-    use pklx::pklr::reqwest;
     if token.trim().is_empty() {
         return Err(miette::miette!("empty health publication credential"));
     }

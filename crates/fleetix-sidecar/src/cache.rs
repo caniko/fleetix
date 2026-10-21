@@ -91,7 +91,7 @@ impl Snapshot {
         }
         let mut native = NativeCapabilities::new();
         for glob in &self.globs {
-            let Ok(paths) = native.glob(&glob.base, &glob.pattern).await else {
+            let Ok(paths) = native.glob(&glob.base, &glob.pattern) else {
                 return false;
             };
             let mut paths: Vec<_> = paths.iter().map(|path| absolute(path)).collect();
@@ -188,26 +188,27 @@ pub(super) async fn evaluate(
     path: &Path,
     options: pklr::EvalOptions,
 ) -> miette::Result<(String, Snapshot)> {
-    let observed = Arc::new(Mutex::new(Snapshot::default()));
-    let capabilities = TracingCapabilities {
-        native: NativeCapabilities::new(),
-        observed: Arc::clone(&observed),
-    };
-    let mut evaluator = pklr::Evaluator::with_capabilities(capabilities);
-    evaluator.set_base_path(path.parent().unwrap_or_else(|| Path::new(".")));
-    if let Some(client) = options.client {
-        evaluator.set_http_client(client);
-    }
-    if !options.http_rewrites.is_empty() {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let observed = Arc::new(Mutex::new(Snapshot::default()));
+        let capabilities = TracingCapabilities {
+            native: options
+                .agent
+                .map_or_else(NativeCapabilities::new, NativeCapabilities::with_http_agent),
+            observed: Arc::clone(&observed),
+        };
+        let mut evaluator = pklr::Evaluator::with_capabilities(capabilities);
+        evaluator.set_base_path(path.parent().unwrap_or_else(|| Path::new(".")));
         evaluator.set_http_rewrites(&options.http_rewrites);
-    }
-    let value = evaluator
-        .eval_file_pub(path)
-        .await
-        .into_diagnostic()
-        .wrap_err_with(|| format!("Failed to evaluate '{}'", path.display()))?;
-    let snapshot = std::mem::take(&mut *observed.lock().unwrap());
-    Ok((pklx::pkl_value_to_nix(&value), snapshot))
+        let value = evaluator
+            .eval_file(&path)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("Failed to evaluate '{}'", path.display()))?;
+        let snapshot = std::mem::take(&mut *observed.lock().unwrap());
+        Ok((pklx::pkl_value_to_nix(&value), snapshot))
+    })
+    .await
+    .into_diagnostic()?
 }
 
 struct TracingCapabilities {
@@ -216,112 +217,120 @@ struct TracingCapabilities {
 }
 
 impl EvalCapabilities for TracingCapabilities {
-    fn read_to_string<'a>(
-        &'a mut self,
-        path: &'a Path,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<String>> {
-        Box::pin(async move {
-            let result = self.native.read_to_string(path).await;
-            let mut snapshot = self.observed.lock().unwrap();
-            match &result {
-                Ok(text) => {
-                    snapshot
-                        .files
-                        .insert(absolute(path), digest(text.as_bytes()));
-                }
-                Err(_) => snapshot.volatile = true,
-            }
-            result
-        })
+    fn is_native_filesystem(&self) -> bool {
+        self.native.is_native_filesystem()
     }
 
-    fn path_exists<'a>(
-        &'a mut self,
-        path: &'a Path,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<bool>> {
-        Box::pin(async move {
-            let result = self.native.path_exists(path).await;
-            if let Ok(exists) = &result {
-                self.observed
-                    .lock()
-                    .unwrap()
-                    .existence
-                    .insert(absolute(path), *exists);
+    fn read_to_string(&mut self, path: &Path) -> pklr::Result<String> {
+        let result = self.native.read_to_string(path);
+        let mut snapshot = self.observed.lock().unwrap();
+        match &result {
+            Ok(text) => {
+                snapshot
+                    .files
+                    .insert(absolute(path), digest(text.as_bytes()));
             }
-            result
-        })
+            Err(_) => snapshot.volatile = true,
+        }
+        result
     }
 
-    fn canonicalize<'a>(
-        &'a mut self,
-        path: &'a Path,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<PathBuf>> {
-        Box::pin(async move {
-            let result = self.native.canonicalize(path).await;
-            let mut snapshot = self.observed.lock().unwrap();
-            match &result {
-                Ok(resolved) => {
-                    snapshot.canonical.insert(absolute(path), resolved.clone());
-                }
-                Err(_) => snapshot.volatile = true,
+    fn read_bytes(&mut self, path: &Path) -> pklr::Result<Vec<u8>> {
+        let result = self.native.read_bytes(path);
+        let mut snapshot = self.observed.lock().unwrap();
+        match &result {
+            Ok(bytes) => {
+                snapshot.files.insert(absolute(path), digest(bytes));
             }
-            result
-        })
+            Err(_) => snapshot.volatile = true,
+        }
+        result
     }
 
-    fn read_env<'a>(
-        &'a mut self,
-        name: &'a str,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<Option<String>>> {
+    fn path_exists(&mut self, path: &Path) -> pklr::Result<bool> {
+        let result = self.native.path_exists(path);
+        if let Ok(exists) = &result {
+            self.observed
+                .lock()
+                .unwrap()
+                .existence
+                .insert(absolute(path), *exists);
+        }
+        result
+    }
+
+    fn canonicalize(&mut self, path: &Path) -> pklr::Result<PathBuf> {
+        let result = self.native.canonicalize(path);
+        let mut snapshot = self.observed.lock().unwrap();
+        match &result {
+            Ok(resolved) => {
+                snapshot.canonical.insert(absolute(path), resolved.clone());
+            }
+            Err(_) => snapshot.volatile = true,
+        }
+        result
+    }
+
+    fn read_env(&mut self, name: &str) -> pklr::Result<Option<String>> {
         self.observed.lock().unwrap().volatile = true;
         self.native.read_env(name)
     }
 
-    fn fetch_text<'a>(
-        &'a mut self,
-        url: &'a str,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<String>> {
+    fn env_vars(&mut self) -> pklr::Result<Vec<(String, String)>> {
+        self.observed.lock().unwrap().volatile = true;
+        self.native.env_vars()
+    }
+
+    fn fetch_text(&mut self, url: &str) -> pklr::Result<String> {
         self.observed.lock().unwrap().volatile = true;
         self.native.fetch_text(url)
     }
 
-    fn fetch_bytes<'a>(
-        &'a mut self,
-        url: &'a str,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<Vec<u8>>> {
+    fn fetch_bytes(&mut self, url: &str) -> pklr::Result<Vec<u8>> {
         self.observed.lock().unwrap().volatile = true;
         self.native.fetch_bytes(url)
     }
 
-    fn set_http_client(&mut self, client: pklr::reqwest::Client) {
-        self.native.set_http_client(client);
-    }
-
-    fn temp_dir<'a>(
-        &'a mut self,
-        prefix: &'a str,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<PathBuf>> {
+    fn temp_dir(&mut self, prefix: &str) -> pklr::Result<PathBuf> {
         self.observed.lock().unwrap().volatile = true;
         self.native.temp_dir(prefix)
     }
 
-    fn glob<'a>(
-        &'a mut self,
-        base: &'a Path,
-        pattern: &'a str,
-    ) -> pklr::capabilities::BoxFuture<'a, pklr::Result<Vec<PathBuf>>> {
-        Box::pin(async move {
-            let result = self.native.glob(base, pattern).await;
-            if let Ok(paths) = &result {
-                let mut sorted: Vec<_> = paths.iter().map(|path| absolute(path)).collect();
-                sorted.sort();
-                self.observed.lock().unwrap().globs.push(Glob {
-                    base: absolute(base),
-                    pattern: pattern.to_owned(),
-                    paths: sorted,
-                });
-            }
-            result
-        })
+    fn glob(&mut self, base: &Path, pattern: &str) -> pklr::Result<Vec<PathBuf>> {
+        let result = self.native.glob(base, pattern);
+        if let Ok(paths) = &result {
+            let mut sorted: Vec<_> = paths.iter().map(|path| absolute(path)).collect();
+            sorted.sort();
+            self.observed.lock().unwrap().globs.push(Glob {
+                base: absolute(base),
+                pattern: pattern.to_owned(),
+                paths: sorted,
+            });
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn binary_reads_invalidate_receipts_and_environment_enumeration_is_volatile() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.bin");
+        std::fs::write(&path, [0, 255]).unwrap();
+        let observed = Arc::new(Mutex::new(Snapshot::default()));
+        let mut capabilities = TracingCapabilities {
+            native: NativeCapabilities::new(),
+            observed: Arc::clone(&observed),
+        };
+        assert_eq!(capabilities.read_bytes(&path).unwrap(), [0, 255]);
+        let snapshot = std::mem::take(&mut *observed.lock().unwrap());
+        assert!(snapshot.is_current().await);
+        std::fs::write(&path, [1, 255]).unwrap();
+        assert!(!snapshot.is_current().await);
+        capabilities.env_vars().unwrap();
+        assert!(observed.lock().unwrap().volatile);
     }
 }

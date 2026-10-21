@@ -1,6 +1,9 @@
 [ci]
 workspace = true
 workspace_strategy = "aggregate"
+# Run push and pull_request CI independently: a coalesced push run cancelled
+# after its jobs start leaves cancelled required checks that block merging.
+separate_events = true
 publish_strategy = "coordinated"
 runner = "ubuntu-24.04"
 with_msrv = true
@@ -45,5 +48,5 @@ artifact_paths = ["/nix/var/log/nix/drvs"]
 
 [[ci.required_gates]]
 id = "generated-parity"
-run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/eac437a218b6471df772c9bf73c177988b03aed0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
+run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/1997aadff2fa6c30f7c4307d29770886ed12b3dd -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
 timeout_minutes = 30

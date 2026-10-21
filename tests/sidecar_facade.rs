@@ -38,3 +38,31 @@ fn embedded_consumer_keeps_the_fleetix_api() {
             .contains("value = 42")
     );
 }
+
+#[test]
+fn example_topology_renders_with_its_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("examples")).unwrap();
+    std::fs::create_dir_all(dir.path().join("lib/topology")).unwrap();
+    std::fs::write(
+        dir.path().join("examples/Topology.pkl"),
+        include_str!("../examples/Topology.pkl"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("lib/topology/Schema.pkl"),
+        include_str!("../lib/topology/Schema.pkl"),
+    )
+    .unwrap();
+    let output = dir.path().join("topology.nix");
+    write_with_cache_sync(
+        &dir.path().join("examples/Topology.pkl"),
+        &output,
+        EvalOptions::default(),
+        CacheOptions::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error:#}"));
+    let rendered = std::fs::read_to_string(output).unwrap();
+    assert!(rendered.contains("schemaVersion = 2"));
+    assert!(rendered.contains("git.example.test"));
+}

@@ -60,6 +60,7 @@
           filter = path: type:
             craneLib.filterCargoSources path type
             || pkgs.lib.hasPrefix (toString ./lib + "/") path
+            || pkgs.lib.hasPrefix (toString ./examples + "/") path
             || pkgs.lib.hasPrefix (toString ./tests/fixtures + "/") path;
         };
         pname = "fleetix";
@@ -258,6 +259,13 @@
             cp ${./examples/Topology.pkl} "$fixture/examples/Topology.pkl"
             cp ${./lib/topology/Schema.pkl} "$fixture/lib/topology/Schema.pkl"
             fleetix eval "$fixture/examples/Topology.pkl" > topology.nix
+            (
+              cd "$fixture"
+              fleetix pkl-to-nix --no-cache examples/Topology.pkl "$TMPDIR/relative.nix"
+            )
+            fleetix pkl-to-nix --no-cache "$fixture/examples/Topology.pkl" "$TMPDIR/absolute.nix"
+            cmp "$TMPDIR/relative.nix" "$TMPDIR/absolute.nix"
+            fleetix validate "$fixture/examples/Topology.pkl" --format json > validation.json
             grep -q "schemaVersion = 2" topology.nix
             grep -q "hosts =" topology.nix
             grep -q "pagesSites =" topology.nix
