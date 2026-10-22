@@ -334,9 +334,12 @@ class HttpHealthProbe {
   body: Listing<BodyAssertion> = new Listing {}
 }
 
+// Pklr 5 rejects required inline string-literal unions (jdx/pklr#332).
+typealias BodyOperator = "equals" | "contains" | "nonempty"
+
 class BodyAssertion {
   path: String = ""
-  operator: "equals" | "contains" | "nonempty"
+  operator: BodyOperator
   value: String = ""
 }
 
