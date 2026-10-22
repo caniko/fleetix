@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Declare `BodyAssertion.operator` through a `BodyOperator` typealias so Pklr 5
+  evaluates assigned operators; required inline string-literal unions fail
+  there (jdx/pklr#332).
+
 ## [0.7.0] - 2026-10-18
 
 ### Changed
