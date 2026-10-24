@@ -187,6 +187,20 @@
         program = "${self.packages.${system}.fleetix-sidecar}/bin/fleetix-sidecar";
         meta.description = "Generate or check Nix sidecars with the standalone Rust CLI";
       };
+      push-flake-inputs =
+        harbor-rs.lib.mkAtticPush {
+          pkgs = pkgsFor system;
+          flake = ".";
+          paths = nixpkgs.lib.optionals (system == "x86_64-linux") [self.packages.${system}.fleetixCrate];
+          adapter = harbor-rs.lib.mkAdapter {
+            attic = {
+              endpoint = "https://attic.candee.baby";
+              cache = "canix";
+              tokenEnvVar = "ATTIC_TOKEN";
+            };
+          };
+        }
+        // {meta.description = "Publish flake inputs and the Linux fleetix package to the canix Attic cache";};
     });
 
     checks = forSystems (
