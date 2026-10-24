@@ -46,7 +46,23 @@ cores = 2
 artifact_retention_days = 32
 artifact_paths = ["/nix/var/log/nix/drvs"]
 
+# Trunk pushes publish the Linux package Canix consumes to the public canix
+# cache; pull requests only build.
+[prebuild]
+publish_attic = true
+attic_app = ".#push-flake-inputs"
+nix_builds = [".#packages.x86_64-linux.fleetixCrate"]
+
+[prebuild.system_runners]
+"x86_64-linux" = "ubuntu-24.04"
+
+[release.attic]
+cache = "canix"
+url = "https://attic.candee.baby"
+token_name = "fleetix"
+token_secret = "ATTIC_TOKEN"
+
 [[ci.required_gates]]
 id = "generated-parity"
-run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/1997aadff2fa6c30f7c4307d29770886ed12b3dd -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
+run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4c6841cce19327927ea8a8f6e856276dd5c878f0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
 timeout_minutes = 30
