@@ -122,4 +122,4 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
       - name: Required gate generated-parity
-        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/1997aadff2fa6c30f7c4307d29770886ed12b3dd -- init ci --platform github --ci-provider actions --runtime nix --check --diff
+        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4c6841cce19327927ea8a8f6e856276dd5c878f0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
