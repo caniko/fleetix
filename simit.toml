@@ -1,9 +1,8 @@
 [ci]
 workspace = true
 workspace_strategy = "aggregate"
-# Run push and pull_request CI independently: a coalesced push run cancelled
-# after its jobs start leaves cancelled required checks that block merging.
-separate_events = true
+# Validate PR heads once (pull_request) and the default branch on push.
+push_branches = ["trunk"]
 publish_strategy = "coordinated"
 runner = "ubuntu-24.04"
 with_msrv = true
@@ -37,7 +36,7 @@ fi
 ''']
 
 [ci.nix_build]
-separate_events = true
+push_branches = ["trunk"]
 capture_results = true
 timeout_minutes = 60
 max_parallel = 2
@@ -51,6 +50,7 @@ artifact_paths = ["/nix/var/log/nix/drvs"]
 [prebuild]
 publish_attic = true
 attic_app = ".#push-flake-inputs"
+push_branches = ["trunk"]
 nix_builds = [".#packages.x86_64-linux.fleetixCrate"]
 
 [prebuild.system_runners]
