@@ -488,6 +488,7 @@ pub enum HttpAccess {
     Cloudflare,
     Direct,
     Vpn,
+    Lan,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -539,6 +540,13 @@ impl PathMatch {
 pub enum HttpAction {
     Proxy {
         endpoint: String,
+        /// Ordered endpoints tried after `endpoint` when it is unavailable.
+        #[serde(
+            default,
+            rename = "fallbackEndpoints",
+            skip_serializing_if = "Vec::is_empty"
+        )]
+        fallback_endpoints: Vec<String>,
         #[serde(default, rename = "stripPrefix")]
         strip_prefix: Option<String>,
     },
@@ -661,6 +669,7 @@ pub struct IngressGroup {
 pub enum IngressScope {
     Public,
     Vpn,
+    Lan,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -921,6 +930,32 @@ mod tests {
         assert_eq!(
             output["deployment"]["publicPriorities"],
             value["deployment"]["publicPriorities"]
+        );
+    }
+
+    #[test]
+    fn proxy_fallbacks_and_lan_access_round_trip() {
+        let bare = serde_json::json!({"type": "proxy", "endpoint": "a", "stripPrefix": null});
+        let action: HttpAction = serde_json::from_value(bare.clone()).unwrap();
+        assert!(matches!(
+            &action,
+            HttpAction::Proxy { fallback_endpoints, .. } if fallback_endpoints.is_empty()
+        ));
+        assert_eq!(serde_json::to_value(&action).unwrap(), bare);
+
+        let failover = serde_json::json!({
+            "type": "proxy", "endpoint": "a", "fallbackEndpoints": ["b", "c"], "stripPrefix": null
+        });
+        let action: HttpAction = serde_json::from_value(failover.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&action).unwrap(), failover);
+
+        assert_eq!(
+            serde_json::from_str::<HttpAccess>(r#""lan""#).unwrap(),
+            HttpAccess::Lan
+        );
+        assert_eq!(
+            serde_json::from_str::<IngressScope>(r#""lan""#).unwrap(),
+            IngressScope::Lan
         );
     }
 

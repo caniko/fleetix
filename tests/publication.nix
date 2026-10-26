@@ -38,6 +38,7 @@
         };
     };
   unknown = topology // {services.httpSites.media = site // {publicationTarget = "absent";};};
+  lan = topology // {services.httpSites.media = legacy.services.httpSites.media // {access = "lan";};};
 in
   assert (builtins.head cnames).target == "edge.example.test";
   assert !(builtins.head cnames).proxied;
@@ -46,5 +47,6 @@ in
   assert fleet.services.managedDnsCnameIntents {topology = apex;} == [];
   assert map (intent: intent.relativeName) (fleet.domains.publicationAddressIntents {topology = apex;}) == ["edge" "@"];
   assert (builtins.head (fleet.services.managedDnsCnameIntents {topology = legacy;})).target == "example.test";
+  assert fleet.services.managedDnsCnameIntents {topology = lan;} == [];
   assert (builtins.head (fleet.services.pagesCnameIntents {inherit topology;})).target == "docs.codeberg.page";
   assert !(builtins.tryEval (builtins.deepSeq (fleet.services.managedDnsCnameIntents {topology = unknown;}) true)).success; true

@@ -108,4 +108,5 @@ in
   assert rejects {topology = lib.recursiveUpdate topology {services.catalog.web.health.ready.intervalSeconds = 0;};};
   assert rejects {topology = lib.recursiveUpdate topology {services.catalog.web.health.ready.probe.endpoint = "database";};};
   assert rejects {topology = lib.recursiveUpdate topology {services.catalog.duplicate = topology.services.catalog.web // {displayName = "website";};};};
-  assert rejects {topology = lib.recursiveUpdate topology {services.httpSites.web.access = "vpn";};}; true
+  assert rejects {topology = lib.recursiveUpdate topology {services.httpSites.web.access = "vpn";};};
+  assert rejects {topology = lib.recursiveUpdate topology {services.httpSites.web.access = "lan";};}; true

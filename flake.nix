@@ -297,6 +297,9 @@
             grep -q 'serviceIntents' topology.nix
             grep -q 'sshKnownHosts' topology.nix
             grep -q 'git.example.test' topology.nix
+            grep -A1 'fallbackEndpoints = \[$' topology.nix | grep -Fq '"dashboard-standby"'
+            grep -Fq 'scope = "lan"' topology.nix
+            grep -Fq 'access = "lan"' topology.nix
             touch $out
           '';
 
@@ -505,6 +508,12 @@
                 transport = "http";
                 bind = "loopback";
               };
+              photos-standby = {
+                port = 2284;
+                targetHost = "hub";
+                transport = "http";
+                bind = "lan";
+              };
             };
             services.httpSites = {
               photos = {
@@ -524,6 +533,7 @@
                       __pkl_class = "ProxyAction";
                       type = "proxy";
                       endpoint = "photos";
+                      fallbackEndpoints = ["photos-standby"];
                     };
                     responseHeaders = {};
                   }
@@ -543,11 +553,24 @@
                 dnsPublication = "managed";
                 routes = [];
               };
+              # LAN names get explicit records, never managed CNAMEs.
+              nas = {
+                hostname = "nas.example.test";
+                ingress = "lan";
+                access = "lan";
+                dnsPublication = "managed";
+                routes = [];
+              };
             };
           };
           endpoint = self.lib.services.resolveEndpoint {
             inherit topology;
             endpointName = "photos";
+            ingressHost = "spoke";
+          };
+          proxyEndpoints = self.lib.services.resolveProxyEndpoints {
+            inherit topology;
+            inherit (builtins.head topology.services.httpSites.photos.routes) action;
             ingressHost = "spoke";
           };
           missingEndpoint = self.lib.services.resolveEndpoint {
@@ -585,6 +608,7 @@
             }).connection.type}" = "wireguard"
             test "${endpoint.name}" = "photos-lan"
             test "${endpoint.targetHost}" = "hub"
+            test "${toString (map (e: e.name) proxyEndpoints)}" = "photos-lan photos-standby"
             test "${
               if missingEndpoint == null
               then "null"

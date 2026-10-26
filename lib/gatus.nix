@@ -44,8 +44,7 @@ in {
     publicSite = name: let
       site = sites.${name} or {};
     in
-      (site.access or "vpn")
-      != "vpn"
+      !builtins.elem (site.access or "vpn") ["vpn" "lan"]
       && ((topology.deployment.ingressGroups or {}).${site.ingress or ""}.scope or null) == "public";
     require = condition: message:
       if condition

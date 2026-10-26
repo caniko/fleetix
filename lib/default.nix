@@ -379,6 +379,16 @@ in rec {
       then requireValue "fleetix.resolveEndpoint: `${endpointName}` is not reachable from `${toString ingressHost}`" result
       else result;
 
+    # A proxy action's primary endpoint followed by its ordered fallbacks.
+    resolveProxyEndpoints = {
+      topology,
+      action,
+      ingressHost ? null,
+      require ? true,
+    }:
+      map (endpointName: resolveEndpoint {inherit topology endpointName ingressHost require;})
+      ([action.endpoint] ++ action.fallbackEndpoints or []);
+
     managedDnsCnameIntents = {topology}:
       builtins.concatMap (name: let
         site = (siteByName {inherit topology;}).${name};
@@ -401,7 +411,7 @@ in rec {
           if
             site.dnsPublication
             != "managed"
-            || site.access == "vpn"
+            || builtins.elem site.access ["vpn" "lan"]
             || zone == null
             || (destination != null && (lib.toLower site.hostname == lib.toLower zone || lib.toLower site.hostname == lib.toLower target))
           then []

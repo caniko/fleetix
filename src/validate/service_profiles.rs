@@ -143,7 +143,7 @@ pub(super) fn validate(topology: &Topology, report: &mut ValidationReport) {
                                 .http_sites
                                 .get(site)
                                 .is_some_and(|target| {
-                                    target.access == HttpAccess::Vpn
+                                    matches!(target.access, HttpAccess::Vpn | HttpAccess::Lan)
                                         || !topology
                                             .deployment
                                             .ingress_groups

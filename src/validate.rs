@@ -479,6 +479,7 @@ fn validate_services(topology: &Topology, report: &mut ValidationReport) {
         if let Some(ingress) = ingress {
             let expected = match site.access {
                 HttpAccess::Vpn => IngressScope::Vpn,
+                HttpAccess::Lan => IngressScope::Lan,
                 HttpAccess::Cloudflare | HttpAccess::Direct => IngressScope::Public,
             };
             if ingress.scope != expected {
@@ -506,6 +507,15 @@ fn validate_services(topology: &Topology, report: &mut ValidationReport) {
                 Some(format!("{base}.dnsPublication")),
                 Some("managed".into()),
                 format!("VPN HTTP site '{name}' cannot use managed public DNS"),
+            );
+        }
+        // Managed CNAMEs target the public edge; LAN names get explicit records.
+        if site.access == HttpAccess::Lan && site.dns_publication == DnsPublication::Managed {
+            report.error(
+                "site.lan_managed_dns",
+                Some(format!("{base}.dnsPublication")),
+                Some("managed".into()),
+                format!("LAN HTTP site '{name}' cannot use managed public DNS"),
             );
         }
 
@@ -606,6 +616,7 @@ fn validate_http_routes(
         match &route.action {
             HttpAction::Proxy {
                 endpoint,
+                fallback_endpoints,
                 strip_prefix,
             } => {
                 if let Some(strip_prefix) = strip_prefix {
@@ -618,42 +629,46 @@ fn validate_http_routes(
                         );
                     }
                 }
-                if let Some(target) = topology.services.endpoints.get(endpoint) {
-                    if !target.transport.is_http() {
+                let candidates = std::iter::once((format!("{path}.action.endpoint"), endpoint))
+                    .chain(fallback_endpoints.iter().enumerate().map(|(index, name)| {
+                        (format!("{path}.action.fallbackEndpoints.{index}"), name)
+                    }));
+                let mut seen = HashSet::new();
+                for (location, endpoint) in candidates {
+                    if !seen.insert(endpoint.as_str()) {
                         report.error(
-                            "site.route_non_http_endpoint",
-                            Some(format!("{path}.action.endpoint")),
+                            "site.route_duplicate_fallback_endpoint",
+                            Some(location),
                             Some(endpoint.clone()),
                             format!(
-                                "HTTP site '{site_name}' cannot proxy to TCP endpoint '{endpoint}'"
+                                "HTTP site '{site_name}' lists endpoint '{endpoint}' more than once"
                             ),
                         );
+                        continue;
                     }
-                    if target.bind == EndpointBind::Loopback {
-                        if let Some(ingress) = ingress {
-                            for ingress_host in &ingress.hosts {
-                                if ingress_host != &target.target_host
-                                    && target.remote_via.is_none()
-                                {
-                                    report.error(
-                                        "site.route_unreachable_endpoint",
-                                        Some(format!("{path}.action.endpoint")),
-                                        Some(endpoint.clone()),
-                                        format!(
-                                            "HTTP site '{site_name}' ingress host '{ingress_host}' cannot reach loopback endpoint '{endpoint}' without remoteVia"
-                                        ),
-                                    );
-                                }
-                            }
+                    validate_proxy_endpoint(
+                        topology, site_name, ingress, &location, endpoint, report,
+                    );
+                }
+                // Caddy has one transport per reverse_proxy, so every upstream must share it.
+                let primary = topology.services.endpoints.get(endpoint);
+                for (index, name) in fallback_endpoints.iter().enumerate() {
+                    if let (Some(primary), Some(fallback)) =
+                        (primary, topology.services.endpoints.get(name))
+                    {
+                        if primary.transport != fallback.transport
+                            || primary.tls_server_name != fallback.tls_server_name
+                        {
+                            report.error(
+                                "site.route_fallback_transport_mismatch",
+                                Some(format!("{path}.action.fallbackEndpoints.{index}")),
+                                Some(name.clone()),
+                                format!(
+                                    "HTTP site '{site_name}' fallback endpoint '{name}' must share transport and tlsServerName with '{endpoint}'"
+                                ),
+                            );
                         }
                     }
-                } else {
-                    report.error(
-                        "site.route_unknown_endpoint",
-                        Some(format!("{path}.action.endpoint")),
-                        Some(endpoint.clone()),
-                        format!("HTTP site '{site_name}' references unknown endpoint '{endpoint}'"),
-                    );
                 }
             }
             HttpAction::Files { root_ref, .. } if root_ref.trim().is_empty() => report.error(
@@ -704,6 +719,47 @@ fn validate_http_routes(
             None,
             format!("HTTP site '{site_name}' fallback route must be last"),
         );
+    }
+}
+
+fn validate_proxy_endpoint(
+    topology: &Topology,
+    site_name: &str,
+    ingress: Option<&crate::topology::IngressGroup>,
+    location: &str,
+    endpoint: &str,
+    report: &mut ValidationReport,
+) {
+    let Some(target) = topology.services.endpoints.get(endpoint) else {
+        report.error(
+            "site.route_unknown_endpoint",
+            Some(location.to_string()),
+            Some(endpoint.to_string()),
+            format!("HTTP site '{site_name}' references unknown endpoint '{endpoint}'"),
+        );
+        return;
+    };
+    if !target.transport.is_http() {
+        report.error(
+            "site.route_non_http_endpoint",
+            Some(location.to_string()),
+            Some(endpoint.to_string()),
+            format!("HTTP site '{site_name}' cannot proxy to TCP endpoint '{endpoint}'"),
+        );
+    }
+    if target.bind == EndpointBind::Loopback && target.remote_via.is_none() {
+        for ingress_host in ingress.iter().flat_map(|ingress| &ingress.hosts) {
+            if ingress_host != &target.target_host {
+                report.error(
+                    "site.route_unreachable_endpoint",
+                    Some(location.to_string()),
+                    Some(endpoint.to_string()),
+                    format!(
+                        "HTTP site '{site_name}' ingress host '{ingress_host}' cannot reach loopback endpoint '{endpoint}' without remoteVia"
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -1708,6 +1764,7 @@ mod tests {
                         },
                         HttpAction::Proxy {
                             endpoint: "foundry".to_string(),
+                            fallback_endpoints: vec![],
                             strip_prefix: None,
                         },
                     ),
@@ -1784,6 +1841,7 @@ mod tests {
                         HttpMatch::default(),
                         HttpAction::Proxy {
                             endpoint: "local".to_string(),
+                            fallback_endpoints: vec![],
                             strip_prefix: None,
                         },
                     ),
@@ -1796,6 +1854,7 @@ mod tests {
                         },
                         HttpAction::Proxy {
                             endpoint: "missing".to_string(),
+                            fallback_endpoints: vec![],
                             strip_prefix: Some("api".to_string()),
                         },
                     ),
@@ -1834,6 +1893,164 @@ mod tests {
                 report.issues
             );
         }
+    }
+
+    fn proxy_site(ingress: &str, access: HttpAccess, action: HttpAction) -> HttpSite {
+        HttpSite {
+            hostname: "app.example.test".to_string(),
+            ingress: ingress.to_string(),
+            access,
+            dns_publication: DnsPublication::None,
+            publication_target: None,
+            routes: vec![route(HttpMatch::default(), action)],
+        }
+    }
+
+    fn proxy(endpoint: &str, fallbacks: &[&str]) -> HttpAction {
+        HttpAction::Proxy {
+            endpoint: endpoint.to_string(),
+            fallback_endpoints: fallbacks.iter().map(|name| name.to_string()).collect(),
+            strip_prefix: None,
+        }
+    }
+
+    #[test]
+    fn validates_proxy_fallback_endpoints_like_the_primary() {
+        let mut topology = v2_topology();
+        for host in ["hub", "target"] {
+            topology.hosts.insert(
+                host.to_string(),
+                Host {
+                    system: "x86_64-linux".to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        topology.deployment.ingress_groups.insert(
+            "lan".to_string(),
+            IngressGroup {
+                scope: IngressScope::Lan,
+                hosts: vec!["hub".to_string()],
+            },
+        );
+        let endpoints = &mut topology.services.endpoints;
+        endpoints.insert("a".to_string(), endpoint("target", EndpointBind::Lan));
+        endpoints.insert("b".to_string(), endpoint("hub", EndpointBind::Loopback));
+        endpoints.insert(
+            "far".to_string(),
+            endpoint("target", EndpointBind::Loopback),
+        );
+        endpoints.insert(
+            "tls".to_string(),
+            Endpoint {
+                transport: EndpointTransport::Https,
+                ..endpoint("target", EndpointBind::Lan)
+            },
+        );
+        endpoints.insert(
+            "sni".to_string(),
+            Endpoint {
+                transport: EndpointTransport::Https,
+                tls_server_name: Some("app.example.test".to_string()),
+                ..endpoint("target", EndpointBind::Lan)
+            },
+        );
+        endpoints.insert(
+            "tcp".to_string(),
+            Endpoint {
+                transport: EndpointTransport::Tcp,
+                ..endpoint("target", EndpointBind::Lan)
+            },
+        );
+
+        topology.services.http_sites.insert(
+            "ok".to_string(),
+            proxy_site("lan", HttpAccess::Lan, proxy("a", &["b"])),
+        );
+        assert!(
+            validate(&topology).is_ok(),
+            "{:?}",
+            validate(&topology).issues
+        );
+
+        topology.services.http_sites["ok"].routes[0].action =
+            proxy("a", &["a", "b", "b", "missing", "tls", "tcp", "far"]);
+        let at = |report: &ValidationReport, code: &str, index: usize| {
+            report.issues.iter().any(|issue| {
+                issue.code == code
+                    && issue.path.as_deref()
+                        == Some(
+                            format!(
+                                "services.httpSites.ok.routes.0.action.fallbackEndpoints.{index}"
+                            )
+                            .as_str(),
+                        )
+            })
+        };
+        let report = validate(&topology);
+        assert!(at(&report, "site.route_duplicate_fallback_endpoint", 0));
+        assert!(at(&report, "site.route_duplicate_fallback_endpoint", 2));
+        assert!(at(&report, "site.route_unknown_endpoint", 3));
+        assert!(at(&report, "site.route_fallback_transport_mismatch", 4));
+        assert!(at(&report, "site.route_non_http_endpoint", 5));
+        assert!(at(&report, "site.route_fallback_transport_mismatch", 5));
+        assert!(at(&report, "site.route_unreachable_endpoint", 6));
+        assert_eq!(report.issues.len(), 7, "{:?}", report.issues);
+
+        // Same transport, different upstream TLS server name.
+        topology.services.http_sites["ok"].routes[0].action = proxy("tls", &["sni"]);
+        let report = validate(&topology);
+        assert!(at(&report, "site.route_fallback_transport_mismatch", 0));
+        assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+    }
+
+    #[test]
+    fn lan_sites_need_lan_ingress_and_unmanaged_dns() {
+        let mut topology = v2_topology();
+        topology.hosts.insert(
+            "hub".to_string(),
+            Host {
+                system: "x86_64-linux".to_string(),
+                ..Default::default()
+            },
+        );
+        for (name, scope) in [("lan", IngressScope::Lan), ("public", IngressScope::Public)] {
+            topology.deployment.ingress_groups.insert(
+                name.to_string(),
+                IngressGroup {
+                    scope,
+                    hosts: vec!["hub".to_string()],
+                },
+            );
+        }
+        topology
+            .services
+            .endpoints
+            .insert("app".to_string(), endpoint("hub", EndpointBind::Loopback));
+        topology.domains.zones = vec!["example.test".to_string()];
+        topology.services.http_sites.insert(
+            "app".to_string(),
+            proxy_site("lan", HttpAccess::Lan, proxy("app", &[])),
+        );
+        assert!(
+            validate(&topology).is_ok(),
+            "{:?}",
+            validate(&topology).issues
+        );
+
+        let site = &mut topology.services.http_sites["app"];
+        site.ingress = "public".to_string();
+        site.dns_publication = DnsPublication::Managed;
+        let codes: Vec<_> = validate(&topology)
+            .issues
+            .into_iter()
+            .map(|issue| issue.code)
+            .collect();
+        assert!(
+            codes.contains(&"site.ingress_scope_mismatch".into()),
+            "{codes:?}"
+        );
+        assert!(codes.contains(&"site.lan_managed_dns".into()), "{codes:?}");
     }
 
     #[test]
