@@ -65,9 +65,11 @@ Fleetix reads only these attributes and edges:
 
 ## Topology supply
 
-The topology declares the shared supply that facts join against: runner pools
-and binary caches. Each can name the `services.catalog` entry that operates it.
-Forges and repositories never enter topology.
+The topology declares the shared supply that facts join against: runner pools,
+binary caches and agent-minute budgets. A pool or cache can name the
+`services.catalog` entry that operates it. `metered` marks a pool whose minutes
+are billed. A budget gives a monthly allowance shared by its pools. Forges and
+repositories never enter topology.
 
 ```pkl
 supply = new S.Supply {
@@ -76,17 +78,22 @@ supply = new S.Supply {
       forgeHost = "git.example.test"
       labels = new Listing { "builder-nix" }
       service = "runner-nix"
+      metered = true
     }
   }
   caches = new {
     ["fleet"] = new S.BinaryCache { url = "https://cache.example.test/fleet"; service = "cache" }
   }
+  budgets = new {
+    ["builder"] = new S.Budget { pools = new Listing { "builder-nix" }; minutesPerMonth = 2500 }
+  }
 }
 ```
 
 Validation reports `supply.unknown_service` for a service missing from the
-catalog, and `supply.duplicate_runner_label` when one forge host's label is
-declared more than once.
+catalog, `supply.duplicate_runner_label` when one forge host's label is
+declared more than once, and `supply.unknown_budget_pool` for a budget pool
+that is not declared.
 
 ## Rules
 

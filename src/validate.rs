@@ -750,6 +750,19 @@ fn validate_supply(topology: &Topology, report: &mut ValidationReport) {
             }
         }
     }
+
+    for (name, budget) in &supply.budgets {
+        for pool in &budget.pools {
+            if !supply.runner_pools.contains_key(pool) {
+                report.error(
+                    "supply.unknown_budget_pool",
+                    Some(format!("supply.budgets.{name}.pools")),
+                    Some(pool.clone()),
+                    format!("budget '{name}' references unknown runner pool '{pool}'"),
+                );
+            }
+        }
+    }
 }
 
 fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
@@ -2203,7 +2216,8 @@ mod tests {
                     "nix": {"forgeHost": "git.example.test", "labels": ["nix"], "service": "runner"},
                     "hosted": {"forgeHost": "github.com", "labels": ["ubuntu-24.04", "nix"]}
                 },
-                "caches": {"fleet": {"url": "https://cache.example.test", "service": "runner"}}
+                "caches": {"fleet": {"url": "https://cache.example.test", "service": "runner"}},
+                "budgets": {"ci": {"pools": ["nix", "hosted"], "minutesPerMonth": 2500}}
             }
         }))
         .unwrap();
@@ -2215,6 +2229,7 @@ mod tests {
 
         topology.supply.runner_pools["hosted"].forge_host = "git.example.test".into();
         topology.supply.caches["fleet"].service = Some("attic".into());
+        topology.supply.budgets["ci"].pools.push("gone".into());
         let issues: Vec<_> = validate(&topology)
             .issues
             .into_iter()
@@ -2230,6 +2245,10 @@ mod tests {
                 (
                     "supply.duplicate_runner_label".to_string(),
                     "supply.runnerPools.nix.labels".to_string()
+                ),
+                (
+                    "supply.unknown_budget_pool".to_string(),
+                    "supply.budgets.ci.pools".to_string()
                 ),
             ]
         );

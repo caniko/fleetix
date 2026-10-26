@@ -17,9 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds without the `cli` or `pkl` features. [SUPPLY.md](SUPPLY.md)
   specifies the contract and a recommended blocker vocabulary.
 - Add an optional topology `supply` section with `RunnerPool{forgeHost,
-  labels, service?}` and `BinaryCache{url, service?}`. Both default to empty,
-  so existing topologies are unchanged. Validation adds
-  `supply.unknown_service` and `supply.duplicate_runner_label`. Supply facts
+  labels, service?, metered}`, `BinaryCache{url, service?}` and
+  `Budget{pools, minutesPerMonth}`. All default to empty, so existing
+  topologies are unchanged. Validation adds `supply.unknown_service`,
+  `supply.duplicate_runner_label` and `supply.unknown_budget_pool`. Supply facts
   join runner and cache nodes against it and report `unknown-runner` and
   `unknown-cache` (R6).
 

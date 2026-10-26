@@ -423,6 +423,8 @@ class RunnerPool {
   forgeHost: String
   labels: Listing<String>
   service: String? = null
+  /// Usage on this pool is billed, so updater qualification counts against budgets.
+  metered: Boolean = false
 }
 
 class BinaryCache {
@@ -433,6 +435,13 @@ class BinaryCache {
 class Supply {
   runnerPools: Mapping<String, RunnerPool> = new {}
   caches: Mapping<String, BinaryCache> = new {}
+  budgets: Mapping<String, Budget> = new {}
+}
+
+/// A monthly agent-minute allowance shared by the named runner pools.
+class Budget {
+  pools: Listing<String>
+  minutesPerMonth: UInt32
 }
 
 class SshAccess {

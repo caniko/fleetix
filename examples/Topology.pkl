@@ -209,9 +209,16 @@ supply = new S.Supply {
     ["builder-nix"] = new S.RunnerPool {
       forgeHost = "git.example.test"
       labels = new Listing { "builder-nix" }
+      metered = true
     }
   }
   caches = new {
     ["fleet"] = new S.BinaryCache { url = "https://cache.example.test/fleet" }
+  }
+  budgets = new {
+    ["builder"] = new S.Budget {
+      pools = new Listing { "builder-nix" }
+      minutesPerMonth = 2500
+    }
   }
 }

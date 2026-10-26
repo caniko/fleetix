@@ -690,6 +690,8 @@ pub struct Supply {
     pub runner_pools: IndexMap<String, RunnerPool>,
     #[serde(default)]
     pub caches: IndexMap<String, BinaryCache>,
+    #[serde(default)]
+    pub budgets: IndexMap<String, Budget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -700,6 +702,9 @@ pub struct RunnerPool {
     /// A `services.catalog` key.
     #[serde(default)]
     pub service: Option<String>,
+    /// Usage on this pool is billed.
+    #[serde(default)]
+    pub metered: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -709,6 +714,14 @@ pub struct BinaryCache {
     /// A `services.catalog` key.
     #[serde(default)]
     pub service: Option<String>,
+}
+
+/// A monthly agent-minute allowance shared by the named runner pools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Budget {
+    pub pools: Vec<String>,
+    pub minutes_per_month: u32,
 }
 
 /// Render a modular topology entrypoint into a self-contained compatibility
