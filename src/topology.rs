@@ -20,6 +20,8 @@ pub struct Topology {
     pub trust: Trust,
     #[serde(default)]
     pub access: Option<Access>,
+    #[serde(default)]
+    pub supply: Supply,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -677,6 +679,36 @@ pub struct SshKnownHost {
     pub public_keys: Vec<String>,
     #[serde(default)]
     pub provenance: Option<String>,
+}
+
+/// Shared build supply that `fleetix::supply` joins usage facts against.
+/// Forges and repositories stay out of topology.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Supply {
+    #[serde(default)]
+    pub runner_pools: IndexMap<String, RunnerPool>,
+    #[serde(default)]
+    pub caches: IndexMap<String, BinaryCache>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnerPool {
+    pub forge_host: String,
+    pub labels: Vec<String>,
+    /// A `services.catalog` key.
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinaryCache {
+    pub url: String,
+    /// A `services.catalog` key.
+    #[serde(default)]
+    pub service: Option<String>,
 }
 
 /// Render a modular topology entrypoint into a self-contained compatibility

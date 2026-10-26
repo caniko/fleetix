@@ -4,7 +4,7 @@
 //! Producers own their vocabularies (usage kinds, attributes, blocker codes).
 //! Fleetix only merges their documents and applies the generic gap rules.
 
-use crate::topology::Topology;
+use crate::topology::{Supply, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -177,14 +177,18 @@ pub struct Graph {
     outgoing: BTreeMap<String, Vec<usize>>,
     #[serde(skip)]
     incoming: BTreeMap<String, Vec<usize>>,
+    /// The topology supply runner and cache nodes join (R6), when given.
+    #[serde(skip)]
+    supply: Option<Supply>,
 }
 
-/// Merge documents by node id and edge `(from, to, kind)` (R1).
-///
-/// The topology join (R6) arrives with the topology `supply` section; until
-/// then `_topology` is accepted but unused.
-pub fn build(docs: &[FactsDocument], _topology: Option<&Topology>) -> Graph {
-    let mut graph = Graph::default();
+/// Merge documents by node id and edge `(from, to, kind)` (R1). Without a
+/// topology, runner and cache nodes are not joined (R6).
+pub fn build(docs: &[FactsDocument], topology: Option<&Topology>) -> Graph {
+    let mut graph = Graph {
+        supply: topology.map(|topology| topology.supply.clone()),
+        ..Graph::default()
+    };
     let mut edge_index: BTreeMap<(String, String, String), usize> = BTreeMap::new();
     for doc in docs {
         let producer = &doc.producer.name;
@@ -434,9 +438,45 @@ impl Graph {
         draft.subcode = text("blocker").map(str::to_string);
         Err(draft)
     }
+
+    /// R6: a runner node needs a topology pool offering its label on its
+    /// forge host, and a cache node a topology cache of its name.
+    fn topology_gap(&self, node: &GraphNode) -> Option<Draft> {
+        let supply = self.supply.as_ref()?;
+        let (blocker, joined) = match node.kind.as_str() {
+            "runner" => (
+                "unknown-runner",
+                node.id
+                    .strip_prefix("runner:")
+                    .and_then(|id| id.split_once('/'))
+                    .is_some_and(|(host, label)| {
+                        supply.runner_pools.values().any(|pool| {
+                            pool.forge_host == host
+                                && pool.labels.iter().any(|known| known == label)
+                        })
+                    }),
+            ),
+            "cache" => (
+                "unknown-cache",
+                node.id
+                    .strip_prefix("cache:")
+                    .is_some_and(|name| supply.caches.contains_key(name)),
+            ),
+            _ => return None,
+        };
+        (!joined).then(|| {
+            Draft::new(
+                blocker,
+                format!("topology supply does not declare {}", node.id),
+                None,
+                "topology",
+            )
+        })
+    }
 }
 
 /// A gap before it is bound to its node.
+#[derive(Clone)]
 struct Draft {
     blocker: String,
     subcode: Option<String>,
@@ -568,6 +608,23 @@ pub fn gaps(graph: &Graph) -> GapReport {
                     Some(&expect.producer),
                     "expectation",
                 )));
+            }
+        }
+        if let Some(draft) = graph.topology_gap(node) {
+            // One gap per repository that depends on the unjoined node.
+            let dependents: BTreeSet<_> = graph
+                .edges_of(&node.id, true)
+                .filter_map(|(_, edge)| repository_of(&edge.from))
+                .collect();
+            if dependents.is_empty() {
+                gaps.push(gap(draft));
+            } else {
+                for repository in dependents {
+                    gaps.push(Gap {
+                        repository: Some(repository),
+                        ..gap(draft.clone())
+                    });
+                }
             }
         }
         if !is_usage {

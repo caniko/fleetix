@@ -63,6 +63,31 @@ Fleetix reads only these attributes and edges:
   `uses`, `contains`, `pins`, `runsOn` and `via`, can be walked but carry no
   rule.
 
+## Topology supply
+
+The topology declares the shared supply that facts join against: runner pools
+and binary caches. Each can name the `services.catalog` entry that operates it.
+Forges and repositories never enter topology.
+
+```pkl
+supply = new S.Supply {
+  runnerPools = new {
+    ["builder-nix"] = new S.RunnerPool {
+      forgeHost = "git.example.test"
+      labels = new Listing { "builder-nix" }
+      service = "runner-nix"
+    }
+  }
+  caches = new {
+    ["fleet"] = new S.BinaryCache { url = "https://cache.example.test/fleet"; service = "cache" }
+  }
+}
+```
+
+Validation reports `supply.unknown_service` for a service missing from the
+catalog, and `supply.duplicate_runner_label` when one forge host's label is
+declared more than once.
+
 ## Rules
 
 - **R1 merge.** Nodes merge by id, and edges by `(from, to, kind)`. A null
@@ -85,8 +110,12 @@ Fleetix reads only these attributes and edges:
 - **R5 expectations.** An expectation whose attribute is still missing or null
   after merging reports its blocker. Another producer satisfies it by setting
   the attribute on the same node.
-- **R6 topology.** Runner and cache nodes join the topology's supply section.
-  This join is a no-op until topology `supply` exists.
+- **R6 topology.** When `build` receives a topology, runner and cache nodes join
+  its `supply` section. `runner:<forgeHost>/<label>` needs a runner pool on that
+  forge host that offers the label, and `cache:<name>` needs that cache.
+  Otherwise the node reports `unknown-runner` or `unknown-cache` once for each
+  repository with an edge to it, or once without a repository when none has.
+  Without a topology, nothing is joined.
 - **R7 pass-through.** Node blockers become gaps. Their owner defaults to the
   producer.
 

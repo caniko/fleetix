@@ -417,6 +417,24 @@ class Trust {
   sshKnownHosts: Listing<SshKnownHost> = new Listing {}
 }
 
+/// Shared build supply that `fleetix supply` joins usage facts against.
+/// Forges and repositories stay out of topology.
+class RunnerPool {
+  forgeHost: String
+  labels: Listing<String>
+  service: String? = null
+}
+
+class BinaryCache {
+  url: String
+  service: String? = null
+}
+
+class Supply {
+  runnerPools: Mapping<String, RunnerPool> = new {}
+  caches: Mapping<String, BinaryCache> = new {}
+}
+
 class SshAccess {
   port: UInt16
   hostKeyPath: String

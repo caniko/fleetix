@@ -1,3 +1,4 @@
+use fleetix::Topology;
 use fleetix::supply::{self, CONTRACT, FactsDocument};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -402,6 +403,66 @@ fn r7_passes_producer_blockers_through_and_skips_absent_usages() {
         ]
     );
     assert_eq!((report.summary.repositories, report.summary.usages), (1, 0));
+}
+
+#[test]
+fn r6_joins_runners_and_caches_against_topology_supply() {
+    let edge = |from: &str, to: &str| json!({"from": format!("usage:{from}#ci.primary"), "to": to, "kind": "runsOn"});
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [
+                usage("h/o/a", "ci.primary", "current"),
+                usage("h/o/b", "ci.primary", "current"),
+                {"id": "runner:git.example.test/nix", "kind": "runner"},
+                {"id": "runner:github.com/ubuntu-24.04", "kind": "runner"},
+                {"id": "runner:malformed", "kind": "runner"},
+                {"id": "cache:fleet", "kind": "cache"},
+                {"id": "cache:other", "kind": "cache"}
+            ],
+            "edges": [
+                edge("h/o/a", "runner:git.example.test/nix"),
+                edge("h/o/b", "runner:git.example.test/nix"),
+                edge("h/o/a", "runner:github.com/ubuntu-24.04"),
+                edge("h/o/a", "cache:other")
+            ],
+            "capabilities": [row("ci.primary", json!({}), "implemented", true, json!({}))]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"hosted": {"forgeHost": "github.com", "labels": ["ubuntu-24.04"]}},
+            "caches": {"fleet": {"url": "https://cache.example.test"}}
+        }
+    }))
+    .unwrap();
+    let found = |topology: Option<&Topology>| -> Vec<(Option<String>, String, String)> {
+        supply::gaps(&supply::build(std::slice::from_ref(&facts), topology))
+            .gaps
+            .into_iter()
+            .map(|gap| (gap.repository, gap.node, gap.blocker))
+            .collect()
+    };
+    assert!(found(None).is_empty(), "no topology, no join");
+    let some = |repository: &str| Some(repository.to_string());
+    assert_eq!(
+        found(Some(&topology)),
+        [
+            (None, "runner:malformed".into(), "unknown-runner".into()),
+            (some("h/o/a"), "cache:other".into(), "unknown-cache".into()),
+            (
+                some("h/o/a"),
+                "runner:git.example.test/nix".into(),
+                "unknown-runner".into()
+            ),
+            (
+                some("h/o/b"),
+                "runner:git.example.test/nix".into(),
+                "unknown-runner".into()
+            ),
+        ]
+    );
 }
 
 #[test]

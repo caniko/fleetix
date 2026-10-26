@@ -297,6 +297,7 @@
             grep -q 'serviceIntents' topology.nix
             grep -q 'sshKnownHosts' topology.nix
             grep -q 'git.example.test' topology.nix
+            grep -q 'runnerPools =' topology.nix
             touch $out
           '';
 

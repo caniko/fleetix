@@ -199,3 +199,19 @@ trust = new S.Trust {
     }
   }
 }
+
+supply = new S.Supply {
+  runnerPools = new {
+    ["hosted"] = new S.RunnerPool {
+      forgeHost = "github.com"
+      labels = new Listing { "ubuntu-24.04" }
+    }
+    ["builder-nix"] = new S.RunnerPool {
+      forgeHost = "git.example.test"
+      labels = new Listing { "builder-nix" }
+    }
+  }
+  caches = new {
+    ["fleet"] = new S.BinaryCache { url = "https://cache.example.test/fleet" }
+  }
+}
