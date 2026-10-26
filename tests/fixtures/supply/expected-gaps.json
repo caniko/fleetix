@@ -6,7 +6,7 @@
     "covered": 4,
     "drift": {
       "covered": 2,
-      "uncovered": 6
+      "uncovered": 4
     },
     "byBlocker": [
       {

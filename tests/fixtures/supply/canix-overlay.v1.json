@@ -114,7 +114,7 @@
     {
       "usageKind": "ci.primary",
       "match": {
-        "forge": "github.com",
+        "forge": "github",
         "ciTarget": "actions/github"
       },
       "path": "converge",

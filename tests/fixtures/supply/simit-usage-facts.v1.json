@@ -11,9 +11,9 @@
       "id": "repo:github.com/caniko/fleetix",
       "kind": "repo",
       "attrs": {
-        "forge": "github.com",
-        "ciTarget": "actions/github",
-        "defaultBranch": "trunk"
+        "forge": "github",
+        "forgeHost": "github.com",
+        "ciTarget": "actions/github"
       }
     },
     {
@@ -31,7 +31,9 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "drift",
-        "path": ".github/workflows/ci.yaml"
+        "paths": [
+          ".github/workflows/ci.yaml"
+        ]
       },
       "expects": [
         {
@@ -47,7 +49,9 @@
       "attrs": {
         "usageKind": "ci.publish",
         "state": "current",
-        "path": ".github/workflows/publish-workspace.yaml"
+        "paths": [
+          ".github/workflows/publish-workspace.yaml"
+        ]
       },
       "expects": [
         {
@@ -70,18 +74,20 @@
       "kind": "usage",
       "attrs": {
         "usageKind": "pin.config-command",
-        "state": "drift",
+        "state": "unknown",
         "path": "simit.toml",
-        "revision": "4c6841cce19327927ea8a8f6e856276dd5c878f0"
+        "revisions": [
+          "4c6841cce19327927ea8a8f6e856276dd5c878f0"
+        ]
       }
     },
     {
       "id": "repo:github.com/caniko/tzu",
       "kind": "repo",
       "attrs": {
-        "forge": "github.com",
-        "ciTarget": "crow/forgejo",
-        "defaultBranch": "trunk"
+        "forge": "github",
+        "forgeHost": "github.com",
+        "ciTarget": "crow/forgejo"
       },
       "blockers": [
         {
@@ -96,7 +102,9 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "drift",
-        "path": ".crow/ci.yaml"
+        "paths": [
+          ".crow/ci.yaml"
+        ]
       },
       "expects": [
         {
@@ -110,9 +118,9 @@
       "id": "repo:codefloe.com/caniko/pink-raven",
       "kind": "repo",
       "attrs": {
-        "forge": "codefloe.com",
-        "ciTarget": "crow/forgejo",
-        "defaultBranch": "trunk"
+        "forge": "forgejo",
+        "forgeHost": "codefloe.com",
+        "ciTarget": "crow/forgejo"
       }
     },
     {
@@ -121,7 +129,9 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "drift",
-        "path": ".crow/ci.yaml"
+        "paths": [
+          ".crow/build.yaml"
+        ]
       },
       "expects": [
         {
@@ -136,17 +146,19 @@
       "kind": "usage",
       "attrs": {
         "usageKind": "flake-input.direct",
-        "state": "drift",
+        "state": "unknown",
         "input": "simit",
-        "revision": "de3325be17104fbdb0d70f1da38149d4016f1790"
+        "revisions": [
+          "de3325be17104fbdb0d70f1da38149d4016f1790"
+        ]
       }
     },
     {
       "id": "repo:github.com/caniko/nix-doty",
       "kind": "repo",
       "attrs": {
-        "forge": "github.com",
-        "defaultBranch": "main"
+        "forge": "github",
+        "forgeHost": "github.com"
       },
       "blockers": [
         {
@@ -174,7 +186,9 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "unknown",
-        "path": ".github/workflows/ci.yaml"
+        "paths": [
+          ".github/workflows/ci.yaml"
+        ]
       },
       "expects": [
         {
@@ -188,9 +202,9 @@
       "id": "repo:github.com/caniko/meshemy",
       "kind": "repo",
       "attrs": {
-        "forge": "github.com",
-        "ciTarget": "actions/github",
-        "defaultBranch": "main"
+        "forge": "github",
+        "forgeHost": "github.com",
+        "ciTarget": "actions/github"
       }
     },
     {
@@ -199,16 +213,18 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "drift",
-        "path": ".github/workflows/ci.yaml"
+        "paths": [
+          ".github/workflows/ci.yaml"
+        ]
       }
     },
     {
       "id": "repo:github.com/caniko/schemantic",
       "kind": "repo",
       "attrs": {
-        "forge": "github.com",
-        "ciTarget": "actions/github",
-        "defaultBranch": "main"
+        "forge": "github",
+        "forgeHost": "github.com",
+        "ciTarget": "actions/github"
       }
     },
     {
@@ -217,16 +233,18 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "drift",
-        "path": ".github/workflows/ci.yaml"
+        "paths": [
+          ".github/workflows/ci.yaml"
+        ]
       }
     },
     {
       "id": "repo:github.com/caniko/dns-manager",
       "kind": "repo",
       "attrs": {
-        "forge": "github.com",
-        "ciTarget": "actions/github",
-        "defaultBranch": "main"
+        "forge": "github",
+        "forgeHost": "github.com",
+        "ciTarget": "actions/github"
       }
     },
     {
@@ -235,7 +253,9 @@
       "attrs": {
         "usageKind": "ci.primary",
         "state": "drift",
-        "path": ".github/workflows/ci.yaml"
+        "paths": [
+          ".github/workflows/ci.yaml"
+        ]
       }
     },
     {
@@ -244,7 +264,9 @@
       "attrs": {
         "usageKind": "readme.badges",
         "state": "current",
-        "path": "README.md"
+        "paths": [
+          "README.md"
+        ]
       }
     },
     {
@@ -411,7 +433,7 @@
     {
       "usageKind": "ci.primary",
       "match": {
-        "forge": "github.com",
+        "forge": "github",
         "ciTarget": "actions/github"
       },
       "path": "updater",
@@ -424,7 +446,7 @@
     {
       "usageKind": "ci.primary",
       "match": {
-        "forge": "github.com",
+        "forge": "github",
         "ciTarget": "actions/github",
         "landing": "pull-request"
       },
