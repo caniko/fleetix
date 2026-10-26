@@ -148,6 +148,24 @@ with `reverse`, up to `depth` hops. A reverse walk from a `rev:` node answers
 "who pins this revision". From a `runner:` node it answers "what depends on
 this runner".
 
+## CLI
+
+```bash
+fleetix supply gaps --facts F... [--topology P] [--by blocker|repo] [--format human|json] [--max-age-days N]
+fleetix supply path <node|coordinate> --facts F... [--reverse] [--depth N] [--format human|json]
+fleetix supply graph --facts F...
+```
+
+Each `--facts` file holds one document or a JSON array of documents.
+`--topology` loads and validates a Pkl topology for R6. `--max-age-days` warns
+on stderr about documents observed longer ago than that. Human output is
+Markdown tables. `--format json` prints the `fleetix.supply-gaps.v1` or
+`fleetix.supply-path.v1` report. `graph` prints the merged graph, including
+merge conflicts, as `fleetix.supply-graph.v1` JSON.
+
+Exit codes: 2 for a document that is not valid facts, 3 for an unreadable
+file, 4 for an unknown `path` node, and 1 for a topology that fails to evaluate.
+
 ## Recommended blocker vocabulary
 
 Producers may define their own codes. These are the shared meanings.

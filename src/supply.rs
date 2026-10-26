@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub const CONTRACT: &str = "fleetix.supply-facts.v1";
 pub const GAPS_CONTRACT: &str = "fleetix.supply-gaps.v1";
 pub const PATH_CONTRACT: &str = "fleetix.supply-path.v1";
+pub const GRAPH_CONTRACT: &str = "fleetix.supply-graph.v1";
 
 pub type Attrs = BTreeMap<String, Value>;
 
@@ -754,6 +755,27 @@ pub fn walk(graph: &Graph, id: &str, reverse: bool, depth: usize) -> miette::Res
             .map(|index| graph.edges[index].clone())
             .collect(),
     })
+}
+
+/// Whole days from a document's `observedAt` (read to day precision) until
+/// `now_unix_seconds`, or `None` when the date is unreadable.
+pub fn age_days(observed_at: &str, now_unix_seconds: u64) -> Option<i64> {
+    let mut parts = observed_at
+        .get(..10)?
+        .split('-')
+        .map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (parts.next()??, parts.next()??, parts.next()??);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let observed = era * 146_097 + day_of_era - 719_468;
+    Some(i64::try_from(now_unix_seconds / 86_400).ok()? - observed)
 }
 
 /// The repository coordinate of a `repo:` or `usage:` node id.

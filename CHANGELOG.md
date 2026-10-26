@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `supply.duplicate_runner_label` and `supply.unknown_budget_pool`. Supply facts
   join runner and cache nodes against it and report `unknown-runner` and
   `unknown-cache` (R6).
+- Add `fleetix supply gaps|path|graph`. `gaps` groups by blocker or
+  repository. `path` walks forward, or backward with `--reverse` (for example,
+  who pins a revision). `graph` dumps the merged graph. Each `--facts` file
+  holds one document or an array. `--topology` enables the runner and cache
+  join, and `--max-age-days` warns about stale facts. Human output is Markdown
+  tables; `--format json` prints the versioned report.
 
 ### Fixed
 

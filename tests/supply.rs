@@ -518,3 +518,24 @@ fn walk_follows_edges_both_ways_within_depth() {
     );
     assert!(supply::walk(&graph, "repo:missing", false, 3).is_err());
 }
+
+#[test]
+fn age_days_counts_calendar_days_across_leap_years() {
+    let march_first_2000 = 11_017 * 86_400;
+    assert_eq!(supply::age_days("1970-01-01T00:00:00Z", 86_399), Some(0));
+    assert_eq!(
+        supply::age_days("2000-03-01T23:59:59Z", march_first_2000),
+        Some(0)
+    );
+    assert_eq!(
+        supply::age_days("2000-02-28T00:00:00Z", march_first_2000 + 5),
+        Some(2)
+    );
+    assert_eq!(
+        supply::age_days("2000-03-02T00:00:00Z", march_first_2000),
+        Some(-1)
+    );
+    for unreadable in ["", "yesterday", "2000-13-01", "2000-1-1T00:00:00Z"] {
+        assert_eq!(supply::age_days(unreadable, march_first_2000), None);
+    }
+}
