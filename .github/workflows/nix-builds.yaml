@@ -11,35 +11,25 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.ref_type == 'tag' && github.ref || format('refs/heads/{0}', github.event.pull_request.head.ref || github.ref_name) }}
   cancel-in-progress: true
 
 jobs:
   build:
+    name: build (${{ matrix.group }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        installable:
-          - ".#packages.x86_64-linux.fleetixCrate"
-          - ".#packages.x86_64-linux.fleetix-sidecar"
-          - ".#checks.x86_64-linux.fleetix-tests"
-          - ".#checks.x86_64-linux.fleetix-clippy"
-          - ".#checks.x86_64-linux.fleetix-no-default-features"
-          - ".#checks.x86_64-linux.fleetix-publication-policy"
-          - ".#checks.x86_64-linux.fleetix-fmt"
-          - ".#checks.x86_64-linux.build-train-policy"
-          - ".#checks.x86_64-linux.build-train-module"
-          - ".#checks.x86_64-linux.gpu-contract"
-          - ".#checks.x86_64-linux.gatus-profiles"
-          - ".#checks.x86_64-linux.publication-projections"
-          - ".#checks.x86_64-linux.mcp-adapters"
-          - ".#checks.x86_64-linux.validate-example-export"
-          - ".#checks.x86_64-linux.validate-modular-aggregate-export"
-          - ".#checks.x86_64-linux.fleetix-lib-helpers"
-          - ".#checks.x86_64-linux.module-integration-fixtures"
+        include:
+          - group: "package"
+            installables: '[".#packages.x86_64-linux.fleetixCrate",".#packages.x86_64-linux.fleetix-sidecar",".#checks.x86_64-linux.validate-example-export",".#checks.x86_64-linux.validate-modular-aggregate-export"]'
+          - group: "quick"
+            installables: '[".#checks.x86_64-linux.build-train-module",".#checks.x86_64-linux.build-train-policy",".#checks.x86_64-linux.fleetix-lib-helpers",".#checks.x86_64-linux.fleetix-publication-policy",".#checks.x86_64-linux.gatus-profiles",".#checks.x86_64-linux.gpu-contract",".#checks.x86_64-linux.mcp-adapters",".#checks.x86_64-linux.module-integration-fixtures",".#checks.x86_64-linux.publication-projections",".#checks.x86_64-linux.fleetix-fmt"]'
+          - group: "rust"
+            installables: '[".#checks.x86_64-linux.fleetix-tests",".#checks.x86_64-linux.fleetix-clippy",".#checks.x86_64-linux.fleetix-no-default-features"]'
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
@@ -51,14 +41,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Prepare Nix build evidence
-        env:
-          INSTALLABLE: ${{ matrix.installable }}
         run: |
           SIMIT_NIX_BUILD_RESULTS="$RUNNER_TEMP/simit-nix-build-${{ strategy.job-index }}"
-          printf '%s\n' "SIMIT_NIX_BUILD_RESULTS=$SIMIT_NIX_BUILD_RESULTS" >> "$GITHUB_ENV"
           mkdir -p "$SIMIT_NIX_BUILD_RESULTS"
+          printf '%s\n' "SIMIT_NIX_BUILD_RESULTS=$SIMIT_NIX_BUILD_RESULTS" >> "$GITHUB_ENV"
           git rev-parse HEAD > "$SIMIT_NIX_BUILD_RESULTS/revision"
-          printf '%s\n' "$INSTALLABLE" > "$SIMIT_NIX_BUILD_RESULTS/installable"
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
 
@@ -67,6 +54,75 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
+      - name: Restore grouped-build engine
+        id: simit-engine-cache
+        if: ${{ vars.SIMIT_CI_ENGINE_REVISION != '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/simit-engine-cache
+          key: simit-engine-v1-${{ vars.SIMIT_CI_ENGINE_REVISION }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Import grouped-build engine
+        if: ${{ steps.simit-engine-cache.outputs.cache-hit == 'true' }}
+        shell: bash
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          NIX_CONFIG: 'experimental-features = nix-command flakes'
+          NIX_USER_CONF_FILES: /dev/null
+          NIX_PATH: ''
+        run: |
+          set -euo pipefail
+          cache_root="$RUNNER_TEMP/simit-engine-cache"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_OAUTH_TOKEN -u ATTIC_TOKEN -u CACHIX_AUTH_TOKEN -u CACHIX_SIGNING_KEY nix copy --no-check-sigs --all --from "file://$cache_root" || echo '::warning::Cached grouped-build engine failed to import; building it normally'
+          rm -rf "$cache_root"
+      - name: Provision grouped-build Rust engine
+        shell: bash
+        env:
+          SIMIT_CI_ENGINE_REVISION: ${{ vars.SIMIT_CI_ENGINE_REVISION }}
+          BASH_ENV: ''
+          ENV: ''
+          NIX_CONFIG: 'experimental-features = nix-command flakes'
+          NIX_USER_CONF_FILES: /dev/null
+          NIX_PATH: ''
+        run: |
+          [[ "$SIMIT_CI_ENGINE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo 'Enroll an immutable SIMIT_CI_ENGINE_REVISION containing ci nix-group' >&2; exit 1; }
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64|Linux:aarch64|Linux:arm64|Darwin:arm64|Darwin:aarch64) ;;
+            *) echo 'unsupported grouped engine runner system' >&2; exit 1 ;;
+          esac
+          engine_path=$(env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_OAUTH_TOKEN -u ATTIC_TOKEN -u CACHIX_AUTH_TOKEN -u CACHIX_SIGNING_KEY nix build --no-link --no-update-lock-file --print-out-paths --option accept-flake-config false --option access-tokens '' --option substituters https://cache.nixos.org "github:caniko/simit/$SIMIT_CI_ENGINE_REVISION#default")
+          [[ "$engine_path" =~ ^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$ ]] || { echo 'Invalid engine output inventory' >&2; exit 1; }
+          test -x "$engine_path/bin/simit"
+          "$engine_path/bin/simit" ci nix-group --help > /dev/null
+          printf '%s\n' "$SIMIT_CI_ENGINE_REVISION" > "$SIMIT_NIX_BUILD_RESULTS/engine-source-revision"
+          engine_digest=$(nix hash file --type sha256 --base16 "$engine_path/bin/simit")
+          printf '%s  %s\n' "$engine_digest" "$engine_path/bin/simit" > "$SIMIT_NIX_BUILD_RESULTS/engine-executable.sha256"
+          printf '%s\n' "SIMIT_CI_ENGINE=$engine_path/bin/simit" >> "$GITHUB_ENV"
+      - name: Export grouped-build engine
+        id: simit-engine-cache-save
+        if: ${{ vars.SIMIT_CI_ENGINE_REVISION != '' && steps.simit-engine-cache.outputs.cache-hit != 'true' }}
+        shell: bash
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          NIX_CONFIG: 'experimental-features = nix-command flakes'
+          NIX_USER_CONF_FILES: /dev/null
+          NIX_PATH: ''
+        run: |
+          set -euo pipefail
+          cache_root="$RUNNER_TEMP/simit-engine-cache"
+          rm -rf "$cache_root"
+          if nix copy --to "file://$cache_root?compression=zstd" "${SIMIT_CI_ENGINE%/bin/simit}"; then
+            printf 'save=true\n' >> "$GITHUB_OUTPUT"
+          else
+            echo '::warning::Grouped-build engine failed to export; not saving it'
+          fi
+      - name: Save grouped-build engine
+        if: ${{ steps.simit-engine-cache-save.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/simit-engine-cache
+          key: simit-engine-v1-${{ vars.SIMIT_CI_ENGINE_REVISION }}-${{ runner.os }}-${{ runner.arch }}
       - name: Project setup
         run: |
           set -eu
@@ -88,18 +144,24 @@ jobs:
             git rev-parse 'HEAD^{tree}' > "$SIMIT_NIX_BUILD_RESULTS/tree"
           fi
 
-      - name: Build ${{ matrix.installable }}
+      - name: Build Nix group
+        shell: bash
         env:
-          INSTALLABLE: ${{ matrix.installable }}
+          SIMIT_NIX_GROUP: ${{ matrix.group }}
         run: |
-          set -euo pipefail
-          exec 3> >(tee "$SIMIT_NIX_BUILD_RESULTS/build.log" >&2)
-          log_pid=$!
-          status=0
-          nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --print-build-logs --json "$INSTALLABLE" 2>&3 | tee "$SIMIT_NIX_BUILD_RESULTS/result.json" || status=$?
-          exec 3>&-
-          wait "$log_pid"
-          exit "$status"
+          case "$SIMIT_NIX_GROUP" in
+            package)
+              (umask 077; set -C; printf '%s' '{"schema":"simit.nix-group-spec.v1","members":[".#packages.x86_64-linux.fleetixCrate",".#packages.x86_64-linux.fleetix-sidecar",".#checks.x86_64-linux.validate-example-export",".#checks.x86_64-linux.validate-modular-aggregate-export"],"plan":[".#packages.x86_64-linux.fleetixCrate",".#packages.x86_64-linux.fleetix-sidecar",".#checks.x86_64-linux.fleetix-tests",".#checks.x86_64-linux.fleetix-clippy",".#checks.x86_64-linux.fleetix-no-default-features",".#checks.x86_64-linux.fleetix-publication-policy",".#checks.x86_64-linux.fleetix-fmt",".#checks.x86_64-linux.build-train-policy",".#checks.x86_64-linux.build-train-module",".#checks.x86_64-linux.gpu-contract",".#checks.x86_64-linux.gatus-profiles",".#checks.x86_64-linux.publication-projections",".#checks.x86_64-linux.mcp-adapters",".#checks.x86_64-linux.validate-example-export",".#checks.x86_64-linux.validate-modular-aggregate-export",".#checks.x86_64-linux.fleetix-lib-helpers",".#checks.x86_64-linux.module-integration-fixtures"],"check_systems":[],"limits":["--max-jobs","1","--cores","2"],"post_build":[],"post_build_always":[],"fresh_installables":[]}' > "$SIMIT_NIX_BUILD_RESULTS/group-spec.json")
+              ;;
+            quick)
+              (umask 077; set -C; printf '%s' '{"schema":"simit.nix-group-spec.v1","members":[".#checks.x86_64-linux.build-train-module",".#checks.x86_64-linux.build-train-policy",".#checks.x86_64-linux.fleetix-lib-helpers",".#checks.x86_64-linux.fleetix-publication-policy",".#checks.x86_64-linux.gatus-profiles",".#checks.x86_64-linux.gpu-contract",".#checks.x86_64-linux.mcp-adapters",".#checks.x86_64-linux.module-integration-fixtures",".#checks.x86_64-linux.publication-projections",".#checks.x86_64-linux.fleetix-fmt"],"plan":[".#packages.x86_64-linux.fleetixCrate",".#packages.x86_64-linux.fleetix-sidecar",".#checks.x86_64-linux.fleetix-tests",".#checks.x86_64-linux.fleetix-clippy",".#checks.x86_64-linux.fleetix-no-default-features",".#checks.x86_64-linux.fleetix-publication-policy",".#checks.x86_64-linux.fleetix-fmt",".#checks.x86_64-linux.build-train-policy",".#checks.x86_64-linux.build-train-module",".#checks.x86_64-linux.gpu-contract",".#checks.x86_64-linux.gatus-profiles",".#checks.x86_64-linux.publication-projections",".#checks.x86_64-linux.mcp-adapters",".#checks.x86_64-linux.validate-example-export",".#checks.x86_64-linux.validate-modular-aggregate-export",".#checks.x86_64-linux.fleetix-lib-helpers",".#checks.x86_64-linux.module-integration-fixtures"],"check_systems":[],"limits":["--max-jobs","1","--cores","2"],"post_build":[],"post_build_always":[],"fresh_installables":[]}' > "$SIMIT_NIX_BUILD_RESULTS/group-spec.json")
+              ;;
+            rust)
+              (umask 077; set -C; printf '%s' '{"schema":"simit.nix-group-spec.v1","members":[".#checks.x86_64-linux.fleetix-tests",".#checks.x86_64-linux.fleetix-clippy",".#checks.x86_64-linux.fleetix-no-default-features"],"plan":[".#packages.x86_64-linux.fleetixCrate",".#packages.x86_64-linux.fleetix-sidecar",".#checks.x86_64-linux.fleetix-tests",".#checks.x86_64-linux.fleetix-clippy",".#checks.x86_64-linux.fleetix-no-default-features",".#checks.x86_64-linux.fleetix-publication-policy",".#checks.x86_64-linux.fleetix-fmt",".#checks.x86_64-linux.build-train-policy",".#checks.x86_64-linux.build-train-module",".#checks.x86_64-linux.gpu-contract",".#checks.x86_64-linux.gatus-profiles",".#checks.x86_64-linux.publication-projections",".#checks.x86_64-linux.mcp-adapters",".#checks.x86_64-linux.validate-example-export",".#checks.x86_64-linux.validate-modular-aggregate-export",".#checks.x86_64-linux.fleetix-lib-helpers",".#checks.x86_64-linux.module-integration-fixtures"],"check_systems":[],"limits":["--max-jobs","1","--cores","2"],"post_build":[],"post_build_always":[],"fresh_installables":[]}' > "$SIMIT_NIX_BUILD_RESULTS/group-spec.json")
+              ;;
+            *) echo 'Unknown Nix execution group' >&2; exit 1 ;;
+          esac
+          "$SIMIT_CI_ENGINE" ci nix-group --spec "$SIMIT_NIX_BUILD_RESULTS/group-spec.json"
       - name: Upload Nix build evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -107,7 +169,7 @@ jobs:
         with:
           name: nix-build-${{ strategy.job-index }}
           retention-days: 32
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
             ${{ runner.temp }}/simit-nix-build-${{ strategy.job-index }}
             /nix/var/log/nix/drvs

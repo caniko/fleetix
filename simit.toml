@@ -46,6 +46,32 @@ cores = 2
 artifact_retention_days = 32
 artifact_paths = ["/nix/var/log/nix/drvs"]
 
+# One runner per group; Rust outputs in a group share cargoArtifacts.
+[ci.nix_build.groups]
+quick = [
+  ".#checks.x86_64-linux.build-train-module",
+  ".#checks.x86_64-linux.build-train-policy",
+  ".#checks.x86_64-linux.fleetix-lib-helpers",
+  ".#checks.x86_64-linux.fleetix-publication-policy",
+  ".#checks.x86_64-linux.gatus-profiles",
+  ".#checks.x86_64-linux.gpu-contract",
+  ".#checks.x86_64-linux.mcp-adapters",
+  ".#checks.x86_64-linux.module-integration-fixtures",
+  ".#checks.x86_64-linux.publication-projections",
+  ".#checks.x86_64-linux.fleetix-fmt",
+]
+package = [
+  ".#packages.x86_64-linux.fleetixCrate",
+  ".#packages.x86_64-linux.fleetix-sidecar",
+  ".#checks.x86_64-linux.validate-example-export",
+  ".#checks.x86_64-linux.validate-modular-aggregate-export",
+]
+rust = [
+  ".#checks.x86_64-linux.fleetix-tests",
+  ".#checks.x86_64-linux.fleetix-clippy",
+  ".#checks.x86_64-linux.fleetix-no-default-features",
+]
+
 # Trunk pushes publish the Linux package Canix consumes to the public canix
 # cache; pull requests only build.
 [prebuild]
