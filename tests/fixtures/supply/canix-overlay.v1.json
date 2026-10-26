@@ -30,14 +30,14 @@
       ]
     },
     {
-      "id": "repo:github.com/caniko/meshemy",
+      "id": "repo:github.com/example/flake-config",
       "kind": "repo",
       "attrs": {
         "landing": "pull-request"
       }
     },
     {
-      "id": "usage:github.com/caniko/fleetix#ci.primary",
+      "id": "usage:github.com/example/drifted#ci.primary",
       "kind": "usage",
       "attrs": {
         "usageKind": "ci.primary",
@@ -48,7 +48,7 @@
   ],
   "edges": [
     {
-      "from": "repo:github.com/caniko/fleetix",
+      "from": "repo:github.com/example/drifted",
       "to": "orchestrator:simit-updater/fleet",
       "kind": "enrolledIn",
       "attrs": {
@@ -57,7 +57,7 @@
       }
     },
     {
-      "from": "repo:github.com/caniko/tzu",
+      "from": "repo:github.com/example/crow-on-github",
       "to": "orchestrator:simit-updater/fleet",
       "kind": "enrolledIn",
       "attrs": {
@@ -68,29 +68,7 @@
       }
     },
     {
-      "from": "repo:github.com/caniko/meshemy",
-      "to": "orchestrator:simit-updater/fleet",
-      "kind": "enrolledIn",
-      "attrs": {
-        "enabled": false,
-        "status": "disabled",
-        "blocker": "pr-required",
-        "reason": "Branch protection requires a pull request."
-      }
-    },
-    {
-      "from": "repo:github.com/caniko/schemantic",
-      "to": "orchestrator:simit-updater/fleet",
-      "kind": "enrolledIn",
-      "attrs": {
-        "enabled": false,
-        "status": "disabled",
-        "blocker": "credential-denied",
-        "reason": "The updater token cannot push to this repository."
-      }
-    },
-    {
-      "from": "repo:github.com/caniko/nix-doty",
+      "from": "repo:github.com/example/flake-config",
       "to": "orchestrator:simit-updater/fleet",
       "kind": "enrolledIn",
       "attrs": {
@@ -101,7 +79,7 @@
       }
     },
     {
-      "from": "repo:github.com/caniko/dns-manager",
+      "from": "repo:github.com/example/flake-config",
       "to": "orchestrator:canix-converge/workspace",
       "kind": "enrolledIn",
       "attrs": {

@@ -425,30 +425,31 @@ fn walk_follows_edges_both_ways_within_depth() {
         [
             (rev.to_string(), 0),
             (
-                "usage:codefloe.com/caniko/pink-raven#flake-input.direct:simit".into(),
+                "usage:github.com/example/drifted#flake-input.direct:simit".into(),
                 1
             ),
-            ("repo:codefloe.com/caniko/pink-raven".into(), 2),
+            ("repo:github.com/example/drifted".into(), 2),
         ]
     );
     assert_eq!(who_pins.edges.len(), 2);
 
-    let repo = supply::walk(&graph, "github.com/caniko/dns-manager", false, 1).unwrap();
-    assert_eq!(repo.root, "repo:github.com/caniko/dns-manager");
+    let repo = supply::walk(&graph, "github.com/example/flake-config", false, 1).unwrap();
+    assert_eq!(repo.root, "repo:github.com/example/flake-config");
     assert_eq!(
         ids(&repo),
         [
-            ("repo:github.com/caniko/dns-manager".into(), 0),
-            ("usage:github.com/caniko/dns-manager#ci.primary".into(), 1),
+            ("repo:github.com/example/flake-config".into(), 0),
+            ("usage:github.com/example/flake-config#ci.primary".into(), 1),
             (
-                "usage:github.com/caniko/dns-manager#readme.badges".into(),
+                "usage:github.com/example/flake-config#config.flake".into(),
                 1
             ),
+            ("orchestrator:simit-updater/fleet".into(), 1),
             ("orchestrator:canix-converge/workspace".into(), 1),
         ]
     );
     assert_eq!(
-        supply::walk(&graph, "github.com/caniko/dns-manager", false, 0)
+        supply::walk(&graph, "github.com/example/flake-config", false, 0)
             .unwrap()
             .nodes
             .len(),
