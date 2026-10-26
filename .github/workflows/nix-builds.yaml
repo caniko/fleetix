@@ -3,8 +3,7 @@ name: Nix installable builds
 
 on:
   push:
-    branches:
-      - "trunk"
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
