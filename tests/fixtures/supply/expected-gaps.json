@@ -1,31 +1,37 @@
 {
   "contract": "fleetix.supply-gaps.v1",
   "summary": {
-    "repositories": 5,
-    "usages": 20,
-    "covered": 7,
+    "repositories": 7,
+    "usages": 26,
+    "covered": 8,
     "drift": {
-      "covered": 1,
-      "uncovered": 4
+      "covered": 2,
+      "uncovered": 5
     },
     "byBlocker": [
       {
-        "blocker": "manual-pin",
-        "gaps": 7,
-        "repositories": 1,
-        "usages": 7
+        "blocker": "unknown-generator-revision",
+        "gaps": 10,
+        "repositories": 5,
+        "usages": 10
       },
       {
-        "blocker": "unknown-generator-revision",
-        "gaps": 7,
-        "repositories": 4,
-        "usages": 7
+        "blocker": "manual-pin",
+        "gaps": 8,
+        "repositories": 1,
+        "usages": 8
       },
       {
         "blocker": "scope-unsupported",
-        "gaps": 3,
+        "gaps": 5,
+        "repositories": 2,
+        "usages": 5
+      },
+      {
+        "blocker": "no-orchestrator",
+        "gaps": 2,
         "repositories": 1,
-        "usages": 3
+        "usages": 2
       },
       {
         "blocker": "provider-mismatch",
@@ -74,6 +80,12 @@
         "gaps": 1,
         "repositories": 1,
         "usages": 1
+      },
+      {
+        "blocker": "trust-root-missing",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
       }
     ],
     "byRepository": [
@@ -102,7 +114,7 @@
       },
       {
         "repository": "github.com/example/drifted",
-        "gaps": 17,
+        "gaps": 21,
         "blockers": [
           "manual-pin",
           "scope-unsupported",
@@ -117,6 +129,22 @@
         "blockers": [
           "config-not-persistable",
           "config-unresolved",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/example/manual",
+        "gaps": 2,
+        "blockers": [
+          "no-orchestrator"
+        ]
+      },
+      {
+        "repository": "github.com/example/unsigned",
+        "gaps": 3,
+        "blockers": [
+          "scope-unsupported",
+          "trust-root-missing",
           "unknown-generator-revision"
         ]
       }
@@ -194,6 +222,24 @@
       "reason": "Cargo dependency updates are outside every simit orchestrator.",
       "owner": "simit",
       "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#ci.local-gate",
+      "usageKind": "ci.local-gate",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit init ci)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#ci.local-gate",
+      "usageKind": "ci.local-gate",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
     },
     {
       "repository": "github.com/example/drifted",
@@ -323,6 +369,24 @@
     },
     {
       "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.flake-ref:scripts/release.sh",
+      "usageKind": "runtime.flake-ref",
+      "blocker": "manual-pin",
+      "reason": "simit does not rewrite runtime flake references.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.flake-ref:scripts/release.sh",
+      "usageKind": "runtime.flake-ref",
+      "blocker": "unknown-generator-revision",
+      "reason": "scripts/release.sh takes the simit revision from a run-time variable",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
       "node": "usage:github.com/example/drifted#runtime.publisher-var:.github/workflows/publish-crate.yaml",
       "usageKind": "runtime.publisher-var",
       "blocker": "manual-pin",
@@ -361,6 +425,51 @@
       "repository": "github.com/example/flake-config",
       "node": "usage:github.com/example/flake-config#ci.primary",
       "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/manual",
+      "node": "usage:github.com/example/manual#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "no-orchestrator",
+      "reason": "The generator refreshes these files, but no orchestrator lands them for this repository.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/manual",
+      "node": "usage:github.com/example/manual#ci.publish",
+      "usageKind": "ci.publish",
+      "blocker": "no-orchestrator",
+      "reason": "The generator refreshes these files, but no orchestrator lands them for this repository.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/unsigned",
+      "node": "usage:github.com/example/unsigned#keys.trust-root",
+      "usageKind": "keys.trust-root",
+      "blocker": "trust-root-missing",
+      "reason": "the release workflow verifies tags against the missing keys/maintainers.gpg",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/unsigned",
+      "node": "usage:github.com/example/unsigned#release.workflow",
+      "usageKind": "release.workflow",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit init release)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/unsigned",
+      "node": "usage:github.com/example/unsigned#release.workflow",
+      "usageKind": "release.workflow",
       "blocker": "unknown-generator-revision",
       "reason": "No receipt or pin proves which generator revision rendered these files.",
       "owner": "simit",
