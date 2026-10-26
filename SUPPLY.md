@@ -60,7 +60,8 @@ Fleetix reads only these attributes and edges:
   `forge`, `ciTarget` and `landing`.
 - `enrolledIn` edges from a `repo` to an `orchestrator`, with `attrs.enabled`
   and optional `attrs.reason` and `attrs.blocker`. Other edge kinds, such as
-  `uses`, `pins`, `runsOn` and `via`, can be walked but carry no rule.
+  `uses`, `contains`, `pins`, `runsOn` and `via`, can be walked but carry no
+  rule.
 
 ## Rules
 
