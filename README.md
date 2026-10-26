@@ -226,6 +226,13 @@ The declared Rust MSRV is 1.88, required by the resolved `pklr` dependency.
 CI also checks the pinned current stable Rust 1.96.1 toolchain so the minimum
 compatibility promise and modern compiler behavior are tested separately.
 
+## Supply facts
+
+`fleetix::supply` merges producer facts (`fleetix.supply-facts.v1`), such as
+Simit's usage facts and an operator's enrollment overlay, into one graph. It
+reports which usages no upgrade path covers, and why. See
+[Supply facts](SUPPLY.md).
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at

@@ -13,6 +13,7 @@ pub mod pkl;
 pub mod pkl_to_nix;
 pub mod publication;
 pub mod review_pin;
+pub mod supply;
 pub mod topology;
 pub mod trust;
 pub mod validate;

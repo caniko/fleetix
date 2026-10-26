@@ -22,6 +22,7 @@ include = [
   "/SERVICE_PROFILES.md",
   "/ARCHITECTURE.md",
   "/BUILD_TRAIN.md",
+  "/SUPPLY.md",
   "/CHANGELOG.md",
   "/LICENSE*",
   "/Cargo.toml",

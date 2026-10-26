@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `fleetix::supply`, which merges versioned `fleetix.supply-facts.v1`
+  documents (nodes, edges, capability rows and errors) from independent
+  producers into one graph. `gaps` reports each uncovered usage with its
+  blocker as `fleetix.supply-gaps.v1`, and `walk` follows dependencies forward
+  or backward as `fleetix.supply-path.v1`. The module needs only serde, so it
+  builds without the `cli` or `pkl` features. [SUPPLY.md](SUPPLY.md)
+  specifies the contract and a recommended blocker vocabulary.
+
 ### Fixed
 
 - Declare `BodyAssertion.operator` through a `BodyOperator` typealias so Pklr 5

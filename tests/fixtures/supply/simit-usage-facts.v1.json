@@ -1,0 +1,515 @@
+{
+  "contract": "fleetix.supply-facts.v1",
+  "vocabulary": "simit.usage-facts.v1",
+  "producer": {
+    "name": "simit",
+    "version": "0.21.0"
+  },
+  "observedAt": "2026-10-26T06:00:00Z",
+  "nodes": [
+    {
+      "id": "repo:github.com/caniko/fleetix",
+      "kind": "repo",
+      "attrs": {
+        "forge": "github.com",
+        "ciTarget": "actions/github",
+        "defaultBranch": "trunk"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/fleetix#config.simit-toml",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "config.simit-toml",
+        "state": "current",
+        "path": "simit.toml"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/fleetix#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "drift",
+        "path": ".github/workflows/ci.yaml"
+      },
+      "expects": [
+        {
+          "attr": "generatorRevision",
+          "blocker": "unknown-generator-revision",
+          "reason": "No receipt or pin proves which generator revision rendered this file."
+        }
+      ]
+    },
+    {
+      "id": "usage:github.com/caniko/fleetix#ci.publish",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.publish",
+        "state": "current",
+        "path": ".github/workflows/publish-workspace.yaml"
+      },
+      "expects": [
+        {
+          "attr": "generatorRevision",
+          "blocker": "unknown-generator-revision",
+          "reason": "No receipt or pin proves which generator revision rendered this file."
+        }
+      ]
+    },
+    {
+      "id": "usage:github.com/caniko/fleetix#release.workflow",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "release.workflow",
+        "state": "absent"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/fleetix#pin.config-command:simit.toml",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "pin.config-command",
+        "state": "drift",
+        "path": "simit.toml",
+        "revision": "4c6841cce19327927ea8a8f6e856276dd5c878f0"
+      }
+    },
+    {
+      "id": "repo:github.com/caniko/tzu",
+      "kind": "repo",
+      "attrs": {
+        "forge": "github.com",
+        "ciTarget": "crow/forgejo",
+        "defaultBranch": "trunk"
+      },
+      "blockers": [
+        {
+          "code": "provider-mismatch",
+          "reason": "simit.toml selects Crow CI, which cannot run on github.com."
+        }
+      ]
+    },
+    {
+      "id": "usage:github.com/caniko/tzu#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "drift",
+        "path": ".crow/ci.yaml"
+      },
+      "expects": [
+        {
+          "attr": "generatorRevision",
+          "blocker": "unknown-generator-revision",
+          "reason": "No receipt or pin proves which generator revision rendered this file."
+        }
+      ]
+    },
+    {
+      "id": "repo:codefloe.com/caniko/pink-raven",
+      "kind": "repo",
+      "attrs": {
+        "forge": "codefloe.com",
+        "ciTarget": "crow/forgejo",
+        "defaultBranch": "trunk"
+      }
+    },
+    {
+      "id": "usage:codefloe.com/caniko/pink-raven#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "drift",
+        "path": ".crow/ci.yaml"
+      },
+      "expects": [
+        {
+          "attr": "generatorRevision",
+          "blocker": "unknown-generator-revision",
+          "reason": "No receipt or pin proves which generator revision rendered this file."
+        }
+      ]
+    },
+    {
+      "id": "usage:codefloe.com/caniko/pink-raven#flake-input.direct:simit",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "flake-input.direct",
+        "state": "drift",
+        "input": "simit",
+        "revision": "de3325be17104fbdb0d70f1da38149d4016f1790"
+      }
+    },
+    {
+      "id": "repo:github.com/caniko/nix-doty",
+      "kind": "repo",
+      "attrs": {
+        "forge": "github.com",
+        "defaultBranch": "main"
+      },
+      "blockers": [
+        {
+          "code": "config-unresolved",
+          "reason": "simit config comes from flake simitConfig; rerun with --eval-flake to resolve it."
+        },
+        {
+          "code": "config-not-persistable",
+          "reason": "A flake simitConfig source cannot be rewritten by the generator."
+        }
+      ]
+    },
+    {
+      "id": "usage:github.com/caniko/nix-doty#config.flake",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "config.flake",
+        "state": "current",
+        "path": "flake.nix"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/nix-doty#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "unknown",
+        "path": ".github/workflows/ci.yaml"
+      },
+      "expects": [
+        {
+          "attr": "generatorRevision",
+          "blocker": "unknown-generator-revision",
+          "reason": "No receipt or pin proves which generator revision rendered this file."
+        }
+      ]
+    },
+    {
+      "id": "repo:github.com/caniko/meshemy",
+      "kind": "repo",
+      "attrs": {
+        "forge": "github.com",
+        "ciTarget": "actions/github",
+        "defaultBranch": "main"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/meshemy#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "drift",
+        "path": ".github/workflows/ci.yaml"
+      }
+    },
+    {
+      "id": "repo:github.com/caniko/schemantic",
+      "kind": "repo",
+      "attrs": {
+        "forge": "github.com",
+        "ciTarget": "actions/github",
+        "defaultBranch": "main"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/schemantic#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "drift",
+        "path": ".github/workflows/ci.yaml"
+      }
+    },
+    {
+      "id": "repo:github.com/caniko/dns-manager",
+      "kind": "repo",
+      "attrs": {
+        "forge": "github.com",
+        "ciTarget": "actions/github",
+        "defaultBranch": "main"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/dns-manager#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "state": "drift",
+        "path": ".github/workflows/ci.yaml"
+      }
+    },
+    {
+      "id": "usage:github.com/caniko/dns-manager#readme.badges",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "readme.badges",
+        "state": "current",
+        "path": "README.md"
+      }
+    },
+    {
+      "id": "rev:github.com/caniko/simit@4c6841cce19327927ea8a8f6e856276dd5c878f0",
+      "kind": "rev",
+      "attrs": {
+        "source": "github.com/caniko/simit",
+        "revision": "4c6841cce19327927ea8a8f6e856276dd5c878f0"
+      }
+    },
+    {
+      "id": "rev:github.com/caniko/simit@de3325be17104fbdb0d70f1da38149d4016f1790",
+      "kind": "rev",
+      "attrs": {
+        "source": "github.com/caniko/simit",
+        "revision": "de3325be17104fbdb0d70f1da38149d4016f1790"
+      }
+    },
+    {
+      "id": "runner:github.com/ubuntu-24.04",
+      "kind": "runner",
+      "attrs": {
+        "forgeHost": "github.com",
+        "label": "ubuntu-24.04"
+      }
+    },
+    {
+      "id": "runner:codefloe.com/atlas-nix-trusted",
+      "kind": "runner",
+      "attrs": {
+        "forgeHost": "codefloe.com",
+        "label": "atlas-nix-trusted"
+      }
+    },
+    {
+      "id": "cache:canix",
+      "kind": "cache",
+      "attrs": {
+        "url": "https://attic.candee.baby"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "repo:github.com/caniko/fleetix",
+      "to": "usage:github.com/caniko/fleetix#config.simit-toml",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/fleetix",
+      "to": "usage:github.com/caniko/fleetix#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/fleetix",
+      "to": "usage:github.com/caniko/fleetix#ci.publish",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/fleetix",
+      "to": "usage:github.com/caniko/fleetix#pin.config-command:simit.toml",
+      "kind": "uses"
+    },
+    {
+      "from": "usage:github.com/caniko/fleetix#ci.primary",
+      "to": "runner:github.com/ubuntu-24.04",
+      "kind": "runsOn"
+    },
+    {
+      "from": "usage:github.com/caniko/fleetix#ci.publish",
+      "to": "cache:canix",
+      "kind": "publishesTo"
+    },
+    {
+      "from": "usage:github.com/caniko/fleetix#pin.config-command:simit.toml",
+      "to": "rev:github.com/caniko/simit@4c6841cce19327927ea8a8f6e856276dd5c878f0",
+      "kind": "pins"
+    },
+    {
+      "from": "repo:github.com/caniko/tzu",
+      "to": "usage:github.com/caniko/tzu#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:codefloe.com/caniko/pink-raven",
+      "to": "usage:codefloe.com/caniko/pink-raven#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:codefloe.com/caniko/pink-raven",
+      "to": "usage:codefloe.com/caniko/pink-raven#flake-input.direct:simit",
+      "kind": "uses"
+    },
+    {
+      "from": "usage:codefloe.com/caniko/pink-raven#ci.primary",
+      "to": "runner:codefloe.com/atlas-nix-trusted",
+      "kind": "runsOn"
+    },
+    {
+      "from": "usage:codefloe.com/caniko/pink-raven#flake-input.direct:simit",
+      "to": "rev:github.com/caniko/simit@de3325be17104fbdb0d70f1da38149d4016f1790",
+      "kind": "pins"
+    },
+    {
+      "from": "repo:github.com/caniko/nix-doty",
+      "to": "usage:github.com/caniko/nix-doty#config.flake",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/nix-doty",
+      "to": "usage:github.com/caniko/nix-doty#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/meshemy",
+      "to": "usage:github.com/caniko/meshemy#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/schemantic",
+      "to": "usage:github.com/caniko/schemantic#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/dns-manager",
+      "to": "usage:github.com/caniko/dns-manager#ci.primary",
+      "kind": "uses"
+    },
+    {
+      "from": "repo:github.com/caniko/dns-manager",
+      "to": "usage:github.com/caniko/dns-manager#readme.badges",
+      "kind": "uses"
+    }
+  ],
+  "capabilities": [
+    {
+      "usageKind": "config.simit-toml",
+      "match": {},
+      "path": "human",
+      "via": "repository owner",
+      "lands": true,
+      "status": "implemented",
+      "reason": "Config sources are human-owned and need no upgrade path."
+    },
+    {
+      "usageKind": "config.flake",
+      "match": {},
+      "path": "human",
+      "via": "repository owner",
+      "lands": true,
+      "status": "implemented",
+      "reason": "Config sources are human-owned and need no upgrade path."
+    },
+    {
+      "usageKind": "ci.primary",
+      "match": {},
+      "path": "regenerate",
+      "via": "simit init ci",
+      "lands": false,
+      "status": "implemented",
+      "blocker": "no-orchestrator",
+      "reason": "simit init ci regenerates the workflows, but no orchestrator lands them for this CI target."
+    },
+    {
+      "usageKind": "ci.primary",
+      "match": {
+        "forge": "github.com",
+        "ciTarget": "actions/github"
+      },
+      "path": "updater",
+      "via": "simit projects update --scope ci",
+      "lands": true,
+      "orchestrator": "simit-updater",
+      "status": "implemented",
+      "reason": "The updater regenerates, qualifies and lands primary CI on GitHub."
+    },
+    {
+      "usageKind": "ci.primary",
+      "match": {
+        "forge": "github.com",
+        "ciTarget": "actions/github",
+        "landing": "pull-request"
+      },
+      "path": "updater",
+      "via": "simit projects update --scope ci",
+      "lands": true,
+      "orchestrator": "simit-updater",
+      "status": "planned",
+      "blocker": "pr-required-unsupported",
+      "reason": "The updater cannot land through a pull request yet.",
+      "fallback": "land the generated diff by hand"
+    },
+    {
+      "usageKind": "ci.primary",
+      "match": {
+        "ciTarget": "crow/forgejo"
+      },
+      "path": "updater",
+      "via": "simit projects update --scope ci",
+      "lands": true,
+      "orchestrator": "simit-updater",
+      "status": "planned",
+      "blocker": "adapter-missing",
+      "reason": "The updater has no Forgejo and Crow adapter."
+    },
+    {
+      "usageKind": "ci.publish",
+      "match": {},
+      "path": "updater",
+      "via": "simit projects update --scope ci-extra",
+      "lands": true,
+      "orchestrator": "simit-updater",
+      "status": "planned",
+      "blocker": "scope-unsupported",
+      "reason": "The updater only lands the primary CI scope.",
+      "fallback": "simit init ci"
+    },
+    {
+      "usageKind": "release.workflow",
+      "match": {},
+      "path": "updater",
+      "via": "simit projects update --scope release",
+      "lands": true,
+      "orchestrator": "simit-updater",
+      "status": "planned",
+      "blocker": "scope-unsupported",
+      "reason": "The updater only lands the primary CI scope.",
+      "fallback": "simit init release"
+    },
+    {
+      "usageKind": "readme.badges",
+      "match": {},
+      "path": "upgrade",
+      "via": "simit upgrade",
+      "lands": false,
+      "status": "implemented",
+      "blocker": "no-orchestrator",
+      "reason": "simit upgrade refreshes the badge block, but no orchestrator lands it."
+    },
+    {
+      "usageKind": "pin.config-command",
+      "match": {},
+      "path": "manual",
+      "via": "edit simit.toml",
+      "lands": false,
+      "status": "unsupported",
+      "blocker": "manual-pin",
+      "reason": "Pins inside human-owned simit.toml command strings are never rewritten."
+    },
+    {
+      "usageKind": "flake-input.direct",
+      "match": {},
+      "path": "manual",
+      "via": "nix flake update simit",
+      "lands": false,
+      "status": "unsupported",
+      "blocker": "manual-pin",
+      "reason": "Flake inputs need a networked lock update, which the updater sandbox cannot run."
+    }
+  ],
+  "errors": [
+    {
+      "subject": "repo:github.com/caniko/broken-config",
+      "code": "config-error",
+      "message": "simit.toml: invalid type: string \"yes\", expected a boolean for key `ci.with_msrv`"
+    }
+  ]
+}

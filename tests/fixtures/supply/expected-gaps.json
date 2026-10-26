@@ -1,0 +1,330 @@
+{
+  "contract": "fleetix.supply-gaps.v1",
+  "summary": {
+    "repositories": 7,
+    "usages": 13,
+    "covered": 4,
+    "drift": {
+      "covered": 2,
+      "uncovered": 6
+    },
+    "byBlocker": [
+      {
+        "blocker": "unknown-generator-revision",
+        "gaps": 4,
+        "repositories": 4,
+        "usages": 4
+      },
+      {
+        "blocker": "adapter-missing",
+        "gaps": 2,
+        "repositories": 2,
+        "usages": 2
+      },
+      {
+        "blocker": "manual-pin",
+        "gaps": 2,
+        "repositories": 2,
+        "usages": 2
+      },
+      {
+        "blocker": "no-orchestrator",
+        "gaps": 2,
+        "repositories": 2,
+        "usages": 2
+      },
+      {
+        "blocker": "not-enrolled",
+        "gaps": 2,
+        "repositories": 2,
+        "usages": 2
+      },
+      {
+        "blocker": "config-not-persistable",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 0
+      },
+      {
+        "blocker": "config-unresolved",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 0
+      },
+      {
+        "blocker": "generator-pin-skew",
+        "gaps": 1,
+        "repositories": 0,
+        "usages": 0
+      },
+      {
+        "blocker": "operator-disabled",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
+      },
+      {
+        "blocker": "pr-required-unsupported",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
+      },
+      {
+        "blocker": "provider-mismatch",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 0
+      },
+      {
+        "blocker": "scope-unsupported",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
+      }
+    ],
+    "byRepository": [
+      {
+        "repository": "codefloe.com/caniko/pink-raven",
+        "gaps": 3,
+        "blockers": [
+          "adapter-missing",
+          "manual-pin",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/caniko/dns-manager",
+        "gaps": 1,
+        "blockers": [
+          "no-orchestrator"
+        ]
+      },
+      {
+        "repository": "github.com/caniko/fleetix",
+        "gaps": 3,
+        "blockers": [
+          "manual-pin",
+          "scope-unsupported",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/caniko/meshemy",
+        "gaps": 2,
+        "blockers": [
+          "not-enrolled",
+          "pr-required-unsupported"
+        ]
+      },
+      {
+        "repository": "github.com/caniko/nix-doty",
+        "gaps": 4,
+        "blockers": [
+          "config-not-persistable",
+          "config-unresolved",
+          "no-orchestrator",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/caniko/schemantic",
+        "gaps": 2,
+        "blockers": [
+          "not-enrolled",
+          "operator-disabled"
+        ]
+      },
+      {
+        "repository": "github.com/caniko/tzu",
+        "gaps": 3,
+        "blockers": [
+          "adapter-missing",
+          "provider-mismatch",
+          "unknown-generator-revision"
+        ]
+      }
+    ]
+  },
+  "gaps": [
+    {
+      "repository": null,
+      "node": "orchestrator:canix-converge/workspace",
+      "usageKind": null,
+      "blocker": "generator-pin-skew",
+      "reason": "canix-converge pins simit 432cde7 while simit-updater/fleet pins 5f6078c.",
+      "owner": "canix",
+      "source": "producer"
+    },
+    {
+      "repository": "codefloe.com/caniko/pink-raven",
+      "node": "usage:codefloe.com/caniko/pink-raven#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "adapter-missing",
+      "reason": "The updater has no Forgejo and Crow adapter.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "codefloe.com/caniko/pink-raven",
+      "node": "usage:codefloe.com/caniko/pink-raven#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered this file.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "codefloe.com/caniko/pink-raven",
+      "node": "usage:codefloe.com/caniko/pink-raven#flake-input.direct:simit",
+      "usageKind": "flake-input.direct",
+      "blocker": "manual-pin",
+      "reason": "Flake inputs need a networked lock update, which the updater sandbox cannot run.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/dns-manager",
+      "node": "usage:github.com/caniko/dns-manager#readme.badges",
+      "usageKind": "readme.badges",
+      "blocker": "no-orchestrator",
+      "reason": "simit upgrade refreshes the badge block, but no orchestrator lands it.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/fleetix",
+      "node": "usage:github.com/caniko/fleetix#ci.publish",
+      "usageKind": "ci.publish",
+      "blocker": "scope-unsupported",
+      "reason": "The updater only lands the primary CI scope. (fallback: simit init ci)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/fleetix",
+      "node": "usage:github.com/caniko/fleetix#ci.publish",
+      "usageKind": "ci.publish",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered this file.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/caniko/fleetix",
+      "node": "usage:github.com/caniko/fleetix#pin.config-command:simit.toml",
+      "usageKind": "pin.config-command",
+      "blocker": "manual-pin",
+      "reason": "Pins inside human-owned simit.toml command strings are never rewritten.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/meshemy",
+      "node": "usage:github.com/caniko/meshemy#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "not-enrolled",
+      "reason": "not enrolled in any canix-converge orchestrator",
+      "owner": null,
+      "source": "enrollment"
+    },
+    {
+      "repository": "github.com/caniko/meshemy",
+      "node": "usage:github.com/caniko/meshemy#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "pr-required-unsupported",
+      "reason": "The updater cannot land through a pull request yet. (fallback: land the generated diff by hand)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/nix-doty",
+      "node": "repo:github.com/caniko/nix-doty",
+      "usageKind": null,
+      "blocker": "config-not-persistable",
+      "reason": "A flake simitConfig source cannot be rewritten by the generator.",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/caniko/nix-doty",
+      "node": "repo:github.com/caniko/nix-doty",
+      "usageKind": null,
+      "blocker": "config-unresolved",
+      "reason": "simit config comes from flake simitConfig; rerun with --eval-flake to resolve it.",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/caniko/nix-doty",
+      "node": "usage:github.com/caniko/nix-doty#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "no-orchestrator",
+      "reason": "simit init ci regenerates the workflows, but no orchestrator lands them for this CI target.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/nix-doty",
+      "node": "usage:github.com/caniko/nix-doty#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered this file.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/caniko/schemantic",
+      "node": "usage:github.com/caniko/schemantic#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "not-enrolled",
+      "reason": "not enrolled in any canix-converge orchestrator",
+      "owner": null,
+      "source": "enrollment"
+    },
+    {
+      "repository": "github.com/caniko/schemantic",
+      "node": "usage:github.com/caniko/schemantic#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "operator-disabled",
+      "subcode": "credential-denied",
+      "reason": "The updater token cannot push to this repository.",
+      "owner": "canix",
+      "source": "enrollment"
+    },
+    {
+      "repository": "github.com/caniko/tzu",
+      "node": "repo:github.com/caniko/tzu",
+      "usageKind": null,
+      "blocker": "provider-mismatch",
+      "reason": "simit.toml selects Crow CI, which cannot run on github.com.",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/caniko/tzu",
+      "node": "usage:github.com/caniko/tzu#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "adapter-missing",
+      "reason": "The updater has no Forgejo and Crow adapter.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/caniko/tzu",
+      "node": "usage:github.com/caniko/tzu#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered this file.",
+      "owner": "simit",
+      "source": "expectation"
+    }
+  ],
+  "errors": [
+    {
+      "producer": "simit",
+      "subject": "repo:github.com/caniko/broken-config",
+      "code": "config-error",
+      "message": "simit.toml: invalid type: string \"yes\", expected a boolean for key `ci.with_msrv`"
+    }
+  ]
+}
