@@ -4,7 +4,8 @@
 //! Producers own their vocabularies (usage kinds, attributes, blocker codes).
 //! Fleetix only merges their documents and applies the generic gap rules.
 
-use crate::topology::{Supply, Topology};
+use crate::topology::{RunnerPool, Supply, Topology};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -13,6 +14,7 @@ pub const CONTRACT: &str = "fleetix.supply-facts.v1";
 pub const GAPS_CONTRACT: &str = "fleetix.supply-gaps.v1";
 pub const PATH_CONTRACT: &str = "fleetix.supply-path.v1";
 pub const GRAPH_CONTRACT: &str = "fleetix.supply-graph.v1";
+pub const BUDGET_CONTRACT: &str = "fleetix.supply-budget.v1";
 
 pub type Attrs = BTreeMap<String, Value>;
 
@@ -405,20 +407,10 @@ impl Graph {
         let Some(orchestrator) = &row.orchestrator else {
             return Ok(());
         };
-        let target = format!("orchestrator:{orchestrator}");
-        let prefix = format!("{target}/");
-        let enrollments: Vec<_> = repo_id
-            .into_iter()
-            .flat_map(|id| self.edges_of(id, false))
-            .map(|(_, edge)| edge)
-            .filter(|edge| {
-                edge.kind == "enrolledIn" && (edge.to == target || edge.to.starts_with(&prefix))
-            })
-            .collect();
-        if enrollments
-            .iter()
-            .any(|edge| edge.attrs.get("enabled") == Some(&Value::Bool(true)))
-        {
+        let enrollments = repo_id
+            .map(|id| self.enrollments(id, orchestrator))
+            .unwrap_or_default();
+        if enrollments.iter().any(|edge| enabled(edge)) {
             return Ok(());
         }
         let Some(disabled) = enrollments.first() else {
@@ -440,6 +432,21 @@ impl Graph {
         Err(draft)
     }
 
+    /// `enrolledIn` edges from a repository to `orchestrator:<kind>[/<name>]`.
+    fn enrollments(&self, repo_id: &str, orchestrator: &str) -> Vec<&GraphEdge> {
+        let target = format!("orchestrator:{orchestrator}");
+        self.edges_of(repo_id, false)
+            .map(|(_, edge)| edge)
+            .filter(|edge| {
+                edge.kind == "enrolledIn"
+                    && edge
+                        .to
+                        .strip_prefix(&target)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
+            .collect()
+    }
+
     /// R6: a runner node needs a topology pool offering its label on its
     /// forge host, and a cache node a topology cache of its name.
     fn topology_gap(&self, node: &GraphNode) -> Option<Draft> {
@@ -447,15 +454,10 @@ impl Graph {
         let (blocker, joined) = match node.kind.as_str() {
             "runner" => (
                 "unknown-runner",
-                node.id
-                    .strip_prefix("runner:")
-                    .and_then(|id| id.split_once('/'))
-                    .is_some_and(|(host, label)| {
-                        supply.runner_pools.values().any(|pool| {
-                            pool.forge_host == host
-                                && pool.labels.iter().any(|known| known == label)
-                        })
-                    }),
+                supply
+                    .runner_pools
+                    .values()
+                    .any(|pool| offers(pool, &node.id)),
             ),
             "cache" => (
                 "unknown-cache",
@@ -757,6 +759,219 @@ pub fn walk(graph: &Graph, id: &str, reverse: bool, depth: usize) -> miette::Res
     })
 }
 
+/// Pull-request pipelines of workflows averaging more minutes per run than
+/// this are `heavy-on-pr` candidates.
+// ponytail: one fixed threshold; make it a flag when fleets disagree.
+const HEAVY_RUN_MINUTES: f64 = 30.0;
+const MONTH_DAYS: f64 = 30.0;
+
+/// A workflow's observed CI usage over `windowDays`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Observed {
+    window_days: f64,
+    runs: f64,
+    agent_minutes: f64,
+    by_lane: BTreeMap<String, f64>,
+    failed_minutes: f64,
+    killed_minutes: f64,
+}
+
+/// A workflow's static triggers; empty `branches` means push on any branch.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Triggers {
+    events: Vec<String>,
+    branches: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetReport {
+    pub contract: &'static str,
+    pub updates_per_month: f64,
+    pub budgets: Vec<BudgetForecast>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetForecast {
+    pub name: String,
+    pub pools: Vec<String>,
+    pub minutes_per_month: u32,
+    /// Observed minutes scaled to 30 days.
+    pub observed_minutes: u64,
+    /// Planned updater qualification runs on metered pools.
+    pub updater_minutes: u64,
+    pub forecast_minutes: u64,
+    /// `forecastMinutes / minutesPerMonth`, to two decimals.
+    pub utilization: f64,
+    pub within_budget: bool,
+    /// Reductions, largest first. Estimates for one workflow can overlap.
+    pub candidates: Vec<Candidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub rule: &'static str,
+    pub node: String,
+    pub estimated_savings: u64,
+    pub reason: String,
+}
+
+/// Forecast each topology budget from `workflow:` nodes whose `runsOn`
+/// runners belong to the budget's pools. A repository enrolled (enabled) in
+/// an `orchestrator` of that kind adds `runsPerUpdate` (an orchestrator node
+/// attribute, default 2) qualification runs of each workflow on a metered
+/// pool per update.
+pub fn budget(
+    graph: &Graph,
+    orchestrator: &str,
+    updates_per_month: f64,
+) -> miette::Result<BudgetReport> {
+    let supply = graph
+        .supply
+        .as_ref()
+        .ok_or_else(|| miette::miette!("a budget forecast needs a topology"))?;
+    let mut budgets = Vec::new();
+    for (name, budget) in &supply.budgets {
+        let pools: Vec<_> = budget
+            .pools
+            .iter()
+            .filter_map(|pool| supply.runner_pools.get(pool))
+            .collect();
+        let (mut observed_total, mut updater_total) = (0.0, 0.0);
+        let mut candidates = Vec::new();
+        for node in graph.nodes.values().filter(|node| node.kind == "workflow") {
+            let on: Vec<_> = pools
+                .iter()
+                .filter(|pool| {
+                    graph
+                        .edges_of(&node.id, false)
+                        .any(|(_, edge)| edge.kind == "runsOn" && offers(pool, &edge.to))
+                })
+                .collect();
+            if on.is_empty() || !node.attrs.contains_key("observed") {
+                continue;
+            }
+            let observed: Observed = typed_attr(node, "observed")?;
+            let triggers: Triggers = typed_attr(node, "triggers")?;
+            let scale = MONTH_DAYS
+                / if observed.window_days > 0.0 {
+                    observed.window_days
+                } else {
+                    MONTH_DAYS
+                };
+            let lane = |lane: &str| observed.by_lane.get(lane).copied().unwrap_or(0.0) * scale;
+            let average = if observed.runs > 0.0 {
+                observed.agent_minutes / observed.runs
+            } else {
+                0.0
+            };
+            observed_total += observed.agent_minutes * scale;
+            if on.iter().any(|pool| pool.metered) {
+                updater_total +=
+                    graph.updater_runs(&node.id, orchestrator) * average * updates_per_month;
+            }
+
+            let mut candidate = |rule, minutes: f64, reason: String| {
+                if minutes.round() > 0.0 {
+                    candidates.push(Candidate {
+                        rule,
+                        node: node.id.clone(),
+                        estimated_savings: minutes.round() as u64,
+                        reason,
+                    });
+                }
+            };
+            let event = |name: &str| triggers.events.iter().any(|event| event == name);
+            let push_anywhere = triggers.branches.is_empty()
+                || triggers.branches.iter().any(|branch| branch.contains('*'));
+            if event("push") && event("pull_request") && push_anywhere {
+                candidate(
+                    "duplicate-trigger",
+                    lane("push:branch"),
+                    "push runs on every branch next to pull_request pipelines; limit push to \
+                     the default branch"
+                        .into(),
+                );
+            }
+            if average > HEAVY_RUN_MINUTES {
+                candidate(
+                    "heavy-on-pr",
+                    lane("pull_request"),
+                    format!(
+                        "averages {average:.0} minutes per run; run it after merge or on demand"
+                    ),
+                );
+            }
+            candidate(
+                "failure-waste",
+                observed.failed_minutes * scale,
+                "minutes spent on failed runs".into(),
+            );
+            candidate(
+                "timeout-waste",
+                observed.killed_minutes * scale,
+                "minutes spent on killed or timed-out runs; lower the timeout or fail fast".into(),
+            );
+        }
+        candidates.sort_by(|a, b| {
+            b.estimated_savings
+                .cmp(&a.estimated_savings)
+                .then_with(|| (a.rule, &a.node).cmp(&(b.rule, &b.node)))
+        });
+        let forecast = observed_total + updater_total;
+        let allowance = f64::from(budget.minutes_per_month);
+        budgets.push(BudgetForecast {
+            name: name.clone(),
+            pools: budget.pools.clone(),
+            minutes_per_month: budget.minutes_per_month,
+            observed_minutes: observed_total.round() as u64,
+            updater_minutes: updater_total.round() as u64,
+            forecast_minutes: forecast.round() as u64,
+            utilization: (forecast / allowance * 100.0).round() / 100.0,
+            within_budget: forecast <= allowance,
+            candidates,
+        });
+    }
+    Ok(BudgetReport {
+        contract: BUDGET_CONTRACT,
+        updates_per_month,
+        budgets,
+    })
+}
+
+/// Read a structured attribute, defaulting when absent; a malformed one fails
+/// the forecast rather than silently counting zero minutes.
+fn typed_attr<T: DeserializeOwned + Default>(node: &GraphNode, key: &str) -> miette::Result<T> {
+    node.attrs.get(key).map_or(Ok(T::default()), |value| {
+        serde_json::from_value(value.clone())
+            .map_err(|error| miette::miette!("{}: {key}: {error}", node.id))
+    })
+}
+
+impl Graph {
+    /// Qualification runs per update for a workflow whose repository is
+    /// enabled in an `orchestrator` of this kind, else zero.
+    fn updater_runs(&self, workflow: &str, orchestrator: &str) -> f64 {
+        let Some(coordinate) = repository_of(workflow) else {
+            return 0.0;
+        };
+        self.enrollments(&format!("repo:{coordinate}"), orchestrator)
+            .into_iter()
+            .find(|edge| enabled(edge))
+            .map_or(0.0, |edge| {
+                self.nodes
+                    .get(&edge.to)
+                    .and_then(|node| node.attrs.get("runsPerUpdate"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(2.0)
+            })
+    }
+}
+
 /// Whole days from a document's `observedAt` (read to day precision) until
 /// `now_unix_seconds`, or `None` when the date is unreadable.
 pub fn age_days(observed_at: &str, now_unix_seconds: u64) -> Option<i64> {
@@ -778,15 +993,31 @@ pub fn age_days(observed_at: &str, now_unix_seconds: u64) -> Option<i64> {
     Some(i64::try_from(now_unix_seconds / 86_400).ok()? - observed)
 }
 
-/// The repository coordinate of a `repo:` or `usage:` node id.
+/// The repository coordinate of a `repo:`, `usage:` or `workflow:` node id.
 pub fn repository_of(id: &str) -> Option<String> {
     id.strip_prefix("repo:")
         .or_else(|| {
             id.strip_prefix("usage:")
+                .or_else(|| id.strip_prefix("workflow:"))
                 .and_then(|rest| rest.split_once('#'))
                 .map(|(coordinate, _)| coordinate)
         })
         .map(str::to_string)
+}
+
+/// Enrollment needs an explicit `enabled: true`.
+fn enabled(edge: &GraphEdge) -> bool {
+    edge.attrs.get("enabled") == Some(&Value::Bool(true))
+}
+
+/// Whether `runner:<forgeHost>/<label>` is one of the pool's runners.
+fn offers(pool: &RunnerPool, runner: &str) -> bool {
+    runner
+        .strip_prefix("runner:")
+        .and_then(|id| id.split_once('/'))
+        .is_some_and(|(host, label)| {
+            pool.forge_host == host && pool.labels.iter().any(|known| known == label)
+        })
 }
 
 fn sourced<T: Clone>(producer: &str, value: &T) -> Sourced<T> {

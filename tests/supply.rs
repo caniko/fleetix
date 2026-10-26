@@ -539,3 +539,123 @@ fn age_days_counts_calendar_days_across_leap_years() {
         assert_eq!(supply::age_days(unreadable, march_first_2000), None);
     }
 }
+
+/// Refresh with `FLEETIX_BLESS=1 cargo test --test supply` like the gaps
+/// fixture.
+#[cfg(feature = "pkl")]
+#[tokio::test]
+async fn budget_fixture_forecasts_the_crow_allowance() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/supply");
+    let topology = fleetix::load_topology(&dir.join("budget-topology.pkl"))
+        .await
+        .unwrap();
+    let docs = supply::parse(&fixture("budget-facts.v1.json")).unwrap();
+    let report =
+        supply::budget(&supply::build(&docs, Some(&topology)), "simit-updater", 1.0).unwrap();
+    let actual = serde_json::to_string_pretty(&report).unwrap() + "\n";
+    if std::env::var_os("FLEETIX_BLESS").is_some() {
+        std::fs::write(dir.join("expected-budget.json"), &actual).unwrap();
+    }
+    assert_eq!(actual, fixture("expected-budget.json"));
+}
+
+#[test]
+fn budget_follows_pools_triggers_enrollment_and_metering() {
+    let workflow = |id: &str, runner: &str, observed: Value, triggers: Value| {
+        (
+            json!({"id": id, "kind": "workflow", "attrs": {"observed": observed, "triggers": triggers}}),
+            json!({"from": id, "to": runner, "kind": "runsOn"}),
+        )
+    };
+    let (a, a_edge) = workflow(
+        "workflow:h/o/a#w",
+        "runner:h/m",
+        json!({"windowDays": 15, "runs": 2, "agentMinutes": 40, "byLane": {"push:branch": 10, "pull_request": 30}}),
+        json!({"events": ["push", "pull_request"], "branches": ["trunk"]}),
+    );
+    let (b, b_edge) = workflow(
+        "workflow:h/o/b#w",
+        "runner:h/f",
+        json!({"runs": 1, "agentMinutes": 40, "byLane": {"pull_request": 40}}),
+        json!({"events": ["push", "pull_request"], "branches": ["main", "simit/**"]}),
+    );
+    let (c, c_edge) = workflow(
+        "workflow:h/o/c#w",
+        "runner:h/elsewhere",
+        json!({"agentMinutes": 999}),
+        json!({}),
+    );
+    let facts = doc(
+        "canix",
+        json!({
+            "nodes": [a, b, c, {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": 3}}],
+            "edges": [
+                a_edge, b_edge, c_edge,
+                enrolled("h/o/a", "updater/x", json!({"enabled": true})),
+                enrolled("h/o/b", "updater/x", json!({"enabled": true}))
+            ]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {
+                "metered": {"forgeHost": "h", "labels": ["m"], "metered": true},
+                "free": {"forgeHost": "h", "labels": ["f"]}
+            },
+            "budgets": {"b": {"pools": ["metered", "free"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let graph = supply::build(std::slice::from_ref(&facts), Some(&topology));
+    let report = supply::budget(&graph, "updater", 2.0).unwrap();
+    let forecast = &report.budgets[0];
+    // a: 40 minutes over 15 days -> 80; 3 runs x 20 average x 2 updates -> 120.
+    // b: 40 on an unmetered pool, so no updater runs; c is outside the pools.
+    assert_eq!(
+        (
+            forecast.observed_minutes,
+            forecast.updater_minutes,
+            forecast.forecast_minutes
+        ),
+        (120, 120, 240)
+    );
+    assert_eq!((forecast.utilization, forecast.within_budget), (2.4, false));
+    // a's push is limited to trunk and averages 20; b pushes anywhere but has
+    // no push:branch minutes and averages 40.
+    let candidates: Vec<_> = forecast
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.rule,
+                candidate.node.as_str(),
+                candidate.estimated_savings,
+            )
+        })
+        .collect();
+    assert_eq!(candidates, [("heavy-on-pr", "workflow:h/o/b#w", 40)]);
+
+    assert!(
+        supply::budget(
+            &supply::build(std::slice::from_ref(&facts), None),
+            "updater",
+            1.0
+        )
+        .is_err()
+    );
+    let mut malformed = facts;
+    malformed.nodes[0]
+        .attrs
+        .insert("observed".into(), json!({"runs": "many"}));
+    let error = supply::budget(
+        &supply::build(&[malformed], Some(&topology)),
+        "updater",
+        1.0,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("workflow:h/o/a#w: observed"),
+        "{error}"
+    );
+}

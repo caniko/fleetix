@@ -1,3 +1,4 @@
+| `workflow:<coordinate>#<path>` | `workflow`; one CI workflow file |
 # Supply facts
 
 `fleetix::supply` merges versioned supply-chain facts into one graph and reports
@@ -50,6 +51,7 @@ default to empty, and `attrs`, `expects` and `blockers` too.
 | `runner:<forgeHost>/<label>` | `runner` |
 | `cache:<name>` | `cache` |
 | `orchestrator:<kind>/<name>` | `orchestrator` |
+| `workflow:<coordinate>#<path>` | `workflow`; one CI workflow file |
 
 Fleetix reads only these attributes and edges:
 
@@ -148,23 +150,57 @@ with `reverse`, up to `depth` hops. A reverse walk from a `rev:` node answers
 "who pins this revision". From a `runner:` node it answers "what depends on
 this runner".
 
+## Budgets
+
+`budget` returns `fleetix.supply-budget.v1` with one forecast per topology
+budget. It reads `workflow:<coordinate>#<path>` nodes that have a `runsOn` edge
+to a runner of one of the budget's pools:
+
+- `attrs.observed`: `{windowDays, runs, agentMinutes, byLane, failedMinutes,
+  killedMinutes}`, for example from an operator's CI observation overlay.
+  `byLane` maps lanes such as `push:default`, `push:branch` and `pull_request`
+  to minutes. A workflow without `observed` adds nothing.
+- `attrs.triggers`: `{events, branches}`, the static triggers, for example
+  from Simit. Empty `branches` means push runs on any branch.
+
+`observedMinutes` scales each workflow to 30 days. `updaterMinutes` adds
+planned qualification runs: a workflow on a metered pool whose repository has
+an enabled `enrolledIn` edge to the given orchestrator kind costs
+`runsPerUpdate` × its average minutes per run × updates per month.
+`runsPerUpdate` is an attribute of the orchestrator node and defaults to 2.
+`forecastMinutes` is their sum. `utilization` is the forecast divided by
+`minutesPerMonth`.
+
+Candidates are ranked by estimated savings. One workflow's estimates can
+overlap, so don't add them up.
+
+| Rule | Applies when | Savings |
+| --- | --- | --- |
+| `duplicate-trigger` | Triggers include push and pull_request, and push isn't limited (no branches, or a `*` pattern) | `push:branch` minutes |
+| `heavy-on-pr` | The workflow averages more than 30 minutes per run | `pull_request` minutes |
+| `failure-waste` | Any failed runs | `failedMinutes` |
+| `timeout-waste` | Any killed or timed-out runs | `killedMinutes` |
+
 ## CLI
 
 ```bash
 fleetix supply gaps --facts F... [--topology P] [--by blocker|repo] [--format human|json] [--max-age-days N]
 fleetix supply path <node|coordinate> --facts F... [--reverse] [--depth N] [--format human|json]
 fleetix supply graph --facts F...
+fleetix supply budget --facts F... --topology P [--updates-per-month N] [--orchestrator KIND] [--format human|json]
 ```
 
 Each `--facts` file holds one document or a JSON array of documents.
-`--topology` loads and validates a Pkl topology for R6. `--max-age-days` warns
-on stderr about documents observed longer ago than that. Human output is
-Markdown tables. `--format json` prints the `fleetix.supply-gaps.v1` or
-`fleetix.supply-path.v1` report. `graph` prints the merged graph, including
+`--topology` loads and validates a Pkl topology for R6 and budgets.
+`--max-age-days` warns on stderr about documents observed longer ago than that.
+Human output is Markdown tables. `--format json` prints the
+`fleetix.supply-gaps.v1`, `fleetix.supply-path.v1` or
+`fleetix.supply-budget.v1` report. `graph` prints the merged graph, including
 merge conflicts, as `fleetix.supply-graph.v1` JSON.
 
-Exit codes: 2 for a document that is not valid facts, 3 for an unreadable
-file, 4 for an unknown `path` node, and 1 for a topology that fails to evaluate.
+Exit codes: 2 for a document that is not valid facts or a budget without a
+topology, 3 for an unreadable file, 4 for an unknown `path` node, and 1 for a
+topology that fails to evaluate.
 
 ## Recommended blocker vocabulary
 

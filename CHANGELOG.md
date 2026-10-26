@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds one document or an array. `--topology` enables the runner and cache
   join, and `--max-age-days` warns about stale facts. Human output is Markdown
   tables; `--format json` prints the versioned report.
+- Add `fleetix supply budget`, a `fleetix.supply-budget.v1` forecast per
+  topology budget. It sums observed workflow minutes scaled to 30 days, plus
+  planned updater qualification runs on metered pools. It also ranks reduction
+  candidates (`duplicate-trigger`, `heavy-on-pr`, `failure-waste`,
+  `timeout-waste`) by estimated savings.
 
 ### Fixed
 

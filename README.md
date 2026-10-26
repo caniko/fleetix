@@ -237,6 +237,7 @@ reports which usages no upgrade path covers, and why. See
 fleetix supply gaps --facts facts.json --topology Topology.pkl --by repo
 fleetix supply path rev:github.com/example/tool@<sha> --reverse --facts facts.json
 fleetix supply graph --facts facts.json --facts overlay.json
+fleetix supply budget --facts facts.json --facts overlay.json --topology Topology.pkl
 ```
 
 ## License

@@ -1,0 +1,183 @@
+[
+  {
+    "contract": "fleetix.supply-facts.v1",
+    "vocabulary": "simit.usage-facts.v1",
+    "producer": {
+      "name": "simit",
+      "version": "0.21.0"
+    },
+    "observedAt": "2026-10-26T06:00:00Z",
+    "nodes": [
+      {
+        "id": "repo:codefloe.com/caniko/pink-raven",
+        "kind": "repo",
+        "attrs": {
+          "forge": "forgejo",
+          "forgeHost": "codefloe.com",
+          "ciTarget": "crow/forgejo"
+        }
+      },
+      {
+        "id": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+        "kind": "workflow",
+        "attrs": {
+          "path": ".crow/build.yaml",
+          "generated": true,
+          "triggers": {
+            "events": [
+              "manual",
+              "pull_request",
+              "push"
+            ],
+            "branches": []
+          },
+          "labels": [],
+          "steps": [
+            "build",
+            "pages"
+          ]
+        }
+      },
+      {
+        "id": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+        "kind": "workflow",
+        "attrs": {
+          "path": ".crow/vm-checks.yaml",
+          "generated": false,
+          "triggers": {
+            "events": [
+              "pull_request",
+              "push"
+            ],
+            "branches": []
+          },
+          "labels": [],
+          "steps": [
+            "nix-contract"
+          ]
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "repo:codefloe.com/caniko/pink-raven",
+        "to": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+        "kind": "contains"
+      },
+      {
+        "from": "repo:codefloe.com/caniko/pink-raven",
+        "to": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+        "kind": "contains"
+      }
+    ],
+    "capabilities": [],
+    "errors": []
+  },
+  {
+    "contract": "fleetix.supply-facts.v1",
+    "vocabulary": "canix.supply-overlay.v1",
+    "producer": {
+      "name": "canix",
+      "version": "0.1.0"
+    },
+    "observedAt": "2026-10-26T06:05:00Z",
+    "nodes": [
+      {
+        "id": "orchestrator:simit-updater/codefloe",
+        "kind": "orchestrator",
+        "attrs": {
+          "profile": "codefloe",
+          "runsPerUpdate": 2
+        }
+      },
+      {
+        "id": "runner:codefloe.com/codefloe-infra",
+        "kind": "runner",
+        "attrs": {
+          "forgeHost": "codefloe.com",
+          "label": "codefloe-infra"
+        }
+      },
+      {
+        "id": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+        "kind": "workflow",
+        "attrs": {
+          "observed": {
+            "windowDays": 30,
+            "runs": 140,
+            "agentMinutes": 2963,
+            "byLane": {
+              "push:branch": 1193,
+              "pull_request": 1450,
+              "push:default": 320
+            },
+            "failedMinutes": 150,
+            "killedMinutes": 410
+          }
+        }
+      },
+      {
+        "id": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+        "kind": "workflow",
+        "attrs": {
+          "observed": {
+            "windowDays": 30,
+            "runs": 60,
+            "agentMinutes": 2319,
+            "byLane": {
+              "push:branch": 769,
+              "pull_request": 1361,
+              "push:default": 189
+            },
+            "failedMinutes": 0,
+            "killedMinutes": 772
+          }
+        }
+      },
+      {
+        "id": "workflow:codefloe.com/caniko/spacepirates#.crow/ci.yaml",
+        "kind": "workflow",
+        "attrs": {
+          "observed": {
+            "windowDays": 30,
+            "runs": 12,
+            "agentMinutes": 53,
+            "byLane": {
+              "push:default": 53
+            },
+            "failedMinutes": 53,
+            "killedMinutes": 0
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "repo:codefloe.com/caniko/pink-raven",
+        "to": "orchestrator:simit-updater/codefloe",
+        "kind": "enrolledIn",
+        "attrs": {
+          "enabled": true,
+          "status": "enrolled"
+        }
+      },
+      {
+        "from": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+        "to": "runner:codefloe.com/codefloe-infra",
+        "kind": "runsOn"
+      },
+      {
+        "from": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+        "to": "runner:codefloe.com/codefloe-infra",
+        "kind": "runsOn"
+      },
+      {
+        "from": "workflow:codefloe.com/caniko/spacepirates#.crow/ci.yaml",
+        "to": "runner:codefloe.com/codefloe-infra",
+        "kind": "runsOn"
+      }
+    ],
+    "capabilities": [],
+    "errors": []
+  }
+]

@@ -1,0 +1,62 @@
+{
+  "contract": "fleetix.supply-budget.v1",
+  "updatesPerMonth": 1.0,
+  "budgets": [
+    {
+      "name": "codefloe-crow",
+      "pools": [
+        "codefloe-infra"
+      ],
+      "minutesPerMonth": 2500,
+      "observedMinutes": 5335,
+      "updaterMinutes": 120,
+      "forecastMinutes": 5455,
+      "utilization": 2.18,
+      "withinBudget": false,
+      "candidates": [
+        {
+          "rule": "heavy-on-pr",
+          "node": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+          "estimatedSavings": 1361,
+          "reason": "averages 39 minutes per run; run it after merge or on demand"
+        },
+        {
+          "rule": "duplicate-trigger",
+          "node": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+          "estimatedSavings": 1193,
+          "reason": "push runs on every branch next to pull_request pipelines; limit push to the default branch"
+        },
+        {
+          "rule": "timeout-waste",
+          "node": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+          "estimatedSavings": 772,
+          "reason": "minutes spent on killed or timed-out runs; lower the timeout or fail fast"
+        },
+        {
+          "rule": "duplicate-trigger",
+          "node": "workflow:codefloe.com/caniko/pink-raven#.crow/vm-checks.yaml",
+          "estimatedSavings": 769,
+          "reason": "push runs on every branch next to pull_request pipelines; limit push to the default branch"
+        },
+        {
+          "rule": "timeout-waste",
+          "node": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+          "estimatedSavings": 410,
+          "reason": "minutes spent on killed or timed-out runs; lower the timeout or fail fast"
+        },
+        {
+          "rule": "failure-waste",
+          "node": "workflow:codefloe.com/caniko/pink-raven#.crow/build.yaml",
+          "estimatedSavings": 150,
+          "reason": "minutes spent on failed runs"
+        },
+        {
+          "rule": "failure-waste",
+          "node": "workflow:codefloe.com/caniko/spacepirates#.crow/ci.yaml",
+          "estimatedSavings": 53,
+          "reason": "minutes spent on failed runs"
+        }
+      ]
+    }
+  ]
+}

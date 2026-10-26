@@ -181,6 +181,19 @@ pub enum SupplyCommand {
         #[command(flatten)]
         input: SupplyInput,
     },
+    /// Forecast topology agent-minute budgets and rank reductions.
+    Budget {
+        #[command(flatten)]
+        input: SupplyInput,
+        /// Planned updates per month for the qualification-run forecast.
+        #[arg(long, default_value_t = 1.0)]
+        updates_per_month: f64,
+        /// Orchestrator kind whose enrolled repositories qualify each update.
+        #[arg(long, default_value = "simit-updater")]
+        orchestrator: String,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -891,6 +904,47 @@ async fn run_supply(subcommand: SupplyCommand) -> Result<(), CliError> {
             graph["contract"] = supply::GRAPH_CONTRACT.into();
             json_out(&graph)
         }
+        SupplyCommand::Budget {
+            input,
+            updates_per_month,
+            orchestrator,
+            format,
+        } => {
+            let report = supply::budget(&load(&input).await?, &orchestrator, updates_per_month)
+                .map_err(|error| CliError::new(EXIT_VALIDATION, error.to_string()))?;
+            if format == OutputFormat::Json {
+                return json_out(&report);
+            }
+            for forecast in &report.budgets {
+                println!(
+                    "{}: forecast {} of {} minutes ({}x, {}); observed {}, updater qualification {}.\n",
+                    forecast.name,
+                    forecast.forecast_minutes,
+                    forecast.minutes_per_month,
+                    forecast.utilization,
+                    if forecast.within_budget {
+                        "within budget"
+                    } else {
+                        "over budget"
+                    },
+                    forecast.observed_minutes,
+                    forecast.updater_minutes
+                );
+                markdown_table(
+                    &["Rule", "Node", "Savings", "Reason"],
+                    forecast.candidates.iter().map(|candidate| {
+                        vec![
+                            candidate.rule.to_string(),
+                            candidate.node.clone(),
+                            candidate.estimated_savings.to_string(),
+                            candidate.reason.clone(),
+                        ]
+                    }),
+                );
+                println!();
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1022,6 +1076,13 @@ mod tests {
             .await
             .unwrap();
         supply(&["graph", "--facts", &simit]).await.unwrap();
+        let budget_facts = fixture("budget-facts.v1.json");
+        let budget_topology = fixture("budget-topology.pkl");
+        let budget = ["budget", "--facts", &budget_facts];
+        supply(&[&budget[..], &["--topology", &budget_topology]].concat())
+            .await
+            .unwrap();
+        assert_eq!(supply(&budget).await.unwrap_err().code, EXIT_VALIDATION);
 
         let code = |result: Result<(), CliError>| result.unwrap_err().code;
         let missing = supply(&["path", "repo:missing", "--facts", &simit]).await;
