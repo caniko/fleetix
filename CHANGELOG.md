@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-26
+
 ### Added
 
 - `ProxyAction.fallbackEndpoints` lists ordered endpoints tried after
@@ -266,6 +268,8 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/caniko/fleetix/compare/0.7.0...0.8.0
+[0.7.0]: https://github.com/caniko/fleetix/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/caniko/fleetix/compare/0.5.2...0.6.0
 [0.5.0]: https://github.com/caniko/fleetix/compare/0.4.0...0.5.0
