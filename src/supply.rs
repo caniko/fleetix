@@ -574,6 +574,8 @@ pub struct RepositoryCount {
 /// Apply the gap rules R2-R7 to every node.
 pub fn gaps(graph: &Graph) -> GapReport {
     let mut gaps = graph.conflicts.clone();
+    // (blocker, usage) pairs an R6 gap on a runner or cache affects.
+    let mut topology_usages: BTreeSet<(String, String)> = BTreeSet::new();
     let mut summary = Summary {
         repositories: graph
             .nodes
@@ -628,6 +630,11 @@ pub fn gaps(graph: &Graph) -> GapReport {
                 .edges_of(&node.id, true)
                 .filter(|(_, edge)| !graph.is_absent_usage(&edge.from))
                 .collect();
+            topology_usages.extend(
+                live.iter()
+                    .filter(|(_, edge)| edge.from.starts_with("usage:"))
+                    .map(|(_, edge)| (draft.blocker.clone(), edge.from.clone())),
+            );
             let dependents: BTreeSet<_> = live
                 .iter()
                 .filter_map(|(_, edge)| repository_of(&edge.from))
@@ -682,6 +689,9 @@ pub fn gaps(graph: &Graph) -> GapReport {
         if gap.node.starts_with("usage:") {
             entry.2.insert(&gap.node);
         }
+    }
+    for (blocker, usage) in &topology_usages {
+        by_blocker.entry(blocker).or_default().2.insert(usage);
     }
     summary.by_blocker = by_blocker
         .into_iter()
@@ -887,13 +897,15 @@ pub fn budget(
             // A merge conflict on the workflow, or on its repository's
             // enrollment, means the facts disagree about what is forecast.
             let repository = repository_of(&node.id).map(|coordinate| format!("repo:{coordinate}"));
-            let orchestrator_node = graph
-                .enabled_enrollment(&node.id, orchestrator)
-                .map(|edge| edge.to.as_str());
+            let orchestrator_nodes: Vec<_> = graph
+                .enabled_enrollments(&node.id, orchestrator)
+                .into_iter()
+                .map(|edge| edge.to.as_str())
+                .collect();
             if graph.conflicts.iter().any(|gap| {
                 gap.node == node.id
                     || repository.as_deref() == Some(gap.node.as_str())
-                    || orchestrator_node == Some(gap.node.as_str())
+                    || orchestrator_nodes.contains(&gap.node.as_str())
             }) {
                 conflicted.insert(node.id.as_str());
             }
@@ -1022,29 +1034,34 @@ fn typed_attr<T: DeserializeOwned + Default>(node: &GraphNode, key: &str) -> mie
 }
 
 impl Graph {
-    /// Qualification runs per update for a workflow whose repository is
-    /// enabled in an `orchestrator` of this kind, else zero.
-    fn enabled_enrollment(&self, workflow: &str, orchestrator: &str) -> Option<&GraphEdge> {
-        let coordinate = repository_of(workflow)?;
+    fn enabled_enrollments(&self, workflow: &str, orchestrator: &str) -> Vec<&GraphEdge> {
+        let Some(coordinate) = repository_of(workflow) else {
+            return Vec::new();
+        };
         self.enrollments(&format!("repo:{coordinate}"), orchestrator)
             .into_iter()
-            .find(|edge| enabled(edge))
+            .filter(|edge| enabled(edge))
+            .collect()
     }
 
+    /// Qualification runs per update for a workflow whose repository is
+    /// enabled in `orchestrator`-kind orchestrators: the sum over every
+    /// enabled enrollment, zero when there is none.
     fn updater_runs(&self, workflow: &str, orchestrator: &str) -> miette::Result<f64> {
-        let Some(edge) = self.enabled_enrollment(workflow, orchestrator) else {
-            return Ok(0.0);
-        };
-        let Some(runs) = self
-            .nodes
-            .get(&edge.to)
-            .and_then(|node| node.attrs.get("runsPerUpdate"))
-        else {
-            return Ok(2.0);
-        };
-        runs.as_f64().filter(|runs| *runs >= 0.0).ok_or_else(|| {
-            miette::miette!("{}: runsPerUpdate must be a non-negative number", edge.to)
-        })
+        let mut total = 0.0;
+        for edge in self.enabled_enrollments(workflow, orchestrator) {
+            total += match self
+                .nodes
+                .get(&edge.to)
+                .and_then(|node| node.attrs.get("runsPerUpdate"))
+            {
+                None => 2.0,
+                Some(runs) => runs.as_f64().filter(|runs| *runs >= 0.0).ok_or_else(|| {
+                    miette::miette!("{}: runsPerUpdate must be a non-negative number", edge.to)
+                })?,
+            };
+        }
+        Ok(total)
     }
 }
 

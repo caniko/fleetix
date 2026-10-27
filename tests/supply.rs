@@ -935,3 +935,74 @@ fn budget_requires_runs_and_minutes_and_checks_orchestrator_conflicts() {
     let error = run(&[facts(ok.clone(), 1), facts(ok, 5)]).unwrap_err();
     assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
 }
+
+#[test]
+fn topology_gaps_count_their_usages_in_the_blocker_summary() {
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [
+                usage("h/o/a", "ci.primary", "current"),
+                usage("h/o/b", "ci.primary", "current"),
+                {"id": "runner:git.example.test/nix", "kind": "runner"}
+            ],
+            "edges": [
+                {"from": "usage:h/o/a#ci.primary", "to": "runner:git.example.test/nix", "kind": "runsOn"},
+                {"from": "usage:h/o/b#ci.primary", "to": "runner:git.example.test/nix", "kind": "runsOn"}
+            ]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {}, "supply": {}
+    }))
+    .unwrap();
+    let report = supply::gaps(&supply::build(&[facts], Some(&topology)));
+    let unknown = report
+        .summary
+        .by_blocker
+        .iter()
+        .find(|entry| entry.blocker == "unknown-runner")
+        .unwrap();
+    assert_eq!(
+        (unknown.gaps, unknown.repositories, unknown.usages),
+        (2, 2, 2)
+    );
+}
+
+#[test]
+fn budget_sums_every_enabled_enrollment_and_guards_each_orchestrator() {
+    let facts = |extra_runs: i64| {
+        doc(
+            "simit",
+            json!({
+                "nodes": [
+                    {"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {
+                        "observed": {"runs": 1, "agentMinutes": 10}}},
+                    {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": 1}},
+                    {"id": "orchestrator:updater/y", "kind": "orchestrator", "attrs": {"runsPerUpdate": extra_runs}}
+                ],
+                "edges": [
+                    {"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"},
+                    enrolled("h/o/a", "updater/x", json!({"enabled": true})),
+                    enrolled("h/o/a", "updater/y", json!({"enabled": true}))
+                ]
+            }),
+        )
+    };
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"], "metered": true}},
+            "budgets": {"b": {"pools": ["p"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let run = |docs: &[FactsDocument]| {
+        supply::budget(&supply::build(docs, Some(&topology)), "updater", 1.0)
+    };
+    // (1 + 3) runs x 10 average minutes.
+    assert_eq!(run(&[facts(3)]).unwrap().budgets[0].updater_minutes, 40);
+    // A conflict on the second orchestrator node is caught too.
+    let error = run(&[facts(3), facts(5)]).unwrap_err();
+    assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
+}
