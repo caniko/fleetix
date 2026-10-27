@@ -159,7 +159,10 @@ to a runner of one of the budget's pools:
 - `attrs.observed`: `{windowDays, runs, agentMinutes, byLane, failedMinutes,
   killedMinutes}`, for example from an operator's CI observation overlay.
   `byLane` maps lanes such as `push:default`, `push:branch` and `pull_request`
-  to minutes. A workflow without `observed` adds nothing.
+  to minutes. A workflow without `observed` adds nothing. Unknown keys in `observed` or
+  `triggers`, and negative values, are errors. Minutes are per workflow, not per
+  pool: a workflow whose jobs run on several pools counts in full toward each
+  budget it touches, so the forecast is an upper bound for such workflows.
 - `attrs.triggers`: `{events, branches}`, the static triggers, for example
   from Simit. Empty `branches` means push runs on any branch.
 
@@ -176,7 +179,7 @@ overlap, so don't add them up.
 
 | Rule | Applies when | Savings |
 | --- | --- | --- |
-| `duplicate-trigger` | Triggers include push and pull_request, and push isn't limited (no branches, or a `*` pattern) | `push:branch` minutes |
+| `duplicate-trigger` | Triggers include push and pull_request, and push isn't limited (no branches, or a bare `*` or `**` pattern) | `push:branch` minutes |
 | `heavy-on-pr` | The workflow averages more than 30 minutes per run | `pull_request` minutes |
 | `failure-waste` | Any failed runs | `failedMinutes` |
 | `timeout-waste` | Any killed or timed-out runs | `killedMinutes` |

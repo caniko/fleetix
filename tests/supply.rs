@@ -812,4 +812,38 @@ fn budget_rejects_invalid_inputs_and_only_unrestricted_push_duplicates() {
         run(workflow(json!([]), 40), 0, 1.0).is_err(),
         "zero allowance"
     );
+
+    // Misspelled keys, negative windows and negative runsPerUpdate fail loudly.
+    let with_attr = |key: &str, value: Value| {
+        let mut facts = workflow(json!([]), 40);
+        facts.nodes[0].attrs.insert(key.into(), value);
+        facts
+    };
+    assert!(run(with_attr("observed", json!({"agentMinute": 40})), 100, 1.0).is_err());
+    assert!(run(with_attr("triggers", json!({"event": ["push"]})), 100, 1.0).is_err());
+    assert!(
+        run(
+            with_attr("observed", json!({"windowDays": -3, "agentMinutes": 40})),
+            100,
+            1.0
+        )
+        .is_err()
+    );
+
+    let mut enrolled_workflow = workflow(json!([]), 40);
+    enrolled_workflow.nodes.push(
+        serde_json::from_value(json!({"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": -2}})).unwrap(),
+    );
+    enrolled_workflow.edges.push(
+        serde_json::from_value(enrolled("h/o/a", "updater/x", json!({"enabled": true}))).unwrap(),
+    );
+    let mut metered = topology(100);
+    metered.supply.runner_pools["p"].metered = true;
+    let error = supply::budget(
+        &supply::build(&[enrolled_workflow], Some(&metered)),
+        "updater",
+        1.0,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("runsPerUpdate"), "{error}");
 }

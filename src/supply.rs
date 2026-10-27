@@ -782,7 +782,7 @@ const MONTH_DAYS: f64 = 30.0;
 
 /// A workflow's observed CI usage over `windowDays`.
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct Observed {
     window_days: f64,
     runs: f64,
@@ -794,7 +794,7 @@ struct Observed {
 
 /// A workflow's static triggers; empty `branches` means push on any branch.
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct Triggers {
     events: Vec<String>,
     branches: Vec<String>,
@@ -839,7 +839,9 @@ pub struct Candidate {
 /// runners belong to the budget's pools. A repository enrolled (enabled) in
 /// an `orchestrator` of that kind adds `runsPerUpdate` (an orchestrator node
 /// attribute, default 2) qualification runs of each workflow on a metered
-/// pool per update.
+/// pool per update. A workflow's observed minutes are not split by pool, so a
+/// workflow spanning several pools counts in full toward every budget it
+/// touches (an upper bound).
 pub fn budget(
     graph: &Graph,
     orchestrator: &str,
@@ -885,11 +887,12 @@ pub fn budget(
                     &observed.agent_minutes,
                     &observed.failed_minutes,
                     &observed.killed_minutes,
+                    &observed.window_days,
                 ])
                 .any(|minutes| *minutes < 0.0);
             if negative {
                 miette::bail!(
-                    "{}: observed: counts and minutes must not be negative",
+                    "{}: observed: window, counts and minutes must not be negative",
                     node.id
                 );
             }
@@ -909,7 +912,7 @@ pub fn budget(
             observed_total += observed.agent_minutes * scale;
             if on.iter().any(|pool| pool.metered) {
                 updater_total +=
-                    graph.updater_runs(&node.id, orchestrator) * average * updates_per_month;
+                    graph.updater_runs(&node.id, orchestrator)? * average * updates_per_month;
             }
 
             let mut candidate = |rule, minutes: f64, reason: String| {
@@ -995,20 +998,27 @@ fn typed_attr<T: DeserializeOwned + Default>(node: &GraphNode, key: &str) -> mie
 impl Graph {
     /// Qualification runs per update for a workflow whose repository is
     /// enabled in an `orchestrator` of this kind, else zero.
-    fn updater_runs(&self, workflow: &str, orchestrator: &str) -> f64 {
+    fn updater_runs(&self, workflow: &str, orchestrator: &str) -> miette::Result<f64> {
         let Some(coordinate) = repository_of(workflow) else {
-            return 0.0;
+            return Ok(0.0);
         };
-        self.enrollments(&format!("repo:{coordinate}"), orchestrator)
+        let Some(edge) = self
+            .enrollments(&format!("repo:{coordinate}"), orchestrator)
             .into_iter()
             .find(|edge| enabled(edge))
-            .map_or(0.0, |edge| {
-                self.nodes
-                    .get(&edge.to)
-                    .and_then(|node| node.attrs.get("runsPerUpdate"))
-                    .and_then(Value::as_f64)
-                    .unwrap_or(2.0)
-            })
+        else {
+            return Ok(0.0);
+        };
+        let Some(runs) = self
+            .nodes
+            .get(&edge.to)
+            .and_then(|node| node.attrs.get("runsPerUpdate"))
+        else {
+            return Ok(2.0);
+        };
+        runs.as_f64().filter(|runs| *runs >= 0.0).ok_or_else(|| {
+            miette::miette!("{}: runsPerUpdate must be a non-negative number", edge.to)
+        })
     }
 }
 
