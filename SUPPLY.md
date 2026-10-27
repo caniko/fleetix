@@ -160,7 +160,8 @@ to a runner of one of the budget's pools:
   killedMinutes}`, for example from an operator's CI observation overlay.
   `byLane` maps lanes such as `push:default`, `push:branch` and `pull_request`
   to minutes. A workflow without `observed` adds nothing. Unknown keys in `observed` or
-  `triggers`, and negative values, are errors. Minutes are per workflow, not per
+  `triggers`, negative values and a non-positive `windowDays` are errors; an
+  omitted `windowDays` means 30. Minutes are per workflow, not per
   pool: a workflow whose jobs run on several pools counts in full toward each
   budget it touches, so the forecast is an upper bound for such workflows.
 - `attrs.triggers`: `{events, branches}`, the static triggers, for example

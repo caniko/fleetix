@@ -784,7 +784,8 @@ const MONTH_DAYS: f64 = 30.0;
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct Observed {
-    window_days: f64,
+    /// Omitted means 30 days; an explicit value must be positive.
+    window_days: Option<f64>,
     runs: f64,
     agent_minutes: f64,
     by_lane: BTreeMap<String, f64>,
@@ -879,6 +880,9 @@ pub fn budget(
                 continue;
             }
             let observed: Observed = typed_attr(node, "observed")?;
+            if observed.window_days.is_some_and(|days| days <= 0.0) {
+                miette::bail!("{}: observed: windowDays must be positive", node.id);
+            }
             let negative = observed
                 .by_lane
                 .values()
@@ -887,7 +891,6 @@ pub fn budget(
                     &observed.agent_minutes,
                     &observed.failed_minutes,
                     &observed.killed_minutes,
-                    &observed.window_days,
                 ])
                 .any(|minutes| *minutes < 0.0);
             if negative {
@@ -897,12 +900,7 @@ pub fn budget(
                 );
             }
             let triggers: Triggers = typed_attr(node, "triggers")?;
-            let scale = MONTH_DAYS
-                / if observed.window_days > 0.0 {
-                    observed.window_days
-                } else {
-                    MONTH_DAYS
-                };
+            let scale = MONTH_DAYS / observed.window_days.unwrap_or(MONTH_DAYS);
             let lane = |lane: &str| observed.by_lane.get(lane).copied().unwrap_or(0.0) * scale;
             let average = if observed.runs > 0.0 {
                 observed.agent_minutes / observed.runs

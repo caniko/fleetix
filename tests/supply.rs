@@ -829,6 +829,14 @@ fn budget_rejects_invalid_inputs_and_only_unrestricted_push_duplicates() {
         )
         .is_err()
     );
+    assert!(
+        run(
+            with_attr("observed", json!({"windowDays": 0, "agentMinutes": 40})),
+            100,
+            1.0
+        )
+        .is_err()
+    );
 
     let mut enrolled_workflow = workflow(json!([]), 40);
     enrolled_workflow.nodes.push(
