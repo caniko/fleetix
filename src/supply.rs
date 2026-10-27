@@ -782,14 +782,18 @@ const MONTH_DAYS: f64 = 30.0;
 
 /// A workflow's observed CI usage over `windowDays`.
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Observed {
     /// Omitted means 30 days; an explicit value must be positive.
     window_days: Option<f64>,
+    /// A present `observed` must say how many runs and minutes it saw.
     runs: f64,
     agent_minutes: f64,
+    #[serde(default)]
     by_lane: BTreeMap<String, f64>,
+    #[serde(default)]
     failed_minutes: f64,
+    #[serde(default)]
     killed_minutes: f64,
 }
 
@@ -883,11 +887,14 @@ pub fn budget(
             // A merge conflict on the workflow, or on its repository's
             // enrollment, means the facts disagree about what is forecast.
             let repository = repository_of(&node.id).map(|coordinate| format!("repo:{coordinate}"));
-            if graph
-                .conflicts
-                .iter()
-                .any(|gap| gap.node == node.id || repository.as_deref() == Some(gap.node.as_str()))
-            {
+            let orchestrator_node = graph
+                .enabled_enrollment(&node.id, orchestrator)
+                .map(|edge| edge.to.as_str());
+            if graph.conflicts.iter().any(|gap| {
+                gap.node == node.id
+                    || repository.as_deref() == Some(gap.node.as_str())
+                    || orchestrator_node == Some(gap.node.as_str())
+            }) {
                 conflicted.insert(node.id.as_str());
             }
             let observed: Observed = typed_attr(node, "observed")?;
@@ -1017,15 +1024,15 @@ fn typed_attr<T: DeserializeOwned + Default>(node: &GraphNode, key: &str) -> mie
 impl Graph {
     /// Qualification runs per update for a workflow whose repository is
     /// enabled in an `orchestrator` of this kind, else zero.
-    fn updater_runs(&self, workflow: &str, orchestrator: &str) -> miette::Result<f64> {
-        let Some(coordinate) = repository_of(workflow) else {
-            return Ok(0.0);
-        };
-        let Some(edge) = self
-            .enrollments(&format!("repo:{coordinate}"), orchestrator)
+    fn enabled_enrollment(&self, workflow: &str, orchestrator: &str) -> Option<&GraphEdge> {
+        let coordinate = repository_of(workflow)?;
+        self.enrollments(&format!("repo:{coordinate}"), orchestrator)
             .into_iter()
             .find(|edge| enabled(edge))
-        else {
+    }
+
+    fn updater_runs(&self, workflow: &str, orchestrator: &str) -> miette::Result<f64> {
+        let Some(edge) = self.enabled_enrollment(workflow, orchestrator) else {
             return Ok(0.0);
         };
         let Some(runs) = self

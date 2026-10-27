@@ -898,3 +898,40 @@ fn budget_rejects_conflicting_facts_and_keeps_totals_consistent() {
     );
     assert_eq!(forecast.forecast_minutes, 2);
 }
+
+#[test]
+fn budget_requires_runs_and_minutes_and_checks_orchestrator_conflicts() {
+    let facts = |observed: Value, runs_per_update: i64| {
+        doc(
+            "simit",
+            json!({
+                "nodes": [
+                    {"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {"observed": observed}},
+                    {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": runs_per_update}}
+                ],
+                "edges": [
+                    {"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"},
+                    enrolled("h/o/a", "updater/x", json!({"enabled": true}))
+                ]
+            }),
+        )
+    };
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"], "metered": true}},
+            "budgets": {"b": {"pools": ["p"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let run = |docs: &[FactsDocument]| {
+        supply::budget(&supply::build(docs, Some(&topology)), "updater", 1.0)
+    };
+    let ok = json!({"runs": 1, "agentMinutes": 10});
+    assert!(run(&[facts(ok.clone(), 1)]).is_ok());
+    for partial in [json!({}), json!({"runs": 1}), json!({"agentMinutes": 10})] {
+        assert!(run(&[facts(partial.clone(), 1)]).is_err(), "{partial}");
+    }
+    let error = run(&[facts(ok.clone(), 1), facts(ok, 5)]).unwrap_err();
+    assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
+}

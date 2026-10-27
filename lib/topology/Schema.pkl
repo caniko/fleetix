@@ -440,7 +440,7 @@ class Supply {
 
 /// A monthly agent-minute allowance shared by the named runner pools.
 class Budget {
-  pools: Listing<String>
+  pools: Listing<String>(!isEmpty)
   minutesPerMonth: UInt32(this > 0)
 }
 

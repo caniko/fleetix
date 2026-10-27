@@ -752,6 +752,14 @@ fn validate_supply(topology: &Topology, report: &mut ValidationReport) {
     }
 
     for (name, budget) in &supply.budgets {
+        if budget.pools.is_empty() {
+            report.error(
+                "supply.empty_budget_pools",
+                Some(format!("supply.budgets.{name}.pools")),
+                None,
+                format!("budget '{name}' names no runner pools"),
+            );
+        }
         for pool in &budget.pools {
             if !supply.runner_pools.contains_key(pool) {
                 report.error(
@@ -2251,6 +2259,21 @@ mod tests {
                     "supply.budgets.ci.pools".to_string()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn rejects_budgets_without_pools() {
+        let topology: Topology = serde_json::from_value(json!({
+            "schemaVersion": 2, "links": {}, "hosts": {}, "domains": {}, "services": {},
+            "supply": {"budgets": {"ci": {"pools": [], "minutesPerMonth": 100}}}
+        }))
+        .unwrap();
+        assert!(
+            validate(&topology)
+                .issues
+                .iter()
+                .any(|issue| issue.code == "supply.empty_budget_pools")
         );
     }
 
