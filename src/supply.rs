@@ -271,9 +271,7 @@ impl Graph {
     fn merge_node_lists(&mut self, producer: &str, node: &Node) {
         let merged = self.nodes.get_mut(&node.id).expect("node merged above");
         for expect in &node.expects {
-            if !merged.expects.iter().any(|known| {
-                known.value.attr == expect.attr && known.value.blocker == expect.blocker
-            }) {
+            if !merged.expects.iter().any(|known| known.value == *expect) {
                 merged.expects.push(sourced(producer, expect));
             }
         }
@@ -308,6 +306,13 @@ impl Graph {
             .into_iter()
             .flatten()
             .map(|&i| (i, &self.edges[i]))
+    }
+
+    fn is_absent_usage(&self, id: &str) -> bool {
+        self.nodes.get(id).is_some_and(|node| {
+            node.kind == "usage"
+                && node.attrs.get("state").and_then(Value::as_str) == Some("absent")
+        })
     }
 
     fn contains(&self, id: &str) -> bool {
@@ -432,7 +437,8 @@ impl Graph {
         Err(draft)
     }
 
-    /// `enrolledIn` edges from a repository to `orchestrator:<kind>[/<name>]`.
+    /// `enrolledIn` edges from a repository to `orchestrator:<kind>/<name>`; an
+    /// edge naming no instance enrolls nothing.
     fn enrollments(&self, repo_id: &str, orchestrator: &str) -> Vec<&GraphEdge> {
         let target = format!("orchestrator:{orchestrator}");
         self.edges_of(repo_id, false)
@@ -442,7 +448,8 @@ impl Graph {
                     && edge
                         .to
                         .strip_prefix(&target)
-                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .is_some_and(|name| !name.is_empty())
             })
             .collect()
     }
@@ -614,13 +621,21 @@ pub fn gaps(graph: &Graph) -> GapReport {
             }
         }
         if let Some(draft) = graph.topology_gap(node) {
-            // One gap per repository that depends on the unjoined node.
-            let dependents: BTreeSet<_> = graph
+            // One gap per repository that depends on the unjoined node; a
+            // node used only by absent usages needs none.
+            let all = graph.edges_of(&node.id, true).count();
+            let live: Vec<_> = graph
                 .edges_of(&node.id, true)
+                .filter(|(_, edge)| !graph.is_absent_usage(&edge.from))
+                .collect();
+            let dependents: BTreeSet<_> = live
+                .iter()
                 .filter_map(|(_, edge)| repository_of(&edge.from))
                 .collect();
             if dependents.is_empty() {
-                gaps.push(gap(draft));
+                if live.len() == all {
+                    gaps.push(gap(draft));
+                }
             } else {
                 for repository in dependents {
                     gaps.push(Gap {
@@ -664,7 +679,7 @@ pub fn gaps(graph: &Graph) -> GapReport {
             repo.0 += 1;
             repo.1.insert(&gap.blocker);
         }
-        if gap.usage_kind.is_some() {
+        if gap.node.starts_with("usage:") {
             entry.2.insert(&gap.node);
         }
     }
@@ -830,12 +845,18 @@ pub fn budget(
     orchestrator: &str,
     updates_per_month: f64,
 ) -> miette::Result<BudgetReport> {
+    if !updates_per_month.is_finite() || updates_per_month < 0.0 {
+        miette::bail!("updates per month must be a non-negative number, got {updates_per_month}");
+    }
     let supply = graph
         .supply
         .as_ref()
         .ok_or_else(|| miette::miette!("a budget forecast needs a topology"))?;
     let mut budgets = Vec::new();
     for (name, budget) in &supply.budgets {
+        if budget.minutes_per_month == 0 {
+            miette::bail!("budget '{name}': minutesPerMonth must be positive");
+        }
         let pools: Vec<_> = budget
             .pools
             .iter()
@@ -856,6 +877,22 @@ pub fn budget(
                 continue;
             }
             let observed: Observed = typed_attr(node, "observed")?;
+            let negative = observed
+                .by_lane
+                .values()
+                .chain([
+                    &observed.runs,
+                    &observed.agent_minutes,
+                    &observed.failed_minutes,
+                    &observed.killed_minutes,
+                ])
+                .any(|minutes| *minutes < 0.0);
+            if negative {
+                miette::bail!(
+                    "{}: observed: counts and minutes must not be negative",
+                    node.id
+                );
+            }
             let triggers: Triggers = typed_attr(node, "triggers")?;
             let scale = MONTH_DAYS
                 / if observed.window_days > 0.0 {
@@ -887,7 +924,10 @@ pub fn budget(
             };
             let event = |name: &str| triggers.events.iter().any(|event| event == name);
             let push_anywhere = triggers.branches.is_empty()
-                || triggers.branches.iter().any(|branch| branch.contains('*'));
+                || triggers
+                    .branches
+                    .iter()
+                    .any(|branch| matches!(branch.as_str(), "*" | "**"));
             if event("push") && event("pull_request") && push_anywhere {
                 candidate(
                     "duplicate-trigger",
@@ -975,12 +1015,26 @@ impl Graph {
 /// Whole days from a document's `observedAt` (read to day precision) until
 /// `now_unix_seconds`, or `None` when the date is unreadable.
 pub fn age_days(observed_at: &str, now_unix_seconds: u64) -> Option<i64> {
-    let mut parts = observed_at
-        .get(..10)?
-        .split('-')
-        .map(|part| part.parse::<i64>().ok());
+    let date = observed_at.get(..10)?;
+    if observed_at.len() > 10 && !observed_at[10..].starts_with('T') {
+        return None;
+    }
+    let mut parts = date.split('-').map(|part| {
+        part.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| part.parse::<i64>().ok())
+            .flatten()
+    });
     let (year, month, day) = (parts.next()??, parts.next()??, parts.next()??);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=month_days).contains(&day) {
         return None;
     }
     // Howard Hinnant's days_from_civil.

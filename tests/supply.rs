@@ -272,6 +272,12 @@ fn r4_requires_an_enabled_enrollment_of_the_row_orchestrator() {
             None
         )]
     );
+    let nameless = overlay(json!([enrolled(
+        "h/o/r",
+        "updater",
+        json!({"enabled": true})
+    )]));
+    assert_eq!(blockers(&[facts.clone(), nameless]), ["not-enrolled"]);
     let other_kind = overlay(json!([enrolled(
         "h/o/r",
         "updater-ng/fleet",
@@ -356,6 +362,60 @@ fn r5_reports_expectations_until_some_producer_supplies_the_attr() {
         ["unknown-generator-revision"]
     );
     assert!(blockers(&[facts, overlay(json!("abc"))]).is_empty());
+}
+
+#[test]
+fn r5_keeps_distinct_reasons_for_the_same_expectation() {
+    let expecting = |producer: &str, reason: &str| {
+        let mut node = usage("h/o/r", "ci.primary", "current");
+        node["expects"] = json!([{"attr": "a", "blocker": "unknown-a", "reason": reason}]);
+        doc(producer, json!({"nodes": [node]}))
+    };
+    let reasons: Vec<_> = supply::gaps(&supply::build(
+        &[expecting("simit", "first"), expecting("canix", "second")],
+        None,
+    ))
+    .gaps
+    .into_iter()
+    .map(|gap| (gap.reason, gap.owner))
+    .collect();
+    assert!(
+        reasons.contains(&("first".into(), Some("simit".into()))),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons.contains(&("second".into(), Some("canix".into()))),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn blocker_summary_counts_usages_without_a_usage_kind() {
+    let kindless = json!({"id": "usage:h/o/r#x", "kind": "usage"});
+    let report = supply::gaps(&supply::build(
+        &[
+            doc("simit", json!({"nodes": [kindless.clone()]})),
+            doc(
+                "canix",
+                json!({"nodes": [{"id": "usage:h/o/r#x", "kind": "usage", "attrs": {"state": "drift"}}]}),
+            ),
+            doc(
+                "other",
+                json!({"nodes": [{"id": "usage:h/o/r#x", "kind": "usage", "attrs": {"state": "current"}}]}),
+            ),
+        ],
+        None,
+    ));
+    let count = |blocker: &str| {
+        report
+            .summary
+            .by_blocker
+            .iter()
+            .find(|entry| entry.blocker == blocker)
+            .map(|entry| entry.usages)
+    };
+    assert_eq!(count("contract-conflict"), Some(1));
+    assert_eq!(count("no-capability"), Some(1));
 }
 
 #[test]
@@ -466,6 +526,26 @@ fn r6_joins_runners_and_caches_against_topology_supply() {
 }
 
 #[test]
+fn r6_ignores_runners_used_only_by_absent_usages() {
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [
+                usage("h/o/a", "ci.primary", "absent"),
+                {"id": "runner:git.example.test/nix", "kind": "runner"}
+            ],
+            "edges": [{"from": "usage:h/o/a#ci.primary", "to": "runner:git.example.test/nix", "kind": "runsOn"}]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {}, "supply": {}
+    }))
+    .unwrap();
+    let report = supply::gaps(&supply::build(&[facts], Some(&topology)));
+    assert!(report.gaps.is_empty(), "{:?}", report.gaps);
+}
+
+#[test]
 fn walk_follows_edges_both_ways_within_depth() {
     let mut docs = supply::parse(&fixture("simit-usage-facts.v1.json")).unwrap();
     docs.extend(supply::parse(&fixture("canix-overlay.v1.json")).unwrap());
@@ -535,7 +615,17 @@ fn age_days_counts_calendar_days_across_leap_years() {
         supply::age_days("2000-03-02T00:00:00Z", march_first_2000),
         Some(-1)
     );
-    for unreadable in ["", "yesterday", "2000-13-01", "2000-1-1T00:00:00Z"] {
+    for unreadable in [
+        "",
+        "yesterday",
+        "2000-13-01",
+        "2000-1-1T00:00:00Z",
+        "2026-02-31T00:00:00Z",
+        "2026-02-29T00:00:00Z",
+        "2026-04-31",
+        "2026-+1-05",
+        "2026-10-26x",
+    ] {
         assert_eq!(supply::age_days(unreadable, march_first_2000), None);
     }
 }
@@ -621,8 +711,8 @@ fn budget_follows_pools_triggers_enrollment_and_metering() {
         (120, 120, 240)
     );
     assert_eq!((forecast.utilization, forecast.within_budget), (2.4, false));
-    // a's push is limited to trunk and averages 20; b pushes anywhere but has
-    // no push:branch minutes and averages 40.
+    // a's push is limited to trunk and averages 20; b's push is limited to
+    // main and simit/** and averages 40.
     let candidates: Vec<_> = forecast
         .candidates
         .iter()
@@ -657,5 +747,69 @@ fn budget_follows_pools_triggers_enrollment_and_metering() {
     assert!(
         error.to_string().contains("workflow:h/o/a#w: observed"),
         "{error}"
+    );
+}
+
+#[test]
+fn budget_rejects_invalid_inputs_and_only_unrestricted_push_duplicates() {
+    let workflow = |branches: Value, agent_minutes: i64| {
+        doc(
+            "canix",
+            json!({
+                "nodes": [{"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {
+                    "observed": {"runs": 1, "agentMinutes": agent_minutes, "byLane": {"push:branch": 10}},
+                    "triggers": {"events": ["push", "pull_request"], "branches": branches}
+                }}],
+                "edges": [{"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"}]
+            }),
+        )
+    };
+    let topology = |minutes: u32| -> Topology {
+        serde_json::from_value(json!({
+            "links": {}, "hosts": {}, "domains": {}, "services": {},
+            "supply": {
+                "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"]}},
+                "budgets": {"b": {"pools": ["p"], "minutesPerMonth": minutes}}
+            }
+        }))
+        .unwrap()
+    };
+    let run = |facts: FactsDocument, minutes: u32, updates: f64| {
+        supply::budget(
+            &supply::build(&[facts], Some(&topology(minutes))),
+            "updater",
+            updates,
+        )
+    };
+    let rules = |branches: Value| -> Vec<&'static str> {
+        run(workflow(branches, 40), 100, 1.0).unwrap().budgets[0]
+            .candidates
+            .iter()
+            .map(|candidate| candidate.rule)
+            .collect()
+    };
+    assert!(
+        rules(json!(["releases/**"]))
+            .iter()
+            .all(|rule| *rule != "duplicate-trigger")
+    );
+    assert!(rules(json!(["**"])).contains(&"duplicate-trigger"));
+    assert!(rules(json!([])).contains(&"duplicate-trigger"));
+
+    assert!(
+        run(workflow(json!([]), -40), 100, 1.0).is_err(),
+        "negative observation"
+    );
+    assert!(
+        run(workflow(json!([]), 40), 100, -1.0).is_err(),
+        "negative updates"
+    );
+    assert!(
+        run(workflow(json!([]), 40), 100, f64::NAN).is_err(),
+        "NaN updates"
+    );
+    assert!(
+        run(workflow(json!([]), 40), 0, 1.0).is_err(),
+        "zero allowance"
     );
 }
