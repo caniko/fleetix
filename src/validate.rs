@@ -650,24 +650,38 @@ fn validate_http_routes(
                         topology, site_name, ingress, &location, endpoint, report,
                     );
                 }
-                // Caddy has one transport per reverse_proxy, so every upstream must share it.
-                let primary = topology.services.endpoints.get(endpoint);
+                // Caddy has one transport per reverse_proxy, so every upstream an
+                // ingress host dials (after remoteVia substitution) must share it.
+                // An unset tlsServerName sends the site hostname as SNI.
+                let effective = |name: &str, host: &str| {
+                    topology.endpoint_for_ingress(name, host).map(|(_, dialed)| {
+                        let sni = (dialed.transport == crate::topology::EndpointTransport::Https).then(|| {
+                            dialed
+                                .tls_server_name
+                                .clone()
+                                .unwrap_or_else(|| site.hostname.clone())
+                        });
+                        (dialed.transport, sni)
+                    })
+                };
+                let ingress_hosts: Vec<&String> =
+                    ingress.iter().flat_map(|ingress| &ingress.hosts).collect();
                 for (index, name) in fallback_endpoints.iter().enumerate() {
-                    if let (Some(primary), Some(fallback)) =
-                        (primary, topology.services.endpoints.get(name))
-                    {
-                        if primary.transport != fallback.transport
-                            || primary.tls_server_name != fallback.tls_server_name
-                        {
-                            report.error(
-                                "site.route_fallback_transport_mismatch",
-                                Some(format!("{path}.action.fallbackEndpoints.{index}")),
-                                Some(name.clone()),
-                                format!(
-                                    "HTTP site '{site_name}' fallback endpoint '{name}' must share transport and tlsServerName with '{endpoint}'"
-                                ),
-                            );
+                    let mismatch = ingress_hosts.iter().any(|host| {
+                        match (effective(endpoint, host), effective(name, host)) {
+                            (Some(primary), Some(fallback)) => primary != fallback,
+                            _ => false,
                         }
+                    });
+                    if mismatch {
+                        report.error(
+                            "site.route_fallback_transport_mismatch",
+                            Some(format!("{path}.action.fallbackEndpoints.{index}")),
+                            Some(name.clone()),
+                            format!(
+                                "HTTP site '{site_name}' fallback endpoint '{name}' must share transport and TLS server name with '{endpoint}' as dialed from every ingress host"
+                            ),
+                        );
                     }
                 }
             }
@@ -1951,8 +1965,41 @@ mod tests {
             "sni".to_string(),
             Endpoint {
                 transport: EndpointTransport::Https,
+                tls_server_name: Some("other.example.test".to_string()),
+                ..endpoint("target", EndpointBind::Lan)
+            },
+        );
+        endpoints.insert(
+            "site-sni".to_string(),
+            Endpoint {
+                transport: EndpointTransport::Https,
                 tls_server_name: Some("app.example.test".to_string()),
                 ..endpoint("target", EndpointBind::Lan)
+            },
+        );
+        endpoints.insert(
+            "relay-http".to_string(),
+            endpoint("target", EndpointBind::Lan),
+        );
+        endpoints.insert(
+            "relay-tls".to_string(),
+            Endpoint {
+                transport: EndpointTransport::Https,
+                ..endpoint("target", EndpointBind::Lan)
+            },
+        );
+        endpoints.insert(
+            "via-http".to_string(),
+            Endpoint {
+                remote_via: Some("relay-http".to_string()),
+                ..endpoint("target", EndpointBind::Loopback)
+            },
+        );
+        endpoints.insert(
+            "via-tls".to_string(),
+            Endpoint {
+                remote_via: Some("relay-tls".to_string()),
+                ..endpoint("target", EndpointBind::Loopback)
             },
         );
         endpoints.insert(
@@ -1999,6 +2046,18 @@ mod tests {
 
         // Same transport, different upstream TLS server name.
         topology.services.http_sites["ok"].routes[0].action = proxy("tls", &["sni"]);
+        let report = validate(&topology);
+        assert!(at(&report, "site.route_fallback_transport_mismatch", 0));
+        assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
+
+        // An unset tlsServerName sends the site hostname, so naming it is equivalent.
+        topology.services.http_sites["ok"].routes[0].action = proxy("tls", &["site-sni"]);
+        let report = validate(&topology);
+        assert!(report.is_ok(), "{:?}", report.issues);
+
+        // Matching source endpoints whose remoteVia relays the ingress host
+        // actually dials disagree on transport.
+        topology.services.http_sites["ok"].routes[0].action = proxy("via-http", &["via-tls"]);
         let report = validate(&topology);
         assert!(at(&report, "site.route_fallback_transport_mismatch", 0));
         assert_eq!(report.issues.len(), 1, "{:?}", report.issues);
