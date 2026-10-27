@@ -855,3 +855,46 @@ fn budget_rejects_invalid_inputs_and_only_unrestricted_push_duplicates() {
     .unwrap_err();
     assert!(error.to_string().contains("runsPerUpdate"), "{error}");
 }
+
+#[test]
+fn budget_rejects_conflicting_facts_and_keeps_totals_consistent() {
+    let workflow = |producer: &str, minutes: f64| {
+        doc(
+            producer,
+            json!({
+                "nodes": [
+                    {"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {
+                        "observed": {"runs": 1, "agentMinutes": minutes}}},
+                    {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": 1}}
+                ],
+                "edges": [
+                    {"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"},
+                    enrolled("h/o/a", "updater/x", json!({"enabled": true}))
+                ]
+            }),
+        )
+    };
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"], "metered": true}},
+            "budgets": {"b": {"pools": ["p"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let run = |docs: &[FactsDocument]| {
+        supply::budget(&supply::build(docs, Some(&topology)), "updater", 1.0)
+    };
+
+    let error = run(&[workflow("simit", 10.0), workflow("canix", 20.0)]).unwrap_err();
+    assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
+
+    // 0.6 observed + 0.6 updater: rounded components 1 + 1, not round(1.2).
+    let report = run(&[workflow("simit", 0.6)]).unwrap();
+    let forecast = &report.budgets[0];
+    assert_eq!(
+        (forecast.observed_minutes, forecast.updater_minutes),
+        (1, 1)
+    );
+    assert_eq!(forecast.forecast_minutes, 2);
+}

@@ -856,6 +856,7 @@ pub fn budget(
         .as_ref()
         .ok_or_else(|| miette::miette!("a budget forecast needs a topology"))?;
     let mut budgets = Vec::new();
+    let mut conflicted = BTreeSet::new();
     for (name, budget) in &supply.budgets {
         if budget.minutes_per_month == 0 {
             miette::bail!("budget '{name}': minutesPerMonth must be positive");
@@ -878,6 +879,16 @@ pub fn budget(
                 .collect();
             if on.is_empty() || !node.attrs.contains_key("observed") {
                 continue;
+            }
+            // A merge conflict on the workflow, or on its repository's
+            // enrollment, means the facts disagree about what is forecast.
+            let repository = repository_of(&node.id).map(|coordinate| format!("repo:{coordinate}"));
+            if graph
+                .conflicts
+                .iter()
+                .any(|gap| gap.node == node.id || repository.as_deref() == Some(gap.node.as_str()))
+            {
+                conflicted.insert(node.id.as_str());
             }
             let observed: Observed = typed_attr(node, "observed")?;
             if observed.window_days.is_some_and(|days| days <= 0.0) {
@@ -963,19 +974,29 @@ pub fn budget(
                 .cmp(&a.estimated_savings)
                 .then_with(|| (a.rule, &a.node).cmp(&(b.rule, &b.node)))
         });
+        // The total is the sum of the rounded components, so the serialized
+        // report adds up.
+        let (observed_minutes, updater_minutes) =
+            (observed_total.round() as u64, updater_total.round() as u64);
         let forecast = observed_total + updater_total;
         let allowance = f64::from(budget.minutes_per_month);
         budgets.push(BudgetForecast {
             name: name.clone(),
             pools: budget.pools.clone(),
             minutes_per_month: budget.minutes_per_month,
-            observed_minutes: observed_total.round() as u64,
-            updater_minutes: updater_total.round() as u64,
-            forecast_minutes: forecast.round() as u64,
+            observed_minutes,
+            updater_minutes,
+            forecast_minutes: observed_minutes + updater_minutes,
             utilization: (forecast / allowance * 100.0).round() / 100.0,
             within_budget: forecast <= allowance,
             candidates,
         });
+    }
+    if !conflicted.is_empty() {
+        miette::bail!(
+            "conflicting facts for workflows in a budget: {}",
+            conflicted.into_iter().collect::<Vec<_>>().join(", ")
+        );
     }
     Ok(BudgetReport {
         contract: BUDGET_CONTRACT,
