@@ -20,6 +20,8 @@ pub struct Topology {
     pub trust: Trust,
     #[serde(default)]
     pub access: Option<Access>,
+    #[serde(default)]
+    pub supply: Supply,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -688,6 +690,49 @@ pub struct SshKnownHost {
     pub provenance: Option<String>,
 }
 
+/// Shared build supply that `fleetix::supply` joins usage facts against.
+/// Forges and repositories stay out of topology.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Supply {
+    #[serde(default)]
+    pub runner_pools: IndexMap<String, RunnerPool>,
+    #[serde(default)]
+    pub caches: IndexMap<String, BinaryCache>,
+    #[serde(default)]
+    pub budgets: IndexMap<String, Budget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnerPool {
+    pub forge_host: String,
+    pub labels: Vec<String>,
+    /// A `services.catalog` key.
+    #[serde(default)]
+    pub service: Option<String>,
+    /// Usage on this pool is billed.
+    #[serde(default)]
+    pub metered: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinaryCache {
+    pub url: String,
+    /// A `services.catalog` key.
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+/// A monthly agent-minute allowance shared by the named runner pools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Budget {
+    pub pools: Vec<String>,
+    pub minutes_per_month: u32,
+}
+
 /// Render a modular topology entrypoint into a self-contained compatibility
 /// Pkl file for consumers whose evaluator cannot resolve local aggregate
 /// imports.
@@ -762,6 +807,17 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
         );
     } else {
         out.push_str("\n\ntrust = new Trust {}\n");
+    }
+    // Supply is optional and defaults to empty when deserialised.
+    let supply_path = src_dir.join("Supply.pkl");
+    if supply_path.exists() {
+        out.push_str("\n\n");
+        out.push_str(
+            &strip_imports(&read_to_string(supply_path)?)
+                .replace("new S.", "new ")
+                .replace("<S.", "<")
+                .replace("N.names.", "names."),
+        );
     }
     if !out.ends_with('\n') {
         out.push('\n');
@@ -1041,9 +1097,46 @@ class Trust {
 }
 
 class Deployment {}
+
+class RunnerPool {
+  forgeHost: String
+  labels: Listing<String>
+}
+
+class Budget {
+  pools: Listing<String>
+  minutesPerMonth: UInt32
+}
+
+class Supply {
+  runnerPools: Mapping<String, RunnerPool> = new {}
+  budgets: Mapping<String, Budget> = new {}
+}
 "#,
         )
         .map_err(|e| miette::miette!("write Schema.pkl: {e}"))?;
+        fs::write(
+            root.join("Supply.pkl"),
+            r#"
+import "Schema.pkl" as S
+
+supply = new S.Supply {
+  runnerPools = new {
+    ["hosted"] = new S.RunnerPool {
+      forgeHost = "github.com"
+      labels = new Listing { "ubuntu-24.04" }
+    }
+  }
+  budgets = new {
+    ["b"] = new S.Budget {
+      pools = new Listing { "hosted" }
+      minutesPerMonth = 100
+    }
+  }
+}
+"#,
+        )
+        .map_err(|e| miette::miette!("write Supply.pkl: {e}"))?;
         fs::write(
             root.join("links/WgHome.pkl"),
             r#"
@@ -1113,12 +1206,14 @@ import "hosts/Hub.pkl" as H
 import "Domains.pkl" as D
 import "Services.pkl" as S
 import "Trust.pkl" as T
+import "Supply.pkl" as P
 links = W.links
 hosts = H.hosts
 domains = D.domains
 services = S.services
 schemaVersion: UInt16 = 2
 trust = T.trust
+supply = P.supply
 "#,
         )
         .map_err(|e| miette::miette!("write aggregate fixture: {e}"))?;
@@ -1148,6 +1243,8 @@ trust = new S.Trust {
         assert!(flattened.contains("domains = new"));
         assert!(flattened.contains("services = new"));
         assert!(flattened.contains("sshKnownHosts = new Listing<SshKnownHost>"));
+        assert!(flattened.contains("supply = new Supply"));
+        assert!(flattened.contains("minutesPerMonth = 100"));
         assert!(!flattened.contains("import "));
 
         let loaded = load_topology(&root.join("Topology.aggregated.pkl")).await?;
@@ -1158,6 +1255,8 @@ trust = new S.Trust {
             loaded.trust.ssh_known_hosts[0].host_names,
             vec!["git.example.test"]
         );
+        assert!(loaded.supply.runner_pools.contains_key("hosted"));
+        assert_eq!(loaded.supply.budgets["b"].minutes_per_month, 100);
 
         Ok(())
     }

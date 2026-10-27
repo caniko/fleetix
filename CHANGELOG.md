@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-10-26
+## [0.8.0] - 2026-10-27
 
 ### Added
 
@@ -19,12 +19,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `"lan"` `IngressScope` and `HttpAccess` values for private LAN ingress. LAN
   sites skip managed CNAME synthesis and public probes, and managed DNS fails
   as `site.lan_managed_dns`.
+- Add `fleetix::supply`, which merges versioned `fleetix.supply-facts.v1`
+  documents (nodes, edges, capability rows and errors) from independent
+  producers into one graph. `gaps` reports each uncovered usage with its
+  blocker as `fleetix.supply-gaps.v1`, and `walk` follows dependencies forward
+  or backward as `fleetix.supply-path.v1`. The module needs only serde, so it
+  builds without the `cli` or `pkl` features. [SUPPLY.md](SUPPLY.md)
+  specifies the contract and a recommended blocker vocabulary.
+- Add an optional topology `supply` section with `RunnerPool{forgeHost,
+  labels, service?, metered}`, `BinaryCache{url, service?}` and
+  `Budget{pools, minutesPerMonth}`. All default to empty, so existing
+  topologies are unchanged. Validation adds `supply.unknown_service`,
+  `supply.duplicate_runner_label` and `supply.unknown_budget_pool`. Supply facts
+  join runner and cache nodes against it and report `unknown-runner` and
+  `unknown-cache` (R6).
+- Add `fleetix supply gaps|path|graph`. `gaps` groups by blocker or
+  repository. `path` walks forward, or backward with `--reverse` (for example,
+  who pins a revision). `graph` dumps the merged graph. Each `--facts` file
+  holds one document or an array. `--topology` enables the runner and cache
+  join, and `--max-age-days` warns about stale facts. Human output is Markdown
+  tables; `--format json` prints the versioned report.
+- Add `fleetix supply budget`, a `fleetix.supply-budget.v1` forecast per
+  topology budget. It sums observed workflow minutes scaled to 30 days, plus
+  planned updater qualification runs on metered pools. It also ranks reduction
+  candidates (`duplicate-trigger`, `heavy-on-pr`, `failure-waste`,
+  `timeout-waste`) by estimated savings.
 
 ### Changed
 
 - **Breaking:** `IngressScope::Lan`, `HttpAccess::Lan` and the
   `HttpAction::Proxy::fallback_endpoints` field break exhaustive Rust matches
   and struct-literal construction.
+- Run the CI, Nix build and prebuild workflows on push only for `trunk` and
+  the simit updater's `simit/update/**` candidate refs. Pull request heads are
+  validated once, by the `pull_request` run, which roughly halves the jobs per
+  push to a PR branch. Trunk pushes still publish to Attic.
 
 ### Fixed
 

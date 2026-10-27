@@ -420,6 +420,33 @@ class Trust {
   sshKnownHosts: Listing<SshKnownHost> = new Listing {}
 }
 
+/// Shared build supply that `fleetix supply` joins usage facts against.
+/// Forges and repositories stay out of topology.
+class RunnerPool {
+  forgeHost: String
+  labels: Listing<String>
+  service: String? = null
+  /// Usage on this pool is billed, so updater qualification counts against budgets.
+  metered: Boolean = false
+}
+
+class BinaryCache {
+  url: String
+  service: String? = null
+}
+
+class Supply {
+  runnerPools: Mapping<String, RunnerPool> = new {}
+  caches: Mapping<String, BinaryCache> = new {}
+  budgets: Mapping<String, Budget> = new {}
+}
+
+/// A monthly agent-minute allowance shared by the named runner pools.
+class Budget {
+  pools: Listing<String>(!isEmpty)
+  minutesPerMonth: UInt32(this > 0)
+}
+
 class SshAccess {
   port: UInt16
   hostKeyPath: String

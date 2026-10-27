@@ -114,6 +114,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     validate_deployment(topology, &mut report);
     validate_local_access(topology, &mut report);
     validate_services(topology, &mut report);
+    validate_supply(topology, &mut report);
     service_profiles::validate(topology, &mut report);
 
     // 1. Every link has at most one server
@@ -775,6 +776,71 @@ fn validate_proxy_endpoint(
                     format!(
                         "HTTP site '{site_name}' ingress host '{ingress_host}' cannot reach loopback endpoint '{endpoint}' without remoteVia"
                     ),
+                );
+            }
+        }
+    }
+}
+
+fn validate_supply(topology: &Topology, report: &mut ValidationReport) {
+    let supply = &topology.supply;
+    let services = supply
+        .runner_pools
+        .iter()
+        .map(|(name, pool)| (format!("runnerPools.{name}"), &pool.service))
+        .chain(
+            supply
+                .caches
+                .iter()
+                .map(|(name, cache)| (format!("caches.{name}"), &cache.service)),
+        );
+    for (path, service) in services {
+        if let Some(service) = service
+            .as_ref()
+            .filter(|service| !topology.services.catalog.contains_key(*service))
+        {
+            report.error(
+                "supply.unknown_service",
+                Some(format!("supply.{path}.service")),
+                Some(service.clone()),
+                format!("supply.{path} references unknown service '{service}'"),
+            );
+        }
+    }
+
+    let mut labels = HashSet::new();
+    for (name, pool) in &supply.runner_pools {
+        for label in &pool.labels {
+            if !labels.insert((pool.forge_host.as_str(), label.as_str())) {
+                report.error(
+                    "supply.duplicate_runner_label",
+                    Some(format!("supply.runnerPools.{name}.labels")),
+                    Some(label.clone()),
+                    format!(
+                        "runner label '{label}' on {} is declared more than once",
+                        pool.forge_host
+                    ),
+                );
+            }
+        }
+    }
+
+    for (name, budget) in &supply.budgets {
+        if budget.pools.is_empty() {
+            report.error(
+                "supply.empty_budget_pools",
+                Some(format!("supply.budgets.{name}.pools")),
+                None,
+                format!("budget '{name}' names no runner pools"),
+            );
+        }
+        for pool in &budget.pools {
+            if !supply.runner_pools.contains_key(pool) {
+                report.error(
+                    "supply.unknown_budget_pool",
+                    Some(format!("supply.budgets.{name}.pools")),
+                    Some(pool.clone()),
+                    format!("budget '{name}' references unknown runner pool '{pool}'"),
                 );
             }
         }
@@ -1632,6 +1698,7 @@ mod tests {
         let topology = Topology {
             schema_version: 2,
             access: None,
+            supply: Default::default(),
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
@@ -2423,6 +2490,71 @@ mod tests {
                 report.issues
             );
         }
+    }
+
+    #[test]
+    fn validates_supply_services_and_runner_labels() {
+        let mut topology: Topology = serde_json::from_value(json!({
+            "schemaVersion": 2, "links": {}, "hosts": {}, "domains": {},
+            "services": {"catalog": {"runner": {
+                "displayName": "Runner", "category": "CI", "exclusionReason": "fixture"
+            }}},
+            "supply": {
+                "runnerPools": {
+                    "nix": {"forgeHost": "git.example.test", "labels": ["nix"], "service": "runner"},
+                    "hosted": {"forgeHost": "github.com", "labels": ["ubuntu-24.04", "nix"]}
+                },
+                "caches": {"fleet": {"url": "https://cache.example.test", "service": "runner"}},
+                "budgets": {"ci": {"pools": ["nix", "hosted"], "minutesPerMonth": 2500}}
+            }
+        }))
+        .unwrap();
+        assert!(
+            validate(&topology).is_ok(),
+            "{:?}",
+            validate(&topology).issues
+        );
+
+        topology.supply.runner_pools["hosted"].forge_host = "git.example.test".into();
+        topology.supply.caches["fleet"].service = Some("attic".into());
+        topology.supply.budgets["ci"].pools.push("gone".into());
+        let issues: Vec<_> = validate(&topology)
+            .issues
+            .into_iter()
+            .map(|issue| (issue.code, issue.path.unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            issues,
+            [
+                (
+                    "supply.unknown_service".to_string(),
+                    "supply.caches.fleet.service".to_string()
+                ),
+                (
+                    "supply.duplicate_runner_label".to_string(),
+                    "supply.runnerPools.nix.labels".to_string()
+                ),
+                (
+                    "supply.unknown_budget_pool".to_string(),
+                    "supply.budgets.ci.pools".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_budgets_without_pools() {
+        let topology: Topology = serde_json::from_value(json!({
+            "schemaVersion": 2, "links": {}, "hosts": {}, "domains": {}, "services": {},
+            "supply": {"budgets": {"ci": {"pools": [], "minutesPerMonth": 100}}}
+        }))
+        .unwrap();
+        assert!(
+            validate(&topology)
+                .issues
+                .iter()
+                .any(|issue| issue.code == "supply.empty_budget_pools")
+        );
     }
 
     #[test]

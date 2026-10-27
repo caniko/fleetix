@@ -424,6 +424,7 @@ mod tests {
         Topology {
             schema_version: 2,
             access: None,
+            supply: Default::default(),
             links: IndexMap::new(),
             hosts,
             domains: Domains {

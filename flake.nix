@@ -300,6 +300,7 @@
             grep -A1 'fallbackEndpoints = \[$' topology.nix | grep -Fq '"dashboard-standby"'
             grep -Fq 'scope = "lan"' topology.nix
             grep -Fq 'access = "lan"' topology.nix
+            grep -q 'runnerPools =' topology.nix
             touch $out
           '';
 

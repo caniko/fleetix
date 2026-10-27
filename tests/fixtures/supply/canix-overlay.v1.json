@@ -1,0 +1,107 @@
+{
+  "contract": "fleetix.supply-facts.v1",
+  "vocabulary": "canix.supply-overlay.v1",
+  "producer": {
+    "name": "canix",
+    "version": "0.1.0"
+  },
+  "observedAt": "2026-10-26T06:05:00Z",
+  "nodes": [
+    {
+      "id": "orchestrator:simit-updater/fleet",
+      "kind": "orchestrator",
+      "attrs": {
+        "profile": "fleet",
+        "generatorRevision": "5f6078c6bc13048bc2ff236faabb0356442215fb"
+      }
+    },
+    {
+      "id": "orchestrator:canix-converge/workspace",
+      "kind": "orchestrator",
+      "attrs": {
+        "generatorRevision": "432cde792b74e5fdce8ed6e71b555e535f2b83b5"
+      },
+      "blockers": [
+        {
+          "code": "generator-pin-skew",
+          "reason": "canix-converge pins simit 432cde7 while simit-updater/fleet pins 5f6078c.",
+          "owner": "canix"
+        }
+      ]
+    },
+    {
+      "id": "repo:github.com/example/flake-config",
+      "kind": "repo",
+      "attrs": {
+        "landing": "pull-request"
+      }
+    },
+    {
+      "id": "usage:github.com/example/drifted#ci.primary",
+      "kind": "usage",
+      "attrs": {
+        "usageKind": "ci.primary",
+        "generatorRevision": "de3325be17104fbdb0d70f1da38149d4016f1790",
+        "revisionSource": "updater-receipt"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "repo:github.com/example/drifted",
+      "to": "orchestrator:simit-updater/fleet",
+      "kind": "enrolledIn",
+      "attrs": {
+        "enabled": true,
+        "status": "enrolled"
+      }
+    },
+    {
+      "from": "repo:github.com/example/crow-on-github",
+      "to": "orchestrator:simit-updater/fleet",
+      "kind": "enrolledIn",
+      "attrs": {
+        "enabled": false,
+        "status": "disabled",
+        "blocker": "provider-mismatch",
+        "reason": "Crow CI is declared on a GitHub-canonical repository."
+      }
+    },
+    {
+      "from": "repo:github.com/example/flake-config",
+      "to": "orchestrator:simit-updater/fleet",
+      "kind": "enrolledIn",
+      "attrs": {
+        "enabled": false,
+        "status": "disabled",
+        "blocker": "config-not-persisted",
+        "reason": "Config comes from flake simitConfig."
+      }
+    },
+    {
+      "from": "repo:github.com/example/flake-config",
+      "to": "orchestrator:canix-converge/workspace",
+      "kind": "enrolledIn",
+      "attrs": {
+        "enabled": true,
+        "status": "enrolled"
+      }
+    }
+  ],
+  "capabilities": [
+    {
+      "usageKind": "ci.primary",
+      "match": {
+        "forge": "github",
+        "ciTarget": "actions/github"
+      },
+      "path": "converge",
+      "via": "canix workspace converge",
+      "lands": true,
+      "orchestrator": "canix-converge",
+      "status": "implemented",
+      "reason": "Converge opens, qualifies and merges a primary-CI pull request."
+    }
+  ],
+  "errors": []
+}

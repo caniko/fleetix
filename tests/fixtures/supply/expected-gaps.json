@@ -1,0 +1,493 @@
+{
+  "contract": "fleetix.supply-gaps.v1",
+  "summary": {
+    "repositories": 7,
+    "usages": 26,
+    "covered": 8,
+    "drift": {
+      "covered": 2,
+      "uncovered": 5
+    },
+    "byBlocker": [
+      {
+        "blocker": "unknown-generator-revision",
+        "gaps": 10,
+        "repositories": 5,
+        "usages": 10
+      },
+      {
+        "blocker": "manual-pin",
+        "gaps": 8,
+        "repositories": 1,
+        "usages": 8
+      },
+      {
+        "blocker": "scope-unsupported",
+        "gaps": 5,
+        "repositories": 2,
+        "usages": 5
+      },
+      {
+        "blocker": "no-orchestrator",
+        "gaps": 2,
+        "repositories": 1,
+        "usages": 2
+      },
+      {
+        "blocker": "provider-mismatch",
+        "gaps": 2,
+        "repositories": 1,
+        "usages": 1
+      },
+      {
+        "blocker": "unpinned-runtime",
+        "gaps": 2,
+        "repositories": 1,
+        "usages": 2
+      },
+      {
+        "blocker": "adapter-missing",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
+      },
+      {
+        "blocker": "config-conflict",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 0
+      },
+      {
+        "blocker": "config-not-persistable",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 0
+      },
+      {
+        "blocker": "config-unresolved",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 0
+      },
+      {
+        "blocker": "generator-pin-skew",
+        "gaps": 1,
+        "repositories": 0,
+        "usages": 0
+      },
+      {
+        "blocker": "transitive-pin",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
+      },
+      {
+        "blocker": "trust-root-missing",
+        "gaps": 1,
+        "repositories": 1,
+        "usages": 1
+      }
+    ],
+    "byRepository": [
+      {
+        "repository": "codefloe.com/example/pink",
+        "gaps": 2,
+        "blockers": [
+          "adapter-missing",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/example/conflict",
+        "gaps": 1,
+        "blockers": [
+          "config-conflict"
+        ]
+      },
+      {
+        "repository": "github.com/example/crow-on-github",
+        "gaps": 3,
+        "blockers": [
+          "provider-mismatch",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/example/drifted",
+        "gaps": 21,
+        "blockers": [
+          "manual-pin",
+          "scope-unsupported",
+          "transitive-pin",
+          "unknown-generator-revision",
+          "unpinned-runtime"
+        ]
+      },
+      {
+        "repository": "github.com/example/flake-config",
+        "gaps": 3,
+        "blockers": [
+          "config-not-persistable",
+          "config-unresolved",
+          "unknown-generator-revision"
+        ]
+      },
+      {
+        "repository": "github.com/example/manual",
+        "gaps": 2,
+        "blockers": [
+          "no-orchestrator"
+        ]
+      },
+      {
+        "repository": "github.com/example/unsigned",
+        "gaps": 3,
+        "blockers": [
+          "scope-unsupported",
+          "trust-root-missing",
+          "unknown-generator-revision"
+        ]
+      }
+    ]
+  },
+  "gaps": [
+    {
+      "repository": null,
+      "node": "orchestrator:canix-converge/workspace",
+      "usageKind": null,
+      "blocker": "generator-pin-skew",
+      "reason": "canix-converge pins simit 432cde7 while simit-updater/fleet pins 5f6078c.",
+      "owner": "canix",
+      "source": "producer"
+    },
+    {
+      "repository": "codefloe.com/example/pink",
+      "node": "usage:codefloe.com/example/pink#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "adapter-missing",
+      "reason": "The updater has no Forgejo and Crow adapter yet. (fallback: simit init ci)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "codefloe.com/example/pink",
+      "node": "usage:codefloe.com/example/pink#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/conflict",
+      "node": "repo:github.com/example/conflict",
+      "usageKind": null,
+      "blocker": "config-conflict",
+      "reason": "several simit config sources: config.simit-toml, config.cargo-package",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/crow-on-github",
+      "node": "repo:github.com/example/crow-on-github",
+      "usageKind": null,
+      "blocker": "provider-mismatch",
+      "reason": "crow/forgejo CI cannot run on github.com",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/crow-on-github",
+      "node": "usage:github.com/example/crow-on-github#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "provider-mismatch",
+      "reason": "Crow CI cannot run on github.com, and the updater cannot migrate providers yet. (fallback: simit init ci --ci-provider actions --platform github)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/crow-on-github",
+      "node": "usage:github.com/example/crow-on-github#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#cargo.dependency:Cargo.lock",
+      "usageKind": "cargo.dependency",
+      "blocker": "manual-pin",
+      "reason": "Cargo dependency updates are outside every simit orchestrator.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#ci.local-gate",
+      "usageKind": "ci.local-gate",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit init ci)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#ci.local-gate",
+      "usageKind": "ci.local-gate",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#ci.publish",
+      "usageKind": "ci.publish",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit init ci)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#ci.publish",
+      "usageKind": "ci.publish",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#flake-input.direct:simit",
+      "usageKind": "flake-input.direct",
+      "blocker": "manual-pin",
+      "reason": "Flake inputs need a networked lock update, which the updater sandbox cannot run.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#flake-input.transitive:harbor/simit",
+      "usageKind": "flake-input.transitive",
+      "blocker": "transitive-pin",
+      "reason": "Another input's lock pins this simit; update that input instead.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#pin.config-command:simit.toml",
+      "usageKind": "pin.config-command",
+      "blocker": "manual-pin",
+      "reason": "Pins inside human-owned simit.toml command strings are never rewritten.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#readme.badges",
+      "usageKind": "readme.badges",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit upgrade)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#readme.badges",
+      "usageKind": "readme.badges",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#release.workflow",
+      "usageKind": "release.workflow",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit init release)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.cargo-install:scripts/release.sh",
+      "usageKind": "runtime.cargo-install",
+      "blocker": "manual-pin",
+      "reason": "simit does not rewrite cargo install commands.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.cargo-install:scripts/release.sh",
+      "usageKind": "runtime.cargo-install",
+      "blocker": "unpinned-runtime",
+      "reason": "scripts/release.sh runs simit from the floating reference cargo install simit",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.ci-engine:.github/workflows/ci.yaml",
+      "usageKind": "runtime.ci-engine",
+      "blocker": "manual-pin",
+      "reason": "Repository variable values are forge state; simit never changes them.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.ci-engine:.github/workflows/ci.yaml",
+      "usageKind": "runtime.ci-engine",
+      "blocker": "unknown-generator-revision",
+      "reason": "The repository variable's value lives on the forge.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.flake-ref:.github/workflows/ci.yaml",
+      "usageKind": "runtime.flake-ref",
+      "blocker": "manual-pin",
+      "reason": "simit does not rewrite runtime flake references.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.flake-ref:.github/workflows/ci.yaml",
+      "usageKind": "runtime.flake-ref",
+      "blocker": "unpinned-runtime",
+      "reason": ".github/workflows/ci.yaml runs simit from the floating reference github:caniko/simit",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.flake-ref:scripts/release.sh",
+      "usageKind": "runtime.flake-ref",
+      "blocker": "manual-pin",
+      "reason": "simit does not rewrite runtime flake references.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.flake-ref:scripts/release.sh",
+      "usageKind": "runtime.flake-ref",
+      "blocker": "unknown-generator-revision",
+      "reason": "scripts/release.sh takes the simit revision from a run-time variable",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.publisher-var:.github/workflows/publish-crate.yaml",
+      "usageKind": "runtime.publisher-var",
+      "blocker": "manual-pin",
+      "reason": "Repository variable values are forge state; simit never changes them.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/drifted",
+      "node": "usage:github.com/example/drifted#runtime.publisher-var:.github/workflows/publish-crate.yaml",
+      "usageKind": "runtime.publisher-var",
+      "blocker": "unknown-generator-revision",
+      "reason": "The repository variable's value lives on the forge.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/flake-config",
+      "node": "repo:github.com/example/flake-config",
+      "usageKind": null,
+      "blocker": "config-not-persistable",
+      "reason": "flake outputs.simitConfig cannot be rewritten by the generator",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/flake-config",
+      "node": "repo:github.com/example/flake-config",
+      "usageKind": null,
+      "blocker": "config-unresolved",
+      "reason": "flake outputs.simitConfig is only evaluated with --eval-flake",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/flake-config",
+      "node": "usage:github.com/example/flake-config#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    },
+    {
+      "repository": "github.com/example/manual",
+      "node": "usage:github.com/example/manual#ci.primary",
+      "usageKind": "ci.primary",
+      "blocker": "no-orchestrator",
+      "reason": "The generator refreshes these files, but no orchestrator lands them for this repository.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/manual",
+      "node": "usage:github.com/example/manual#ci.publish",
+      "usageKind": "ci.publish",
+      "blocker": "no-orchestrator",
+      "reason": "The generator refreshes these files, but no orchestrator lands them for this repository.",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/unsigned",
+      "node": "usage:github.com/example/unsigned#keys.trust-root",
+      "usageKind": "keys.trust-root",
+      "blocker": "trust-root-missing",
+      "reason": "the release workflow verifies tags against the missing keys/maintainers.gpg",
+      "owner": "simit",
+      "source": "producer"
+    },
+    {
+      "repository": "github.com/example/unsigned",
+      "node": "usage:github.com/example/unsigned#release.workflow",
+      "usageKind": "release.workflow",
+      "blocker": "scope-unsupported",
+      "reason": "The updater lands only the primary CI scope. (fallback: simit init release)",
+      "owner": "simit",
+      "source": "capability"
+    },
+    {
+      "repository": "github.com/example/unsigned",
+      "node": "usage:github.com/example/unsigned#release.workflow",
+      "usageKind": "release.workflow",
+      "blocker": "unknown-generator-revision",
+      "reason": "No receipt or pin proves which generator revision rendered these files.",
+      "owner": "simit",
+      "source": "expectation"
+    }
+  ],
+  "errors": [
+    {
+      "producer": "simit",
+      "subject": "no-origin",
+      "code": "coordinate-unresolved",
+      "message": "<message>"
+    },
+    {
+      "producer": "simit",
+      "subject": "missing",
+      "code": "path-unreadable",
+      "message": "<message>"
+    }
+  ]
+}
