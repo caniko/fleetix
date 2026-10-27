@@ -36,8 +36,15 @@ derive runtime data from a generated topology sidecar:
 - `hosts.vpnProfile` resolves a host-local VPN profile by host and profile name.
 - `services.resolveEndpoint` deterministically resolves a local endpoint or
   its declared LAN `remoteVia` endpoint for an ingress host.
+- `services.resolveProxyEndpoints` resolves a proxy action's `endpoint` followed
+  by its ordered `fallbackEndpoints` the same way, for upstream failover.
+  Validation requires every fallback to be a reachable HTTP endpoint sharing the
+  primary's `transport` and `tlsServerName`, without repeats.
 - `services.endpointsForHost`, `services.serviceHosts`, and
   `services.managedDnsCnameIntents` derive host, HTTP-site, and DNS views.
+  Like `vpn`, `lan` sites (served by a `lan`-scope ingress group) are private:
+  they never get managed CNAMEs or public probes, and validation rejects
+  `dnsPublication = "managed"` for them; consumers publish explicit records.
 - `domains.publicationAddressIntents` renders explicit static destinations and
   directly published apexes as A/AAAA ownership intents.
 - `adapters.infernix.mkFleetNodes` converts fleet host topology plus

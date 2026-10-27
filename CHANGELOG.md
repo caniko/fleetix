@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-26
+
+### Added
+
+- `ProxyAction.fallbackEndpoints` lists ordered endpoints tried after
+  `endpoint` when it is unavailable. Each is validated like the primary;
+  repeats fail as `site.route_duplicate_fallback_endpoint` and differing
+  `transport`/`tlsServerName` as `site.route_fallback_transport_mismatch`.
+  The Nix `services.resolveProxyEndpoints` helper resolves the ordered set.
+- `"lan"` `IngressScope` and `HttpAccess` values for private LAN ingress. LAN
+  sites skip managed CNAME synthesis and public probes, and managed DNS fails
+  as `site.lan_managed_dns`.
+
+### Changed
+
+- **Breaking:** `IngressScope::Lan`, `HttpAccess::Lan` and the
+  `HttpAction::Proxy::fallback_endpoints` field break exhaustive Rust matches
+  and struct-literal construction.
+
 ### Fixed
 
 - Declare `BodyAssertion.operator` through a `BodyOperator` typealias so Pklr 5
@@ -249,6 +268,8 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/caniko/fleetix/compare/0.7.0...0.8.0
+[0.7.0]: https://github.com/caniko/fleetix/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/caniko/fleetix/compare/0.5.2...0.6.0
 [0.5.0]: https://github.com/caniko/fleetix/compare/0.4.0...0.5.0

@@ -252,7 +252,8 @@ impl Topology {
             .http_sites
             .iter()
             .filter_map(|(name, site)| {
-                if site.dns_publication != DnsPublication::Managed || site.access == HttpAccess::Vpn
+                if site.dns_publication != DnsPublication::Managed
+                    || matches!(site.access, HttpAccess::Vpn | HttpAccess::Lan)
                 {
                     return None;
                 }
@@ -508,6 +509,7 @@ mod tests {
                                 matcher: HttpMatch::default(),
                                 action: HttpAction::Proxy {
                                     endpoint: "photos".to_string(),
+                                    fallback_endpoints: vec![],
                                     strip_prefix: None,
                                 },
                                 auth_policy: None,
@@ -670,6 +672,11 @@ mod tests {
                 && intent.proxied
         }));
         assert!(!service_intents.iter().any(|intent| intent.name == "models"));
+
+        let mut lan_topo = test_topology();
+        let photos = lan_topo.services.http_sites.get_mut("photos").unwrap();
+        photos.access = HttpAccess::Lan;
+        assert!(lan_topo.service_cname_intents().is_empty());
 
         let page_intents = topo.pages_cname_intents(None);
         assert_eq!(page_intents.len(), 1);
