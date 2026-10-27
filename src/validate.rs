@@ -654,15 +654,19 @@ fn validate_http_routes(
                 // ingress host dials (after remoteVia substitution) must share it.
                 // An unset tlsServerName sends the site hostname as SNI.
                 let effective = |name: &str, host: &str| {
-                    topology.endpoint_for_ingress(name, host).map(|(_, dialed)| {
-                        let sni = (dialed.transport == crate::topology::EndpointTransport::Https).then(|| {
-                            dialed
-                                .tls_server_name
-                                .clone()
-                                .unwrap_or_else(|| site.hostname.clone())
-                        });
-                        (dialed.transport, sni)
-                    })
+                    topology
+                        .endpoint_for_ingress(name, host)
+                        .map(|(_, dialed)| {
+                            let sni = (dialed.transport
+                                == crate::topology::EndpointTransport::Https)
+                                .then(|| {
+                                    dialed
+                                        .tls_server_name
+                                        .clone()
+                                        .unwrap_or_else(|| site.hostname.clone())
+                                });
+                            (dialed.transport, sni)
+                        })
                 };
                 let ingress_hosts: Vec<&String> =
                     ingress.iter().flat_map(|ingress| &ingress.hosts).collect();
