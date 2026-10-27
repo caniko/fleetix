@@ -111,6 +111,12 @@ services = new S.Services {
       transport = "https"
       bind = "loopback"
     }
+    ["dashboard-standby"] = new S.Endpoint {
+      targetHost = "edge"
+      port = 8444
+      transport = "https"
+      bind = "loopback"
+    }
     ["multi"] = new S.Endpoint {
       targetHost = "edge"
       port = 8032
@@ -133,7 +139,10 @@ services = new S.Services {
       routes = new Listing {
         new S.HttpRoute {
           match = new S.HttpMatch {}
-          action = new S.ProxyAction { endpoint = "dashboard" }
+          action = new S.ProxyAction {
+            endpoint = "dashboard"
+            fallbackEndpoints = new Listing { "dashboard-standby" }
+          }
         }
       }
     }
@@ -157,6 +166,18 @@ services = new S.Services {
         }
       }
     }
+    ["files"] = new S.HttpSite {
+      hostname = "files.example.test"
+      ingress = "lan-edge"
+      access = "lan"
+      dnsPublication = "none"
+      routes = new Listing {
+        new S.HttpRoute {
+          match = new S.HttpMatch {}
+          action = new S.ProxyAction { endpoint = "multi" }
+        }
+      }
+    }
   }
 }
 
@@ -164,6 +185,10 @@ deployment = new S.Deployment {
   ingressGroups = new {
     ["public-edge"] = new S.IngressGroup {
       scope = "public"
+      hosts = new Listing { "edge" }
+    }
+    ["lan-edge"] = new S.IngressGroup {
+      scope = "lan"
       hosts = new Listing { "edge" }
     }
   }
@@ -196,6 +221,29 @@ trust = new S.Trust {
       hostNames = new Listing { "git.example.test" }
       publicKeys = new Listing { "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleGit" }
       provenance = "observed-known-hosts"
+    }
+  }
+}
+
+supply = new S.Supply {
+  runnerPools = new {
+    ["hosted"] = new S.RunnerPool {
+      forgeHost = "github.com"
+      labels = new Listing { "ubuntu-24.04" }
+    }
+    ["builder-nix"] = new S.RunnerPool {
+      forgeHost = "git.example.test"
+      labels = new Listing { "builder-nix" }
+      metered = true
+    }
+  }
+  caches = new {
+    ["fleet"] = new S.BinaryCache { url = "https://cache.example.test/fleet" }
+  }
+  budgets = new {
+    ["builder"] = new S.Budget {
+      pools = new Listing { "builder-nix" }
+      minutesPerMonth = 2500
     }
   }
 }

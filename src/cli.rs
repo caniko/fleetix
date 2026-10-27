@@ -134,6 +134,72 @@ pub enum Command {
     /// Observe trust stores against the declared topology trust.
     #[command(subcommand)]
     Trust(TrustCommand),
+    /// Query merged supply facts (see SUPPLY.md).
+    #[command(subcommand)]
+    Supply(SupplyCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct SupplyInput {
+    /// Facts document, or a JSON array of documents (repeatable).
+    #[arg(long, required = true)]
+    pub facts: Vec<PathBuf>,
+    /// Topology whose `supply` section joins runner and cache nodes.
+    #[arg(long)]
+    pub topology: Option<PathBuf>,
+    /// Warn about documents observed more than this many days ago.
+    #[arg(long)]
+    pub max_age_days: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SupplyCommand {
+    /// Report usages that no upgrade path covers, and why.
+    Gaps {
+        #[command(flatten)]
+        input: SupplyInput,
+        #[arg(long, value_enum, default_value = "blocker")]
+        by: GapGrouping,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Walk dependencies from a node id or a repository coordinate.
+    Path {
+        node: String,
+        #[command(flatten)]
+        input: SupplyInput,
+        /// Follow edges backward: who pins a revision, who uses a runner.
+        #[arg(long)]
+        reverse: bool,
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Print the merged graph as JSON.
+    Graph {
+        #[command(flatten)]
+        input: SupplyInput,
+    },
+    /// Forecast topology agent-minute budgets and rank reductions.
+    Budget {
+        #[command(flatten)]
+        input: SupplyInput,
+        /// Planned updates per month for the qualification-run forecast.
+        #[arg(long, default_value_t = 1.0)]
+        updates_per_month: f64,
+        /// Orchestrator kind whose enrolled repositories qualify each update.
+        #[arg(long, default_value = "simit-updater")]
+        orchestrator: String,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum GapGrouping {
+    Blocker,
+    Repo,
 }
 
 #[derive(Debug, Subcommand)]
@@ -237,6 +303,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             );
         }
         Command::Trust(subcommand) => run_trust(subcommand).await?,
+        Command::Supply(subcommand) => run_supply(subcommand).await?,
         Command::Validate {
             path,
             format,
@@ -510,16 +577,6 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
         Ok(ScanOutcome { actionable, report })
     }
 
-    fn json_out<T: serde::Serialize>(value: &T) -> Result<(), CliError> {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(value).map_err(|error| {
-                CliError::new(EXIT_EVALUATION, format!("serialize: {error}"))
-            })?
-        );
-        Ok(())
-    }
-
     match subcommand {
         TrustCommand::Scan {
             topology,
@@ -675,6 +732,222 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
     }
 }
 
+fn json_out<T: Serialize>(value: &T) -> Result<(), CliError> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value)
+            .map_err(|error| { CliError::new(EXIT_EVALUATION, format!("serialize: {error}")) })?
+    );
+    Ok(())
+}
+
+/// Print a Markdown table, escaping cell pipes and newlines.
+fn markdown_table(headers: &[&str], rows: impl IntoIterator<Item = Vec<String>>) {
+    println!("| {} |", headers.join(" | "));
+    println!("|{}", " --- |".repeat(headers.len()));
+    for row in rows {
+        let cells: Vec<_> = row
+            .iter()
+            .map(|cell| cell.replace('|', "\\|").replace('\n', " "))
+            .collect();
+        println!("| {} |", cells.join(" | "));
+    }
+}
+
+async fn run_supply(subcommand: SupplyCommand) -> Result<(), CliError> {
+    use crate::supply;
+
+    async fn load(input: &SupplyInput) -> Result<supply::Graph, CliError> {
+        let mut docs = Vec::new();
+        for path in &input.facts {
+            let text = std::fs::read_to_string(path).map_err(|error| {
+                CliError::new(EXIT_IO, format!("read {}: {error}", path.display()))
+            })?;
+            docs.extend(supply::parse(&text).map_err(|error| {
+                CliError::new(EXIT_VALIDATION, format!("{}: {error}", path.display()))
+            })?);
+        }
+        if let Some(limit) = input.max_age_days {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            for doc in &docs {
+                match supply::age_days(&doc.observed_at, now) {
+                    Some(age) if age <= limit => {}
+                    Some(age) => eprintln!(
+                        "  WARN:  {} facts observed at {} are {age} days old (limit {limit})",
+                        doc.producer.name, doc.observed_at
+                    ),
+                    None => eprintln!(
+                        "  WARN:  {} facts have an unreadable observedAt '{}'",
+                        doc.producer.name, doc.observed_at
+                    ),
+                }
+            }
+        }
+        let topology = match &input.topology {
+            Some(path) => Some(topology::load_topology(path).await?),
+            None => None,
+        };
+        Ok(supply::build(&docs, topology.as_ref()))
+    }
+
+    match subcommand {
+        SupplyCommand::Gaps { input, by, format } => {
+            let report = supply::gaps(&load(&input).await?);
+            if format == OutputFormat::Json {
+                return json_out(&report);
+            }
+            let summary = &report.summary;
+            println!(
+                "{} repositories, {} usages, {} covered; drift: {} covered, {} uncovered.\n",
+                summary.repositories,
+                summary.usages,
+                summary.covered,
+                summary.drift.covered,
+                summary.drift.uncovered
+            );
+            let mut gaps: Vec<_> = report.gaps.iter().collect();
+            match by {
+                GapGrouping::Blocker => {
+                    markdown_table(
+                        &["Blocker", "Gaps", "Repositories", "Usages"],
+                        summary.by_blocker.iter().map(|count| {
+                            vec![
+                                count.blocker.clone(),
+                                count.gaps.to_string(),
+                                count.repositories.to_string(),
+                                count.usages.to_string(),
+                            ]
+                        }),
+                    );
+                    gaps.sort_by(|a, b| a.blocker.cmp(&b.blocker));
+                }
+                GapGrouping::Repo => markdown_table(
+                    &["Repository", "Gaps", "Blockers"],
+                    summary.by_repository.iter().map(|count| {
+                        vec![
+                            count.repository.clone(),
+                            count.gaps.to_string(),
+                            count.blockers.join(", "),
+                        ]
+                    }),
+                ),
+            }
+            println!();
+            markdown_table(
+                &["Repository", "Node", "Blocker", "Reason", "Owner"],
+                gaps.iter().map(|gap| {
+                    vec![
+                        gap.repository.clone().unwrap_or_default(),
+                        gap.node.clone(),
+                        match &gap.subcode {
+                            Some(code) => format!("{}({code})", gap.blocker),
+                            None => gap.blocker.clone(),
+                        },
+                        gap.reason.clone(),
+                        gap.owner.clone().unwrap_or_default(),
+                    ]
+                }),
+            );
+            if !report.errors.is_empty() {
+                println!();
+                markdown_table(
+                    &["Producer", "Subject", "Code", "Message"],
+                    report.errors.iter().map(|error| {
+                        vec![
+                            error.producer.clone(),
+                            error.value.subject.clone(),
+                            error.value.code.clone(),
+                            error.value.message.clone(),
+                        ]
+                    }),
+                );
+            }
+            Ok(())
+        }
+        SupplyCommand::Path {
+            node,
+            input,
+            reverse,
+            depth,
+            format,
+        } => {
+            let report = supply::walk(&load(&input).await?, &node, reverse, depth)
+                .map_err(|error| CliError::new(EXIT_NOT_FOUND, error.to_string()))?;
+            if format == OutputFormat::Json {
+                return json_out(&report);
+            }
+            markdown_table(
+                &["Depth", "Node", "Kind"],
+                report.nodes.iter().map(|node| {
+                    vec![
+                        node.depth.to_string(),
+                        node.id.clone(),
+                        node.kind.clone().unwrap_or_default(),
+                    ]
+                }),
+            );
+            println!();
+            markdown_table(
+                &["From", "Edge", "To"],
+                report
+                    .edges
+                    .iter()
+                    .map(|edge| vec![edge.from.clone(), edge.kind.clone(), edge.to.clone()]),
+            );
+            Ok(())
+        }
+        SupplyCommand::Graph { input } => {
+            let mut graph = serde_json::to_value(load(&input).await?)
+                .map_err(|error| CliError::new(EXIT_EVALUATION, format!("serialize: {error}")))?;
+            graph["contract"] = supply::GRAPH_CONTRACT.into();
+            json_out(&graph)
+        }
+        SupplyCommand::Budget {
+            input,
+            updates_per_month,
+            orchestrator,
+            format,
+        } => {
+            let report = supply::budget(&load(&input).await?, &orchestrator, updates_per_month)
+                .map_err(|error| CliError::new(EXIT_VALIDATION, error.to_string()))?;
+            if format == OutputFormat::Json {
+                return json_out(&report);
+            }
+            for forecast in &report.budgets {
+                println!(
+                    "{}: forecast {} of {} minutes ({}x, {}); observed {}, updater qualification {}.\n",
+                    forecast.name,
+                    forecast.forecast_minutes,
+                    forecast.minutes_per_month,
+                    forecast.utilization,
+                    if forecast.within_budget {
+                        "within budget"
+                    } else {
+                        "over budget"
+                    },
+                    forecast.observed_minutes,
+                    forecast.updater_minutes
+                );
+                markdown_table(
+                    &["Rule", "Node", "Savings", "Reason"],
+                    forecast.candidates.iter().map(|candidate| {
+                        vec![
+                            candidate.rule.to_string(),
+                            candidate.node.clone(),
+                            candidate.estimated_savings.to_string(),
+                            candidate.reason.clone(),
+                        ]
+                    }),
+                );
+                println!();
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Patch Trust.pkl and regenerate the sidecar, rolling back on failure.
 async fn run_integrate(
     id: String,
@@ -778,6 +1051,48 @@ pub async fn main_exit(cli: Cli) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn supply(args: &[&str]) -> Result<(), CliError> {
+        let argv = ["fleetix", "supply"].iter().chain(args);
+        run(Cli::try_parse_from(argv).unwrap()).await
+    }
+
+    #[tokio::test]
+    async fn supply_commands_map_failures_to_exit_codes() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/supply");
+        let fixture = |name: &str| fixtures.join(name).display().to_string();
+        let (simit, overlay) = (
+            fixture("simit-usage-facts.v1.json"),
+            fixture("canix-overlay.v1.json"),
+        );
+        for by in ["blocker", "repo"] {
+            let args = ["gaps", "--facts", &simit, "--facts", &overlay, "--by", by];
+            supply(&args).await.unwrap();
+            supply(&[&args[..], &["--max-age-days", "1"]].concat())
+                .await
+                .unwrap();
+        }
+        supply(&["path", "github.com/example/drifted", "--facts", &simit])
+            .await
+            .unwrap();
+        supply(&["graph", "--facts", &simit]).await.unwrap();
+        let budget_facts = fixture("budget-facts.v1.json");
+        let budget_topology = fixture("budget-topology.pkl");
+        let budget = ["budget", "--facts", &budget_facts];
+        supply(&[&budget[..], &["--topology", &budget_topology]].concat())
+            .await
+            .unwrap();
+        assert_eq!(supply(&budget).await.unwrap_err().code, EXIT_VALIDATION);
+
+        let code = |result: Result<(), CliError>| result.unwrap_err().code;
+        let missing = supply(&["path", "repo:missing", "--facts", &simit]).await;
+        assert_eq!(code(missing), EXIT_NOT_FOUND);
+        let unreadable = supply(&["graph", "--facts", "/nonexistent/facts.json"]).await;
+        assert_eq!(code(unreadable), EXIT_IO);
+        let not_facts = supply(&["gaps", "--facts", &fixture("expected-gaps.json")]).await;
+        assert_eq!(code(not_facts), EXIT_VALIDATION);
+        assert!(Cli::try_parse_from(["fleetix", "supply", "gaps"]).is_err());
+    }
 
     #[test]
     fn trust_commands_accept_explicit_review_existing_values() {

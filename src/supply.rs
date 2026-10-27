@@ -1,0 +1,1178 @@
+//! Producer-neutral supply facts: which repositories consume which tools, and
+//! whether an upgrade path covers each usage. See SUPPLY.md for the contract.
+//!
+//! Producers own their vocabularies (usage kinds, attributes, blocker codes).
+//! Fleetix only merges their documents and applies the generic gap rules.
+
+use crate::topology::{RunnerPool, Supply, Topology};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+pub const CONTRACT: &str = "fleetix.supply-facts.v1";
+pub const GAPS_CONTRACT: &str = "fleetix.supply-gaps.v1";
+pub const PATH_CONTRACT: &str = "fleetix.supply-path.v1";
+pub const GRAPH_CONTRACT: &str = "fleetix.supply-graph.v1";
+pub const BUDGET_CONTRACT: &str = "fleetix.supply-budget.v1";
+
+pub type Attrs = BTreeMap<String, Value>;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FactsDocument {
+    pub contract: String,
+    pub vocabulary: String,
+    pub producer: Producer,
+    pub observed_at: String,
+    #[serde(default)]
+    pub nodes: Vec<Node>,
+    #[serde(default)]
+    pub edges: Vec<Edge>,
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
+    #[serde(default)]
+    pub errors: Vec<FactError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Producer {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Node {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub attrs: Attrs,
+    #[serde(default)]
+    pub expects: Vec<Expect>,
+    #[serde(default)]
+    pub blockers: Vec<Blocker>,
+}
+
+/// An attribute some producer must supply; while it is missing or null the
+/// node reports `blocker`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expect {
+    pub attr: String,
+    pub blocker: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Blocker {
+    pub code: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Edge {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+    #[serde(default)]
+    pub attrs: Attrs,
+}
+
+/// One row of a producer's upgrade-path matrix. `match` keys are compared
+/// with the owning repository node's string attributes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Capability {
+    pub usage_kind: String,
+    #[serde(rename = "match", default)]
+    pub matches: BTreeMap<String, String>,
+    pub path: String,
+    pub via: String,
+    pub lands: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<String>,
+    pub status: CapabilityStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CapabilityStatus {
+    Implemented,
+    Planned,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FactError {
+    pub subject: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// Parse one facts document or a JSON array of them, rejecting other contracts.
+pub fn parse(json: &str) -> miette::Result<Vec<FactsDocument>> {
+    let value: Value =
+        serde_json::from_str(json).map_err(|error| miette::miette!("parse facts: {error}"))?;
+    let docs: Vec<FactsDocument> = if value.is_array() {
+        serde_json::from_value(value)
+    } else {
+        serde_json::from_value(value).map(|doc| vec![doc])
+    }
+    .map_err(|error| miette::miette!("parse facts: {error}"))?;
+    if let Some(doc) = docs.iter().find(|doc| doc.contract != CONTRACT) {
+        return Err(miette::miette!(
+            "unsupported facts contract '{}', expected '{CONTRACT}'",
+            doc.contract
+        ));
+    }
+    Ok(docs)
+}
+
+/// A value together with the producer that declared it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Sourced<T> {
+    pub producer: String,
+    #[serde(flatten)]
+    pub value: T,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub kind: String,
+    pub attrs: Attrs,
+    pub expects: Vec<Sourced<Expect>>,
+    pub blockers: Vec<Sourced<Blocker>>,
+    pub producers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+    pub attrs: Attrs,
+    pub producers: Vec<String>,
+}
+
+/// Merged facts with adjacency by node id.
+#[derive(Debug, Default, Serialize)]
+pub struct Graph {
+    pub nodes: BTreeMap<String, GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub capabilities: Vec<Sourced<Capability>>,
+    pub errors: Vec<Sourced<FactError>>,
+    /// Contradictory facts found while merging (R1).
+    pub conflicts: Vec<Gap>,
+    #[serde(skip)]
+    outgoing: BTreeMap<String, Vec<usize>>,
+    #[serde(skip)]
+    incoming: BTreeMap<String, Vec<usize>>,
+    /// The topology supply runner and cache nodes join (R6), when given.
+    #[serde(skip)]
+    supply: Option<Supply>,
+}
+
+/// Merge documents by node id and edge `(from, to, kind)` (R1). Without a
+/// topology, runner and cache nodes are not joined (R6).
+pub fn build(docs: &[FactsDocument], topology: Option<&Topology>) -> Graph {
+    let mut graph = Graph {
+        supply: topology.map(|topology| topology.supply.clone()),
+        ..Graph::default()
+    };
+    let mut edge_index: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    for doc in docs {
+        let producer = &doc.producer.name;
+        for node in &doc.nodes {
+            graph.merge_node(producer, node);
+        }
+        for edge in &doc.edges {
+            let key = (edge.from.clone(), edge.to.clone(), edge.kind.clone());
+            if let Some(&index) = edge_index.get(&key) {
+                let merged = &mut graph.edges[index];
+                let conflicts = merge_attrs(&mut merged.attrs, &edge.attrs, &merged.producers);
+                add_producer(&mut merged.producers, producer);
+                let subject = format!("{} edge {} -> {}", edge.kind, edge.from, edge.to);
+                graph.record_conflicts(&edge.from, &subject, producer, conflicts);
+                continue;
+            }
+            let index = graph.edges.len();
+            edge_index.insert(key, index);
+            graph.edges.push(GraphEdge {
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                kind: edge.kind.clone(),
+                attrs: without_nulls(&edge.attrs),
+                producers: vec![producer.clone()],
+            });
+            graph
+                .outgoing
+                .entry(edge.from.clone())
+                .or_default()
+                .push(index);
+            graph
+                .incoming
+                .entry(edge.to.clone())
+                .or_default()
+                .push(index);
+        }
+        for capability in &doc.capabilities {
+            push_unique(&mut graph.capabilities, producer, capability);
+        }
+        for error in &doc.errors {
+            push_unique(&mut graph.errors, producer, error);
+        }
+    }
+    graph
+}
+
+impl Graph {
+    fn merge_node(&mut self, producer: &str, node: &Node) {
+        let Some(merged) = self.nodes.get_mut(&node.id) else {
+            self.nodes.insert(
+                node.id.clone(),
+                GraphNode {
+                    id: node.id.clone(),
+                    kind: node.kind.clone(),
+                    attrs: without_nulls(&node.attrs),
+                    expects: Vec::new(),
+                    blockers: Vec::new(),
+                    producers: vec![producer.to_string()],
+                },
+            );
+            return self.merge_node_lists(producer, node);
+        };
+        let mut conflicts = merge_attrs(&mut merged.attrs, &node.attrs, &merged.producers);
+        if merged.kind != node.kind {
+            conflicts.push(format!(
+                "kind '{}' ({}) vs '{}'",
+                merged.kind,
+                merged.producers.join(", "),
+                node.kind
+            ));
+        }
+        add_producer(&mut merged.producers, producer);
+        self.record_conflicts(&node.id, &node.id, producer, conflicts);
+        self.merge_node_lists(producer, node);
+    }
+
+    fn merge_node_lists(&mut self, producer: &str, node: &Node) {
+        let merged = self.nodes.get_mut(&node.id).expect("node merged above");
+        for expect in &node.expects {
+            if !merged.expects.iter().any(|known| known.value == *expect) {
+                merged.expects.push(sourced(producer, expect));
+            }
+        }
+        for blocker in &node.blockers {
+            push_unique(&mut merged.blockers, producer, blocker);
+        }
+    }
+
+    fn record_conflicts(&mut self, node: &str, subject: &str, producer: &str, found: Vec<String>) {
+        for conflict in found {
+            self.conflicts.push(Gap {
+                repository: repository_of(node),
+                node: node.to_string(),
+                usage_kind: None,
+                blocker: "contract-conflict".into(),
+                subcode: None,
+                reason: format!("{subject}: {conflict} ({producer})"),
+                owner: None,
+                source: "merge",
+            });
+        }
+    }
+
+    fn edges_of(&self, id: &str, reverse: bool) -> impl Iterator<Item = (usize, &GraphEdge)> {
+        let index = if reverse {
+            &self.incoming
+        } else {
+            &self.outgoing
+        };
+        index
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|&i| (i, &self.edges[i]))
+    }
+
+    fn is_absent_usage(&self, id: &str) -> bool {
+        self.nodes.get(id).is_some_and(|node| {
+            node.kind == "usage"
+                && node.attrs.get("state").and_then(Value::as_str) == Some("absent")
+        })
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.nodes.contains_key(id)
+            || self.outgoing.contains_key(id)
+            || self.incoming.contains_key(id)
+    }
+
+    /// The most specific matching row per producer (R2); ties keep every row.
+    fn best_rows(
+        &self,
+        usage_kind: &str,
+        repo: Option<&GraphNode>,
+    ) -> BTreeMap<&str, Vec<&Capability>> {
+        let mut best: BTreeMap<&str, (usize, Vec<&Capability>)> = BTreeMap::new();
+        for row in &self.capabilities {
+            let capability = &row.value;
+            let applies = capability.usage_kind == usage_kind
+                && capability.matches.iter().all(|(key, expected)| {
+                    repo.and_then(|repo| repo.attrs.get(key))
+                        .and_then(Value::as_str)
+                        == Some(expected.as_str())
+                });
+            if !applies {
+                continue;
+            }
+            let specificity = capability.matches.len();
+            let entry = best
+                .entry(row.producer.as_str())
+                .or_insert((specificity, Vec::new()));
+            if specificity > entry.0 {
+                *entry = (specificity, vec![capability]);
+            } else if specificity == entry.0 {
+                entry.1.push(capability);
+            }
+        }
+        best.into_iter()
+            .map(|(producer, (_, rows))| (producer, rows))
+            .collect()
+    }
+
+    /// Whether any producer's best row lands this usage; otherwise why not.
+    fn coverage(&self, node: &GraphNode, gap: &dyn Fn(Draft) -> Gap) -> Result<(), Vec<Gap>> {
+        let Some(usage_kind) = node.attrs.get("usageKind").and_then(Value::as_str) else {
+            return Err(vec![gap(Draft::new(
+                "no-capability",
+                "usage node has no usageKind attribute",
+                None,
+                "capability",
+            ))]);
+        };
+        let repo_id = repository_of(&node.id).map(|coordinate| format!("repo:{coordinate}"));
+        let repo = repo_id.as_deref().and_then(|id| self.nodes.get(id));
+        let rows = self.best_rows(usage_kind, repo);
+        if rows.is_empty() {
+            return Err(vec![gap(Draft::new(
+                "no-capability",
+                format!("no capability row covers usage kind '{usage_kind}'"),
+                None,
+                "capability",
+            ))]);
+        }
+        let mut failures = Vec::new();
+        for (producer, rows) in rows {
+            let [row] = rows.as_slice() else {
+                let paths: Vec<_> = rows.iter().map(|row| row.path.as_str()).collect();
+                failures.push(gap(Draft::new(
+                    "contract-conflict",
+                    format!(
+                        "{} equally specific '{usage_kind}' rows: {}",
+                        rows.len(),
+                        paths.join(", ")
+                    ),
+                    Some(producer),
+                    "capability",
+                )));
+                continue;
+            };
+            match self.covers(row, producer, repo_id.as_deref()) {
+                Ok(()) => return Ok(()),
+                Err(draft) => failures.push(gap(draft)),
+            }
+        }
+        Err(failures)
+    }
+
+    /// R3 (implemented and lands) then R4 (enabled enrollment).
+    fn covers(&self, row: &Capability, producer: &str, repo_id: Option<&str>) -> Result<(), Draft> {
+        if row.status != CapabilityStatus::Implemented || !row.lands {
+            let reason = match &row.fallback {
+                Some(fallback) => format!("{} (fallback: {fallback})", row.reason),
+                None => row.reason.clone(),
+            };
+            let blocker = row.blocker.as_deref().unwrap_or("no-capability");
+            return Err(Draft::new(blocker, reason, Some(producer), "capability"));
+        }
+        let Some(orchestrator) = &row.orchestrator else {
+            return Ok(());
+        };
+        let enrollments = repo_id
+            .map(|id| self.enrollments(id, orchestrator))
+            .unwrap_or_default();
+        if enrollments.iter().any(|edge| enabled(edge)) {
+            return Ok(());
+        }
+        let Some(disabled) = enrollments.first() else {
+            return Err(Draft::new(
+                "not-enrolled",
+                format!("not enrolled in any {orchestrator} orchestrator"),
+                None,
+                "enrollment",
+            ));
+        };
+        let text = |key: &str| disabled.attrs.get(key).and_then(Value::as_str);
+        let mut draft = Draft::new(
+            "operator-disabled",
+            text("reason").unwrap_or("disabled by the operator"),
+            disabled.producers.first().map(String::as_str),
+            "enrollment",
+        );
+        draft.subcode = text("blocker").map(str::to_string);
+        Err(draft)
+    }
+
+    /// `enrolledIn` edges from a repository to `orchestrator:<kind>/<name>`; an
+    /// edge naming no instance enrolls nothing.
+    fn enrollments(&self, repo_id: &str, orchestrator: &str) -> Vec<&GraphEdge> {
+        let target = format!("orchestrator:{orchestrator}");
+        self.edges_of(repo_id, false)
+            .map(|(_, edge)| edge)
+            .filter(|edge| {
+                edge.kind == "enrolledIn"
+                    && edge
+                        .to
+                        .strip_prefix(&target)
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .is_some_and(|name| !name.is_empty())
+            })
+            .collect()
+    }
+
+    /// R6: a runner node needs a topology pool offering its label on its
+    /// forge host, and a cache node a topology cache of its name.
+    fn topology_gap(&self, node: &GraphNode) -> Option<Draft> {
+        let supply = self.supply.as_ref()?;
+        let (blocker, joined) = match node.kind.as_str() {
+            "runner" => (
+                "unknown-runner",
+                supply
+                    .runner_pools
+                    .values()
+                    .any(|pool| offers(pool, &node.id)),
+            ),
+            "cache" => (
+                "unknown-cache",
+                node.id
+                    .strip_prefix("cache:")
+                    .is_some_and(|name| supply.caches.contains_key(name)),
+            ),
+            _ => return None,
+        };
+        (!joined).then(|| {
+            Draft::new(
+                blocker,
+                format!("topology supply does not declare {}", node.id),
+                None,
+                "topology",
+            )
+        })
+    }
+}
+
+/// A gap before it is bound to its node.
+#[derive(Clone)]
+struct Draft {
+    blocker: String,
+    subcode: Option<String>,
+    reason: String,
+    owner: Option<String>,
+    source: &'static str,
+}
+
+impl Draft {
+    fn new(
+        blocker: &str,
+        reason: impl Into<String>,
+        owner: Option<&str>,
+        source: &'static str,
+    ) -> Self {
+        Self {
+            blocker: blocker.to_string(),
+            subcode: None,
+            reason: reason.into(),
+            owner: owner.map(str::to_string),
+            source,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Gap {
+    pub repository: Option<String>,
+    pub node: String,
+    pub usage_kind: Option<String>,
+    pub blocker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subcode: Option<String>,
+    pub reason: String,
+    pub owner: Option<String>,
+    /// The rule family: merge, capability, enrollment, expectation, topology
+    /// or producer.
+    pub source: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GapReport {
+    pub contract: &'static str,
+    pub summary: Summary,
+    pub gaps: Vec<Gap>,
+    pub errors: Vec<Sourced<FactError>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub repositories: usize,
+    /// Usages considered: every usage node except `state: absent`.
+    pub usages: usize,
+    /// Usages that some producer's upgrade path lands (R2-R4).
+    pub covered: usize,
+    pub drift: DriftSummary,
+    pub by_blocker: Vec<BlockerCount>,
+    pub by_repository: Vec<RepositoryCount>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DriftSummary {
+    pub covered: usize,
+    pub uncovered: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockerCount {
+    pub blocker: String,
+    pub gaps: usize,
+    pub repositories: usize,
+    pub usages: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepositoryCount {
+    pub repository: String,
+    pub gaps: usize,
+    pub blockers: Vec<String>,
+}
+
+/// Apply the gap rules R2-R7 to every node.
+pub fn gaps(graph: &Graph) -> GapReport {
+    let mut gaps = graph.conflicts.clone();
+    // (blocker, usage) pairs an R6 gap on a runner or cache affects.
+    let mut topology_usages: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut summary = Summary {
+        repositories: graph
+            .nodes
+            .values()
+            .filter(|node| node.kind == "repo")
+            .count(),
+        ..Summary::default()
+    };
+    for node in graph.nodes.values() {
+        let state = node.attrs.get("state").and_then(Value::as_str);
+        let is_usage = node.kind == "usage";
+        if is_usage && state == Some("absent") {
+            continue;
+        }
+        let usage_kind = is_usage
+            .then(|| node.attrs.get("usageKind").and_then(Value::as_str))
+            .flatten();
+        let gap = |draft: Draft| Gap {
+            repository: repository_of(&node.id),
+            node: node.id.clone(),
+            usage_kind: usage_kind.map(str::to_string),
+            blocker: draft.blocker,
+            subcode: draft.subcode,
+            reason: draft.reason,
+            owner: draft.owner,
+            source: draft.source,
+        };
+        for blocker in &node.blockers {
+            let owner = blocker.value.owner.as_deref().unwrap_or(&blocker.producer);
+            gaps.push(gap(Draft::new(
+                &blocker.value.code,
+                blocker.value.reason.clone(),
+                Some(owner),
+                "producer",
+            )));
+        }
+        for expect in &node.expects {
+            if !node.attrs.contains_key(&expect.value.attr) {
+                gaps.push(gap(Draft::new(
+                    &expect.value.blocker,
+                    expect.value.reason.clone(),
+                    Some(&expect.producer),
+                    "expectation",
+                )));
+            }
+        }
+        if let Some(draft) = graph.topology_gap(node) {
+            // One gap per repository that depends on the unjoined node; a
+            // node used only by absent usages needs none.
+            let all = graph.edges_of(&node.id, true).count();
+            let live: Vec<_> = graph
+                .edges_of(&node.id, true)
+                .filter(|(_, edge)| !graph.is_absent_usage(&edge.from))
+                .collect();
+            topology_usages.extend(
+                live.iter()
+                    .filter(|(_, edge)| edge.from.starts_with("usage:"))
+                    .map(|(_, edge)| (draft.blocker.clone(), edge.from.clone())),
+            );
+            let dependents: BTreeSet<_> = live
+                .iter()
+                .filter_map(|(_, edge)| repository_of(&edge.from))
+                .collect();
+            if dependents.is_empty() {
+                if live.len() == all {
+                    gaps.push(gap(draft));
+                }
+            } else {
+                for repository in dependents {
+                    gaps.push(Gap {
+                        repository: Some(repository),
+                        ..gap(draft.clone())
+                    });
+                }
+            }
+        }
+        if !is_usage {
+            continue;
+        }
+        summary.usages += 1;
+        let covered = match graph.coverage(node, &gap) {
+            Ok(()) => true,
+            Err(failures) => {
+                gaps.extend(failures);
+                false
+            }
+        };
+        summary.covered += usize::from(covered);
+        if state == Some("drift") {
+            if covered {
+                summary.drift.covered += 1;
+            } else {
+                summary.drift.uncovered += 1;
+            }
+        }
+    }
+    gaps.sort();
+    gaps.dedup();
+
+    let mut by_blocker: BTreeMap<&str, (usize, BTreeSet<&str>, BTreeSet<&str>)> = BTreeMap::new();
+    let mut by_repository: BTreeMap<&str, (usize, BTreeSet<&str>)> = BTreeMap::new();
+    for gap in &gaps {
+        let entry = by_blocker.entry(&gap.blocker).or_default();
+        entry.0 += 1;
+        if let Some(repository) = &gap.repository {
+            entry.1.insert(repository);
+            let repo = by_repository.entry(repository).or_default();
+            repo.0 += 1;
+            repo.1.insert(&gap.blocker);
+        }
+        if gap.node.starts_with("usage:") {
+            entry.2.insert(&gap.node);
+        }
+    }
+    for (blocker, usage) in &topology_usages {
+        by_blocker.entry(blocker).or_default().2.insert(usage);
+    }
+    summary.by_blocker = by_blocker
+        .into_iter()
+        .map(|(blocker, (gaps, repositories, usages))| BlockerCount {
+            blocker: blocker.to_string(),
+            gaps,
+            repositories: repositories.len(),
+            usages: usages.len(),
+        })
+        .collect();
+    summary
+        .by_blocker
+        .sort_by(|a, b| b.gaps.cmp(&a.gaps).then_with(|| a.blocker.cmp(&b.blocker)));
+    summary.by_repository = by_repository
+        .into_iter()
+        .map(|(repository, (gaps, blockers))| RepositoryCount {
+            repository: repository.to_string(),
+            gaps,
+            blockers: blockers.into_iter().map(str::to_string).collect(),
+        })
+        .collect();
+
+    GapReport {
+        contract: GAPS_CONTRACT,
+        summary,
+        errors: graph.errors.clone(),
+        gaps,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathReport {
+    pub contract: &'static str,
+    pub root: String,
+    pub reverse: bool,
+    pub depth: usize,
+    pub nodes: Vec<PathNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PathNode {
+    pub id: String,
+    pub kind: Option<String>,
+    pub depth: usize,
+    pub attrs: Attrs,
+}
+
+/// Breadth-first walk from `id` (or `repo:<id>` for a bare coordinate),
+/// following edges forward, or backward with `reverse`, up to `depth` hops.
+pub fn walk(graph: &Graph, id: &str, reverse: bool, depth: usize) -> miette::Result<PathReport> {
+    let root = [id.to_string(), format!("repo:{id}")]
+        .into_iter()
+        .find(|candidate| graph.contains(candidate))
+        .ok_or_else(|| miette::miette!("unknown supply node '{id}'"))?;
+    let mut seen = BTreeSet::from([root.clone()]);
+    let mut queue = VecDeque::from([(root.clone(), 0)]);
+    let mut edges = BTreeSet::new();
+    let mut nodes = Vec::new();
+    while let Some((current, hops)) = queue.pop_front() {
+        let known = graph.nodes.get(&current);
+        nodes.push(PathNode {
+            id: current.clone(),
+            kind: known.map(|node| node.kind.clone()),
+            depth: hops,
+            attrs: known.map(|node| node.attrs.clone()).unwrap_or_default(),
+        });
+        if hops == depth {
+            continue;
+        }
+        for (index, edge) in graph.edges_of(&current, reverse) {
+            edges.insert(index);
+            let next = if reverse { &edge.from } else { &edge.to };
+            if seen.insert(next.clone()) {
+                queue.push_back((next.clone(), hops + 1));
+            }
+        }
+    }
+    Ok(PathReport {
+        contract: PATH_CONTRACT,
+        root,
+        reverse,
+        depth,
+        nodes,
+        edges: edges
+            .into_iter()
+            .map(|index| graph.edges[index].clone())
+            .collect(),
+    })
+}
+
+/// Pull-request pipelines of workflows averaging more minutes per run than
+/// this are `heavy-on-pr` candidates.
+// ponytail: one fixed threshold; make it a flag when fleets disagree.
+const HEAVY_RUN_MINUTES: f64 = 30.0;
+const MONTH_DAYS: f64 = 30.0;
+
+/// A workflow's observed CI usage over `windowDays`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Observed {
+    /// Omitted means 30 days; an explicit value must be positive.
+    window_days: Option<f64>,
+    /// A present `observed` must say how many runs and minutes it saw.
+    runs: f64,
+    agent_minutes: f64,
+    #[serde(default)]
+    by_lane: BTreeMap<String, f64>,
+    #[serde(default)]
+    failed_minutes: f64,
+    #[serde(default)]
+    killed_minutes: f64,
+}
+
+/// A workflow's static triggers; empty `branches` means push on any branch.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Triggers {
+    events: Vec<String>,
+    branches: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetReport {
+    pub contract: &'static str,
+    pub updates_per_month: f64,
+    pub budgets: Vec<BudgetForecast>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetForecast {
+    pub name: String,
+    pub pools: Vec<String>,
+    pub minutes_per_month: u32,
+    /// Observed minutes scaled to 30 days.
+    pub observed_minutes: u64,
+    /// Planned updater qualification runs on metered pools.
+    pub updater_minutes: u64,
+    pub forecast_minutes: u64,
+    /// `forecastMinutes / minutesPerMonth`, to two decimals.
+    pub utilization: f64,
+    pub within_budget: bool,
+    /// Reductions, largest first. Estimates for one workflow can overlap.
+    pub candidates: Vec<Candidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub rule: &'static str,
+    pub node: String,
+    pub estimated_savings: u64,
+    pub reason: String,
+}
+
+/// Forecast each topology budget from `workflow:` nodes whose `runsOn`
+/// runners belong to the budget's pools. A repository enrolled (enabled) in
+/// an `orchestrator` of that kind adds `runsPerUpdate` (an orchestrator node
+/// attribute, default 2) qualification runs of each workflow on a metered
+/// pool per update. A workflow's observed minutes are not split by pool, so a
+/// workflow spanning several pools counts in full toward every budget it
+/// touches (an upper bound).
+pub fn budget(
+    graph: &Graph,
+    orchestrator: &str,
+    updates_per_month: f64,
+) -> miette::Result<BudgetReport> {
+    if !updates_per_month.is_finite() || updates_per_month < 0.0 {
+        miette::bail!("updates per month must be a non-negative number, got {updates_per_month}");
+    }
+    let supply = graph
+        .supply
+        .as_ref()
+        .ok_or_else(|| miette::miette!("a budget forecast needs a topology"))?;
+    let mut budgets = Vec::new();
+    let mut conflicted = BTreeSet::new();
+    for (name, budget) in &supply.budgets {
+        if budget.minutes_per_month == 0 {
+            miette::bail!("budget '{name}': minutesPerMonth must be positive");
+        }
+        let pools: Vec<_> = budget
+            .pools
+            .iter()
+            .filter_map(|pool| supply.runner_pools.get(pool))
+            .collect();
+        let (mut observed_total, mut updater_total) = (0.0, 0.0);
+        let mut candidates = Vec::new();
+        for node in graph.nodes.values().filter(|node| node.kind == "workflow") {
+            let on: Vec<_> = pools
+                .iter()
+                .filter(|pool| {
+                    graph
+                        .edges_of(&node.id, false)
+                        .any(|(_, edge)| edge.kind == "runsOn" && offers(pool, &edge.to))
+                })
+                .collect();
+            if on.is_empty() || !node.attrs.contains_key("observed") {
+                continue;
+            }
+            // A merge conflict on the workflow, or on its repository's
+            // enrollment, means the facts disagree about what is forecast.
+            let repository = repository_of(&node.id).map(|coordinate| format!("repo:{coordinate}"));
+            let orchestrator_nodes: Vec<_> = graph
+                .enabled_enrollments(&node.id, orchestrator)
+                .into_iter()
+                .map(|edge| edge.to.as_str())
+                .collect();
+            if graph.conflicts.iter().any(|gap| {
+                gap.node == node.id
+                    || repository.as_deref() == Some(gap.node.as_str())
+                    || orchestrator_nodes.contains(&gap.node.as_str())
+            }) {
+                conflicted.insert(node.id.as_str());
+            }
+            let observed: Observed = typed_attr(node, "observed")?;
+            if observed.window_days.is_some_and(|days| days <= 0.0) {
+                miette::bail!("{}: observed: windowDays must be positive", node.id);
+            }
+            let negative = observed
+                .by_lane
+                .values()
+                .chain([
+                    &observed.runs,
+                    &observed.agent_minutes,
+                    &observed.failed_minutes,
+                    &observed.killed_minutes,
+                ])
+                .any(|minutes| *minutes < 0.0);
+            if negative {
+                miette::bail!(
+                    "{}: observed: window, counts and minutes must not be negative",
+                    node.id
+                );
+            }
+            let triggers: Triggers = typed_attr(node, "triggers")?;
+            let scale = MONTH_DAYS / observed.window_days.unwrap_or(MONTH_DAYS);
+            let lane = |lane: &str| observed.by_lane.get(lane).copied().unwrap_or(0.0) * scale;
+            let average = if observed.runs > 0.0 {
+                observed.agent_minutes / observed.runs
+            } else {
+                0.0
+            };
+            observed_total += observed.agent_minutes * scale;
+            if on.iter().any(|pool| pool.metered) {
+                updater_total +=
+                    graph.updater_runs(&node.id, orchestrator)? * average * updates_per_month;
+            }
+
+            let mut candidate = |rule, minutes: f64, reason: String| {
+                if minutes.round() > 0.0 {
+                    candidates.push(Candidate {
+                        rule,
+                        node: node.id.clone(),
+                        estimated_savings: minutes.round() as u64,
+                        reason,
+                    });
+                }
+            };
+            let event = |name: &str| triggers.events.iter().any(|event| event == name);
+            let push_anywhere = triggers.branches.is_empty()
+                || triggers
+                    .branches
+                    .iter()
+                    .any(|branch| matches!(branch.as_str(), "*" | "**"));
+            if event("push") && event("pull_request") && push_anywhere {
+                candidate(
+                    "duplicate-trigger",
+                    lane("push:branch"),
+                    "push runs on every branch next to pull_request pipelines; limit push to \
+                     the default branch"
+                        .into(),
+                );
+            }
+            if average > HEAVY_RUN_MINUTES {
+                candidate(
+                    "heavy-on-pr",
+                    lane("pull_request"),
+                    format!(
+                        "averages {average:.0} minutes per run; run it after merge or on demand"
+                    ),
+                );
+            }
+            candidate(
+                "failure-waste",
+                observed.failed_minutes * scale,
+                "minutes spent on failed runs".into(),
+            );
+            candidate(
+                "timeout-waste",
+                observed.killed_minutes * scale,
+                "minutes spent on killed or timed-out runs; lower the timeout or fail fast".into(),
+            );
+        }
+        candidates.sort_by(|a, b| {
+            b.estimated_savings
+                .cmp(&a.estimated_savings)
+                .then_with(|| (a.rule, &a.node).cmp(&(b.rule, &b.node)))
+        });
+        // The total is the sum of the rounded components, so the serialized
+        // report adds up.
+        let (observed_minutes, updater_minutes) =
+            (observed_total.round() as u64, updater_total.round() as u64);
+        let forecast = observed_total + updater_total;
+        let allowance = f64::from(budget.minutes_per_month);
+        budgets.push(BudgetForecast {
+            name: name.clone(),
+            pools: budget.pools.clone(),
+            minutes_per_month: budget.minutes_per_month,
+            observed_minutes,
+            updater_minutes,
+            forecast_minutes: observed_minutes + updater_minutes,
+            utilization: (forecast / allowance * 100.0).round() / 100.0,
+            within_budget: forecast <= allowance,
+            candidates,
+        });
+    }
+    if !conflicted.is_empty() {
+        miette::bail!(
+            "conflicting facts for workflows in a budget: {}",
+            conflicted.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(BudgetReport {
+        contract: BUDGET_CONTRACT,
+        updates_per_month,
+        budgets,
+    })
+}
+
+/// Read a structured attribute, defaulting when absent; a malformed one fails
+/// the forecast rather than silently counting zero minutes.
+fn typed_attr<T: DeserializeOwned + Default>(node: &GraphNode, key: &str) -> miette::Result<T> {
+    node.attrs.get(key).map_or(Ok(T::default()), |value| {
+        serde_json::from_value(value.clone())
+            .map_err(|error| miette::miette!("{}: {key}: {error}", node.id))
+    })
+}
+
+impl Graph {
+    fn enabled_enrollments(&self, workflow: &str, orchestrator: &str) -> Vec<&GraphEdge> {
+        let Some(coordinate) = repository_of(workflow) else {
+            return Vec::new();
+        };
+        self.enrollments(&format!("repo:{coordinate}"), orchestrator)
+            .into_iter()
+            .filter(|edge| enabled(edge))
+            .collect()
+    }
+
+    /// Qualification runs per update for a workflow whose repository is
+    /// enabled in `orchestrator`-kind orchestrators: the sum over every
+    /// enabled enrollment, zero when there is none.
+    fn updater_runs(&self, workflow: &str, orchestrator: &str) -> miette::Result<f64> {
+        let mut total = 0.0;
+        for edge in self.enabled_enrollments(workflow, orchestrator) {
+            total += match self
+                .nodes
+                .get(&edge.to)
+                .and_then(|node| node.attrs.get("runsPerUpdate"))
+            {
+                None => 2.0,
+                Some(runs) => runs.as_f64().filter(|runs| *runs >= 0.0).ok_or_else(|| {
+                    miette::miette!("{}: runsPerUpdate must be a non-negative number", edge.to)
+                })?,
+            };
+        }
+        Ok(total)
+    }
+}
+
+/// Whole days from a document's `observedAt` (read to day precision) until
+/// `now_unix_seconds`, or `None` when the date is unreadable.
+pub fn age_days(observed_at: &str, now_unix_seconds: u64) -> Option<i64> {
+    let date = observed_at.get(..10)?;
+    if observed_at.len() > 10 && !observed_at[10..].starts_with('T') {
+        return None;
+    }
+    let mut parts = date.split('-').map(|part| {
+        part.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| part.parse::<i64>().ok())
+            .flatten()
+    });
+    let (year, month, day) = (parts.next()??, parts.next()??, parts.next()??);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=month_days).contains(&day) {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let observed = era * 146_097 + day_of_era - 719_468;
+    Some(i64::try_from(now_unix_seconds / 86_400).ok()? - observed)
+}
+
+/// The repository coordinate of a `repo:`, `usage:` or `workflow:` node id.
+pub fn repository_of(id: &str) -> Option<String> {
+    id.strip_prefix("repo:")
+        .or_else(|| {
+            id.strip_prefix("usage:")
+                .or_else(|| id.strip_prefix("workflow:"))
+                .and_then(|rest| rest.split_once('#'))
+                .map(|(coordinate, _)| coordinate)
+        })
+        .map(str::to_string)
+}
+
+/// Enrollment needs an explicit `enabled: true`.
+fn enabled(edge: &GraphEdge) -> bool {
+    edge.attrs.get("enabled") == Some(&Value::Bool(true))
+}
+
+/// Whether `runner:<forgeHost>/<label>` is one of the pool's runners.
+fn offers(pool: &RunnerPool, runner: &str) -> bool {
+    runner
+        .strip_prefix("runner:")
+        .and_then(|id| id.split_once('/'))
+        .is_some_and(|(host, label)| {
+            pool.forge_host == host && pool.labels.iter().any(|known| known == label)
+        })
+}
+
+fn sourced<T: Clone>(producer: &str, value: &T) -> Sourced<T> {
+    Sourced {
+        producer: producer.to_string(),
+        value: value.clone(),
+    }
+}
+
+fn push_unique<T: Clone + PartialEq>(list: &mut Vec<Sourced<T>>, producer: &str, value: &T) {
+    if !list
+        .iter()
+        .any(|known| known.producer == producer && &known.value == value)
+    {
+        list.push(sourced(producer, value));
+    }
+}
+
+fn add_producer(producers: &mut Vec<String>, producer: &str) {
+    if !producers.iter().any(|known| known == producer) {
+        producers.push(producer.to_string());
+    }
+}
+
+/// Null means "unknown": it neither sets nor contradicts an attribute.
+fn without_nulls(attrs: &Attrs) -> Attrs {
+    attrs
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// Add new attributes; a different non-null value for a known key is a
+/// conflict and keeps the first value.
+fn merge_attrs(into: &mut Attrs, from: &Attrs, producers: &[String]) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    for (key, value) in without_nulls(from) {
+        match into.get(&key) {
+            Some(known) if *known != value => conflicts.push(format!(
+                "attr '{key}' {known} ({}) vs {value}",
+                producers.join(", ")
+            )),
+            Some(_) => {}
+            None => {
+                into.insert(key, value);
+            }
+        }
+    }
+    conflicts
+}

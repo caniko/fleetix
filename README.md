@@ -36,8 +36,15 @@ derive runtime data from a generated topology sidecar:
 - `hosts.vpnProfile` resolves a host-local VPN profile by host and profile name.
 - `services.resolveEndpoint` deterministically resolves a local endpoint or
   its declared LAN `remoteVia` endpoint for an ingress host.
+- `services.resolveProxyEndpoints` resolves a proxy action's `endpoint` followed
+  by its ordered `fallbackEndpoints` the same way, for upstream failover.
+  Validation requires every fallback to be a reachable HTTP endpoint sharing the
+  primary's `transport` and `tlsServerName`, without repeats.
 - `services.endpointsForHost`, `services.serviceHosts`, and
   `services.managedDnsCnameIntents` derive host, HTTP-site, and DNS views.
+  Like `vpn`, `lan` sites (served by a `lan`-scope ingress group) are private:
+  they never get managed CNAMEs or public probes, and validation rejects
+  `dnsPublication = "managed"` for them; consumers publish explicit records.
 - `domains.publicationAddressIntents` renders explicit static destinations and
   directly published apexes as A/AAAA ownership intents.
 - `adapters.infernix.mkFleetNodes` converts fleet host topology plus
@@ -225,6 +232,20 @@ consumer's machine data or deployment policy.
 The declared Rust MSRV is 1.88, required by the resolved `pklr` dependency.
 CI also checks the pinned current stable Rust 1.96.1 toolchain so the minimum
 compatibility promise and modern compiler behavior are tested separately.
+
+## Supply facts
+
+`fleetix::supply` merges producer facts (`fleetix.supply-facts.v1`), such as
+Simit's usage facts and an operator's enrollment overlay, into one graph. It
+reports which usages no upgrade path covers, and why. See
+[Supply facts](SUPPLY.md).
+
+```bash
+fleetix supply gaps --facts facts.json --topology Topology.pkl --by repo
+fleetix supply path rev:github.com/example/tool@<sha> --reverse --facts facts.json
+fleetix supply graph --facts facts.json --facts overlay.json
+fleetix supply budget --facts facts.json --facts overlay.json --topology Topology.pkl
+```
 
 ## License
 

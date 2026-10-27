@@ -1,0 +1,1008 @@
+use fleetix::Topology;
+use fleetix::supply::{self, CONTRACT, FactsDocument};
+use serde_json::{Value, json};
+use std::path::Path;
+
+fn fixture(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/supply")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+fn doc(producer: &str, body: Value) -> FactsDocument {
+    let mut value = json!({
+        "contract": CONTRACT,
+        "vocabulary": "test.v1",
+        "producer": {"name": producer, "version": "0"},
+        "observedAt": "2026-10-26T00:00:00Z"
+    });
+    for (key, field) in body.as_object().unwrap() {
+        value[key] = field.clone();
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+fn repo(coordinate: &str, attrs: Value) -> Value {
+    json!({"id": format!("repo:{coordinate}"), "kind": "repo", "attrs": attrs})
+}
+
+fn usage(coordinate: &str, kind: &str, state: &str) -> Value {
+    json!({
+        "id": format!("usage:{coordinate}#{kind}"),
+        "kind": "usage",
+        "attrs": {"usageKind": kind, "state": state}
+    })
+}
+
+fn row(kind: &str, matches: Value, status: &str, lands: bool, extra: Value) -> Value {
+    let mut value = json!({
+        "usageKind": kind, "match": matches, "path": "p", "via": "v",
+        "lands": lands, "status": status, "reason": "r"
+    });
+    for (key, field) in extra.as_object().unwrap() {
+        value[key] = field.clone();
+    }
+    value
+}
+
+fn enrolled(coordinate: &str, orchestrator: &str, attrs: Value) -> Value {
+    json!({
+        "from": format!("repo:{coordinate}"),
+        "to": format!("orchestrator:{orchestrator}"),
+        "kind": "enrolledIn",
+        "attrs": attrs
+    })
+}
+
+/// `(node, blocker, subcode, owner)` for every gap.
+fn gaps(docs: &[FactsDocument]) -> Vec<(String, String, Option<String>, Option<String>)> {
+    supply::gaps(&supply::build(docs, None))
+        .gaps
+        .into_iter()
+        .map(|gap| (gap.node, gap.blocker, gap.subcode, gap.owner))
+        .collect()
+}
+
+fn blockers(docs: &[FactsDocument]) -> Vec<String> {
+    gaps(docs).into_iter().map(|gap| gap.1).collect()
+}
+
+/// Refresh with `FLEETIX_BLESS=1 cargo test --test supply` after replacing a
+/// producer fixture, then review the diff.
+#[test]
+fn fixtures_produce_expected_gaps() {
+    let mut docs = supply::parse(&fixture("simit-usage-facts.v1.json")).unwrap();
+    docs.extend(supply::parse(&fixture("canix-overlay.v1.json")).unwrap());
+    let report = supply::gaps(&supply::build(&docs, None));
+    let actual = serde_json::to_string_pretty(&report).unwrap() + "\n";
+    let expected =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/supply/expected-gaps.json");
+    if std::env::var_os("FLEETIX_BLESS").is_some() {
+        std::fs::write(&expected, &actual).unwrap();
+    }
+    assert_eq!(actual, fixture("expected-gaps.json"));
+}
+
+#[test]
+fn parse_accepts_one_document_or_an_array_and_rejects_other_contracts() {
+    let one = json!({
+        "contract": CONTRACT, "vocabulary": "v", "producer": {"name": "p", "version": "1"},
+        "observedAt": "2026-10-26T00:00:00Z"
+    });
+    assert_eq!(supply::parse(&one.to_string()).unwrap().len(), 1);
+    assert_eq!(
+        supply::parse(&json!([one, one]).to_string()).unwrap().len(),
+        2
+    );
+
+    let mut newer = one.clone();
+    newer["contract"] = json!("fleetix.supply-facts.v2");
+    let error = supply::parse(&json!([one, newer]).to_string()).unwrap_err();
+    assert!(error.to_string().contains("unsupported facts contract"));
+
+    let mut unknown = one.clone();
+    unknown["extra"] = json!(true);
+    assert!(supply::parse(&unknown.to_string()).is_err());
+}
+
+#[test]
+fn r1_merges_by_id_and_reports_contradictions() {
+    let first = doc(
+        "simit",
+        json!({
+            "nodes": [
+                {"id": "repo:h/o/r", "kind": "repo", "attrs": {"forge": "h", "landing": null}},
+                usage("h/o/r", "ci.primary", "drift")
+            ],
+            "edges": [enrolled("h/o/r", "u/a", json!({"enabled": true}))]
+        }),
+    );
+    let second = doc(
+        "canix",
+        json!({
+            "nodes": [
+                {"id": "repo:h/o/r", "kind": "repo", "attrs": {"forge": "other", "landing": "direct", "ciTarget": null}},
+                {"id": "usage:h/o/r#ci.primary", "kind": "rev"}
+            ],
+            "edges": [enrolled("h/o/r", "u/a", json!({"enabled": false, "status": "kept"}))]
+        }),
+    );
+    let graph = supply::build(&[first, second], None);
+    let repo = &graph.nodes["repo:h/o/r"];
+    assert_eq!(repo.attrs["forge"], "h", "the first value wins a conflict");
+    assert_eq!(
+        repo.attrs["landing"], "direct",
+        "null never blocks a later value"
+    );
+    assert!(!repo.attrs.contains_key("ciTarget"));
+    assert_eq!(repo.producers, ["simit", "canix"]);
+    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges[0].attrs["status"], "kept");
+
+    let reasons: Vec<_> = graph
+        .conflicts
+        .iter()
+        .map(|gap| gap.reason.as_str())
+        .collect();
+    assert_eq!(reasons.len(), 3, "{reasons:?}");
+    assert!(reasons[0].contains("attr 'forge'"));
+    assert!(reasons[1].contains("kind 'usage'"));
+    assert!(reasons[2].contains("enrolledIn edge") && reasons[2].contains("attr 'enabled'"));
+    assert!(
+        graph
+            .conflicts
+            .iter()
+            .all(|gap| gap.blocker == "contract-conflict")
+    );
+}
+
+#[test]
+fn r2_picks_the_most_specific_row_per_producer_and_ties_conflict() {
+    let nodes = json!([
+        repo("h/o/r", json!({"forge": "h", "ciTarget": "a/h"})),
+        usage("h/o/r", "ci.primary", "drift")
+    ]);
+    let specific = doc(
+        "simit",
+        json!({"nodes": nodes, "capabilities": [
+            row("ci.primary", json!({}), "planned", true, json!({"blocker": "generic"})),
+            row("ci.primary", json!({"forge": "h"}), "planned", true, json!({"blocker": "forge"})),
+            row("ci.primary", json!({"forge": "h", "ciTarget": "a/h"}), "planned", true, json!({"blocker": "exact"})),
+            row("ci.primary", json!({"forge": "h", "ciTarget": "other"}), "planned", true, json!({"blocker": "mismatch"})),
+            row("ci.publish", json!({}), "planned", true, json!({"blocker": "other-kind"}))
+        ]}),
+    );
+    assert_eq!(blockers(&[specific]), ["exact"]);
+
+    let tied = doc(
+        "simit",
+        json!({"nodes": nodes, "capabilities": [
+            row("ci.primary", json!({"forge": "h"}), "implemented", true, json!({})),
+            row("ci.primary", json!({"ciTarget": "a/h"}), "planned", true, json!({"blocker": "b"}))
+        ]}),
+    );
+    assert_eq!(blockers(&[tied]), ["contract-conflict"]);
+
+    // Identical rows from two documents of one producer are not a tie.
+    let duplicate = doc(
+        "simit",
+        json!({"capabilities": [row("ci.primary", json!({}), "implemented", true, json!({}))]}),
+    );
+    let with_nodes = doc("simit", json!({"nodes": nodes}));
+    assert!(blockers(&[duplicate.clone(), duplicate, with_nodes]).is_empty());
+}
+
+#[test]
+fn r3_requires_an_implemented_landing_row() {
+    let nodes = json!([
+        repo("h/o/r", json!({})),
+        usage("h/o/r", "readme.badges", "current")
+    ]);
+    let cases = [
+        (
+            row("readme.badges", json!({}), "implemented", true, json!({})),
+            vec![],
+        ),
+        (
+            row(
+                "readme.badges",
+                json!({}),
+                "implemented",
+                false,
+                json!({"blocker": "no-orchestrator"}),
+            ),
+            vec!["no-orchestrator"],
+        ),
+        (
+            row(
+                "readme.badges",
+                json!({}),
+                "unsupported",
+                true,
+                json!({"blocker": "manual-pin"}),
+            ),
+            vec!["manual-pin"],
+        ),
+        (
+            row("readme.badges", json!({}), "planned", true, json!({})),
+            vec!["no-capability"],
+        ),
+    ];
+    for (capability, expected) in cases {
+        let facts = doc(
+            "simit",
+            json!({"nodes": nodes, "capabilities": [capability]}),
+        );
+        assert_eq!(blockers(&[facts]), expected);
+    }
+    assert_eq!(
+        blockers(&[doc("simit", json!({"nodes": nodes}))]),
+        ["no-capability"]
+    );
+
+    let fallback = doc(
+        "simit",
+        json!({"nodes": nodes, "capabilities": [
+            row("readme.badges", json!({}), "planned", true, json!({"blocker": "b", "fallback": "run it"}))
+        ]}),
+    );
+    let report = supply::gaps(&supply::build(&[fallback], None));
+    assert_eq!(report.gaps[0].reason, "r (fallback: run it)");
+    assert_eq!(report.gaps[0].owner.as_deref(), Some("simit"));
+}
+
+#[test]
+fn r4_requires_an_enabled_enrollment_of_the_row_orchestrator() {
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [repo("h/o/r", json!({"forge": "h"})), usage("h/o/r", "ci.primary", "drift")],
+            "capabilities": [row("ci.primary", json!({"forge": "h"}), "implemented", true, json!({"orchestrator": "updater"}))]
+        }),
+    );
+    let overlay = |edges: Value| doc("canix", json!({"edges": edges}));
+
+    assert_eq!(
+        gaps(std::slice::from_ref(&facts)),
+        [(
+            "usage:h/o/r#ci.primary".into(),
+            "not-enrolled".into(),
+            None,
+            None
+        )]
+    );
+    let nameless = overlay(json!([enrolled(
+        "h/o/r",
+        "updater",
+        json!({"enabled": true})
+    )]));
+    assert_eq!(blockers(&[facts.clone(), nameless]), ["not-enrolled"]);
+    let other_kind = overlay(json!([enrolled(
+        "h/o/r",
+        "updater-ng/fleet",
+        json!({"enabled": true})
+    )]));
+    assert_eq!(blockers(&[facts.clone(), other_kind]), ["not-enrolled"]);
+
+    let disabled = overlay(json!([enrolled(
+        "h/o/r",
+        "updater/fleet",
+        json!({"enabled": false, "blocker": "pr-required", "reason": "needs a PR"})
+    )]));
+    let report = supply::gaps(&supply::build(&[facts.clone(), disabled.clone()], None));
+    assert_eq!(report.gaps.len(), 1);
+    assert_eq!(report.gaps[0].blocker, "operator-disabled");
+    assert_eq!(report.gaps[0].subcode.as_deref(), Some("pr-required"));
+    assert_eq!(report.gaps[0].reason, "needs a PR");
+    assert_eq!(report.gaps[0].owner.as_deref(), Some("canix"));
+    assert_eq!(report.summary.drift.uncovered, 1);
+
+    let unflagged = overlay(json!([enrolled("h/o/r", "updater/fleet", json!({}))]));
+    assert_eq!(blockers(&[facts.clone(), unflagged]), ["operator-disabled"]);
+
+    let enabled = overlay(json!([
+        enrolled("h/o/r", "updater/fleet", json!({"enabled": false})),
+        enrolled("h/o/r", "updater/canary", json!({"enabled": true}))
+    ]));
+    let report = supply::gaps(&supply::build(&[facts.clone(), enabled], None));
+    assert!(report.gaps.is_empty());
+    assert_eq!(
+        (report.summary.covered, report.summary.drift.covered),
+        (1, 1)
+    );
+
+    // Another producer's enrolled orchestrator covers the usage on its own.
+    let alternate = doc(
+        "canix",
+        json!({
+            "edges": [enrolled("h/o/r", "converge/workspace", json!({"enabled": true}))],
+            "capabilities": [row("ci.primary", json!({}), "implemented", true, json!({"orchestrator": "converge"}))]
+        }),
+    );
+    assert!(gaps(&[facts.clone(), disabled.clone(), alternate]).is_empty());
+    let alternate_unenrolled = doc(
+        "canix",
+        json!({"capabilities": [row("ci.primary", json!({}), "implemented", true, json!({"orchestrator": "converge"}))]}),
+    );
+    assert_eq!(
+        blockers(&[facts, disabled, alternate_unenrolled]),
+        ["not-enrolled", "operator-disabled"]
+    );
+}
+
+#[test]
+fn r5_reports_expectations_until_some_producer_supplies_the_attr() {
+    let mut node = usage("h/o/r", "ci.primary", "current");
+    node["expects"] = json!([{"attr": "generatorRevision", "blocker": "unknown-generator-revision", "reason": "why"}]);
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [node],
+            "capabilities": [row("ci.primary", json!({}), "implemented", true, json!({}))]
+        }),
+    );
+    let overlay = |revision: Value| {
+        doc(
+            "canix",
+            json!({"nodes": [{"id": "usage:h/o/r#ci.primary", "kind": "usage", "attrs": {"generatorRevision": revision}}]}),
+        )
+    };
+    assert_eq!(
+        gaps(std::slice::from_ref(&facts)),
+        [(
+            "usage:h/o/r#ci.primary".into(),
+            "unknown-generator-revision".into(),
+            None,
+            Some("simit".into())
+        )]
+    );
+    assert_eq!(
+        blockers(&[facts.clone(), overlay(Value::Null)]),
+        ["unknown-generator-revision"]
+    );
+    assert!(blockers(&[facts, overlay(json!("abc"))]).is_empty());
+}
+
+#[test]
+fn r5_keeps_distinct_reasons_for_the_same_expectation() {
+    let expecting = |producer: &str, reason: &str| {
+        let mut node = usage("h/o/r", "ci.primary", "current");
+        node["expects"] = json!([{"attr": "a", "blocker": "unknown-a", "reason": reason}]);
+        doc(producer, json!({"nodes": [node]}))
+    };
+    let reasons: Vec<_> = supply::gaps(&supply::build(
+        &[expecting("simit", "first"), expecting("canix", "second")],
+        None,
+    ))
+    .gaps
+    .into_iter()
+    .map(|gap| (gap.reason, gap.owner))
+    .collect();
+    assert!(
+        reasons.contains(&("first".into(), Some("simit".into()))),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons.contains(&("second".into(), Some("canix".into()))),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn blocker_summary_counts_usages_without_a_usage_kind() {
+    let kindless = json!({"id": "usage:h/o/r#x", "kind": "usage"});
+    let report = supply::gaps(&supply::build(
+        &[
+            doc("simit", json!({"nodes": [kindless.clone()]})),
+            doc(
+                "canix",
+                json!({"nodes": [{"id": "usage:h/o/r#x", "kind": "usage", "attrs": {"state": "drift"}}]}),
+            ),
+            doc(
+                "other",
+                json!({"nodes": [{"id": "usage:h/o/r#x", "kind": "usage", "attrs": {"state": "current"}}]}),
+            ),
+        ],
+        None,
+    ));
+    let count = |blocker: &str| {
+        report
+            .summary
+            .by_blocker
+            .iter()
+            .find(|entry| entry.blocker == blocker)
+            .map(|entry| entry.usages)
+    };
+    assert_eq!(count("contract-conflict"), Some(1));
+    assert_eq!(count("no-capability"), Some(1));
+}
+
+#[test]
+fn r7_passes_producer_blockers_through_and_skips_absent_usages() {
+    let mut absent = usage("h/o/r", "release.workflow", "absent");
+    absent["blockers"] = json!([{"code": "ignored", "reason": "absent"}]);
+    let facts = doc(
+        "simit",
+        json!({"nodes": [
+            {"id": "repo:h/o/r", "kind": "repo", "blockers": [
+                {"code": "provider-mismatch", "reason": "crow on github"},
+                {"code": "config-conflict", "reason": "two sources", "owner": "operator"}
+            ]},
+            absent
+        ]}),
+    );
+    let report = supply::gaps(&supply::build(&[facts], None));
+    let found: Vec<_> = report
+        .gaps
+        .iter()
+        .map(|gap| {
+            (
+                gap.repository.as_deref(),
+                gap.blocker.as_str(),
+                gap.owner.as_deref(),
+                gap.source,
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Some("h/o/r"),
+                "config-conflict",
+                Some("operator"),
+                "producer"
+            ),
+            (
+                Some("h/o/r"),
+                "provider-mismatch",
+                Some("simit"),
+                "producer"
+            ),
+        ]
+    );
+    assert_eq!((report.summary.repositories, report.summary.usages), (1, 0));
+}
+
+#[test]
+fn r6_joins_runners_and_caches_against_topology_supply() {
+    let edge = |from: &str, to: &str| json!({"from": format!("usage:{from}#ci.primary"), "to": to, "kind": "runsOn"});
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [
+                usage("h/o/a", "ci.primary", "current"),
+                usage("h/o/b", "ci.primary", "current"),
+                {"id": "runner:git.example.test/nix", "kind": "runner"},
+                {"id": "runner:github.com/ubuntu-24.04", "kind": "runner"},
+                {"id": "runner:malformed", "kind": "runner"},
+                {"id": "cache:fleet", "kind": "cache"},
+                {"id": "cache:other", "kind": "cache"}
+            ],
+            "edges": [
+                edge("h/o/a", "runner:git.example.test/nix"),
+                edge("h/o/b", "runner:git.example.test/nix"),
+                edge("h/o/a", "runner:github.com/ubuntu-24.04"),
+                edge("h/o/a", "cache:other")
+            ],
+            "capabilities": [row("ci.primary", json!({}), "implemented", true, json!({}))]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"hosted": {"forgeHost": "github.com", "labels": ["ubuntu-24.04"]}},
+            "caches": {"fleet": {"url": "https://cache.example.test"}}
+        }
+    }))
+    .unwrap();
+    let found = |topology: Option<&Topology>| -> Vec<(Option<String>, String, String)> {
+        supply::gaps(&supply::build(std::slice::from_ref(&facts), topology))
+            .gaps
+            .into_iter()
+            .map(|gap| (gap.repository, gap.node, gap.blocker))
+            .collect()
+    };
+    assert!(found(None).is_empty(), "no topology, no join");
+    let some = |repository: &str| Some(repository.to_string());
+    assert_eq!(
+        found(Some(&topology)),
+        [
+            (None, "runner:malformed".into(), "unknown-runner".into()),
+            (some("h/o/a"), "cache:other".into(), "unknown-cache".into()),
+            (
+                some("h/o/a"),
+                "runner:git.example.test/nix".into(),
+                "unknown-runner".into()
+            ),
+            (
+                some("h/o/b"),
+                "runner:git.example.test/nix".into(),
+                "unknown-runner".into()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn r6_ignores_runners_used_only_by_absent_usages() {
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [
+                usage("h/o/a", "ci.primary", "absent"),
+                {"id": "runner:git.example.test/nix", "kind": "runner"}
+            ],
+            "edges": [{"from": "usage:h/o/a#ci.primary", "to": "runner:git.example.test/nix", "kind": "runsOn"}]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {}, "supply": {}
+    }))
+    .unwrap();
+    let report = supply::gaps(&supply::build(&[facts], Some(&topology)));
+    assert!(report.gaps.is_empty(), "{:?}", report.gaps);
+}
+
+#[test]
+fn walk_follows_edges_both_ways_within_depth() {
+    let mut docs = supply::parse(&fixture("simit-usage-facts.v1.json")).unwrap();
+    docs.extend(supply::parse(&fixture("canix-overlay.v1.json")).unwrap());
+    let graph = supply::build(&docs, None);
+    let ids = |report: &supply::PathReport| -> Vec<(String, usize)> {
+        report
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.depth))
+            .collect()
+    };
+
+    let rev = "rev:github.com/caniko/simit@de3325be17104fbdb0d70f1da38149d4016f1790";
+    let who_pins = supply::walk(&graph, rev, true, 2).unwrap();
+    assert_eq!(who_pins.contract, supply::PATH_CONTRACT);
+    assert_eq!(
+        ids(&who_pins),
+        [
+            (rev.to_string(), 0),
+            (
+                "usage:github.com/example/drifted#flake-input.direct:simit".into(),
+                1
+            ),
+            ("repo:github.com/example/drifted".into(), 2),
+        ]
+    );
+    assert_eq!(who_pins.edges.len(), 2);
+
+    let repo = supply::walk(&graph, "github.com/example/flake-config", false, 1).unwrap();
+    assert_eq!(repo.root, "repo:github.com/example/flake-config");
+    assert_eq!(
+        ids(&repo),
+        [
+            ("repo:github.com/example/flake-config".into(), 0),
+            ("usage:github.com/example/flake-config#ci.primary".into(), 1),
+            (
+                "usage:github.com/example/flake-config#config.flake".into(),
+                1
+            ),
+            ("orchestrator:simit-updater/fleet".into(), 1),
+            ("orchestrator:canix-converge/workspace".into(), 1),
+        ]
+    );
+    assert_eq!(
+        supply::walk(&graph, "github.com/example/flake-config", false, 0)
+            .unwrap()
+            .nodes
+            .len(),
+        1
+    );
+    assert!(supply::walk(&graph, "repo:missing", false, 3).is_err());
+}
+
+#[test]
+fn age_days_counts_calendar_days_across_leap_years() {
+    let march_first_2000 = 11_017 * 86_400;
+    assert_eq!(supply::age_days("1970-01-01T00:00:00Z", 86_399), Some(0));
+    assert_eq!(
+        supply::age_days("2000-03-01T23:59:59Z", march_first_2000),
+        Some(0)
+    );
+    assert_eq!(
+        supply::age_days("2000-02-28T00:00:00Z", march_first_2000 + 5),
+        Some(2)
+    );
+    assert_eq!(
+        supply::age_days("2000-03-02T00:00:00Z", march_first_2000),
+        Some(-1)
+    );
+    for unreadable in [
+        "",
+        "yesterday",
+        "2000-13-01",
+        "2000-1-1T00:00:00Z",
+        "2026-02-31T00:00:00Z",
+        "2026-02-29T00:00:00Z",
+        "2026-04-31",
+        "2026-+1-05",
+        "2026-10-26x",
+    ] {
+        assert_eq!(supply::age_days(unreadable, march_first_2000), None);
+    }
+}
+
+/// Refresh with `FLEETIX_BLESS=1 cargo test --test supply` like the gaps
+/// fixture.
+#[cfg(feature = "pkl")]
+#[tokio::test]
+async fn budget_fixture_forecasts_the_crow_allowance() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/supply");
+    let topology = fleetix::load_topology(&dir.join("budget-topology.pkl"))
+        .await
+        .unwrap();
+    let docs = supply::parse(&fixture("budget-facts.v1.json")).unwrap();
+    let report =
+        supply::budget(&supply::build(&docs, Some(&topology)), "simit-updater", 1.0).unwrap();
+    let actual = serde_json::to_string_pretty(&report).unwrap() + "\n";
+    if std::env::var_os("FLEETIX_BLESS").is_some() {
+        std::fs::write(dir.join("expected-budget.json"), &actual).unwrap();
+    }
+    assert_eq!(actual, fixture("expected-budget.json"));
+}
+
+#[test]
+fn budget_follows_pools_triggers_enrollment_and_metering() {
+    let workflow = |id: &str, runner: &str, observed: Value, triggers: Value| {
+        (
+            json!({"id": id, "kind": "workflow", "attrs": {"observed": observed, "triggers": triggers}}),
+            json!({"from": id, "to": runner, "kind": "runsOn"}),
+        )
+    };
+    let (a, a_edge) = workflow(
+        "workflow:h/o/a#w",
+        "runner:h/m",
+        json!({"windowDays": 15, "runs": 2, "agentMinutes": 40, "byLane": {"push:branch": 10, "pull_request": 30}}),
+        json!({"events": ["push", "pull_request"], "branches": ["trunk"]}),
+    );
+    let (b, b_edge) = workflow(
+        "workflow:h/o/b#w",
+        "runner:h/f",
+        json!({"runs": 1, "agentMinutes": 40, "byLane": {"pull_request": 40}}),
+        json!({"events": ["push", "pull_request"], "branches": ["main", "simit/**"]}),
+    );
+    let (c, c_edge) = workflow(
+        "workflow:h/o/c#w",
+        "runner:h/elsewhere",
+        json!({"agentMinutes": 999}),
+        json!({}),
+    );
+    let facts = doc(
+        "canix",
+        json!({
+            "nodes": [a, b, c, {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": 3}}],
+            "edges": [
+                a_edge, b_edge, c_edge,
+                enrolled("h/o/a", "updater/x", json!({"enabled": true})),
+                enrolled("h/o/b", "updater/x", json!({"enabled": true}))
+            ]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {
+                "metered": {"forgeHost": "h", "labels": ["m"], "metered": true},
+                "free": {"forgeHost": "h", "labels": ["f"]}
+            },
+            "budgets": {"b": {"pools": ["metered", "free"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let graph = supply::build(std::slice::from_ref(&facts), Some(&topology));
+    let report = supply::budget(&graph, "updater", 2.0).unwrap();
+    let forecast = &report.budgets[0];
+    // a: 40 minutes over 15 days -> 80; 3 runs x 20 average x 2 updates -> 120.
+    // b: 40 on an unmetered pool, so no updater runs; c is outside the pools.
+    assert_eq!(
+        (
+            forecast.observed_minutes,
+            forecast.updater_minutes,
+            forecast.forecast_minutes
+        ),
+        (120, 120, 240)
+    );
+    assert_eq!((forecast.utilization, forecast.within_budget), (2.4, false));
+    // a's push is limited to trunk and averages 20; b's push is limited to
+    // main and simit/** and averages 40.
+    let candidates: Vec<_> = forecast
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.rule,
+                candidate.node.as_str(),
+                candidate.estimated_savings,
+            )
+        })
+        .collect();
+    assert_eq!(candidates, [("heavy-on-pr", "workflow:h/o/b#w", 40)]);
+
+    assert!(
+        supply::budget(
+            &supply::build(std::slice::from_ref(&facts), None),
+            "updater",
+            1.0
+        )
+        .is_err()
+    );
+    let mut malformed = facts;
+    malformed.nodes[0]
+        .attrs
+        .insert("observed".into(), json!({"runs": "many"}));
+    let error = supply::budget(
+        &supply::build(&[malformed], Some(&topology)),
+        "updater",
+        1.0,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("workflow:h/o/a#w: observed"),
+        "{error}"
+    );
+}
+
+#[test]
+fn budget_rejects_invalid_inputs_and_only_unrestricted_push_duplicates() {
+    let workflow = |branches: Value, agent_minutes: i64| {
+        doc(
+            "canix",
+            json!({
+                "nodes": [{"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {
+                    "observed": {"runs": 1, "agentMinutes": agent_minutes, "byLane": {"push:branch": 10}},
+                    "triggers": {"events": ["push", "pull_request"], "branches": branches}
+                }}],
+                "edges": [{"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"}]
+            }),
+        )
+    };
+    let topology = |minutes: u32| -> Topology {
+        serde_json::from_value(json!({
+            "links": {}, "hosts": {}, "domains": {}, "services": {},
+            "supply": {
+                "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"]}},
+                "budgets": {"b": {"pools": ["p"], "minutesPerMonth": minutes}}
+            }
+        }))
+        .unwrap()
+    };
+    let run = |facts: FactsDocument, minutes: u32, updates: f64| {
+        supply::budget(
+            &supply::build(&[facts], Some(&topology(minutes))),
+            "updater",
+            updates,
+        )
+    };
+    let rules = |branches: Value| -> Vec<&'static str> {
+        run(workflow(branches, 40), 100, 1.0).unwrap().budgets[0]
+            .candidates
+            .iter()
+            .map(|candidate| candidate.rule)
+            .collect()
+    };
+    assert!(
+        rules(json!(["releases/**"]))
+            .iter()
+            .all(|rule| *rule != "duplicate-trigger")
+    );
+    assert!(rules(json!(["**"])).contains(&"duplicate-trigger"));
+    assert!(rules(json!([])).contains(&"duplicate-trigger"));
+
+    assert!(
+        run(workflow(json!([]), -40), 100, 1.0).is_err(),
+        "negative observation"
+    );
+    assert!(
+        run(workflow(json!([]), 40), 100, -1.0).is_err(),
+        "negative updates"
+    );
+    assert!(
+        run(workflow(json!([]), 40), 100, f64::NAN).is_err(),
+        "NaN updates"
+    );
+    assert!(
+        run(workflow(json!([]), 40), 0, 1.0).is_err(),
+        "zero allowance"
+    );
+
+    // Misspelled keys, negative windows and negative runsPerUpdate fail loudly.
+    let with_attr = |key: &str, value: Value| {
+        let mut facts = workflow(json!([]), 40);
+        facts.nodes[0].attrs.insert(key.into(), value);
+        facts
+    };
+    assert!(run(with_attr("observed", json!({"agentMinute": 40})), 100, 1.0).is_err());
+    assert!(run(with_attr("triggers", json!({"event": ["push"]})), 100, 1.0).is_err());
+    assert!(
+        run(
+            with_attr("observed", json!({"windowDays": -3, "agentMinutes": 40})),
+            100,
+            1.0
+        )
+        .is_err()
+    );
+    assert!(
+        run(
+            with_attr("observed", json!({"windowDays": 0, "agentMinutes": 40})),
+            100,
+            1.0
+        )
+        .is_err()
+    );
+
+    let mut enrolled_workflow = workflow(json!([]), 40);
+    enrolled_workflow.nodes.push(
+        serde_json::from_value(json!({"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": -2}})).unwrap(),
+    );
+    enrolled_workflow.edges.push(
+        serde_json::from_value(enrolled("h/o/a", "updater/x", json!({"enabled": true}))).unwrap(),
+    );
+    let mut metered = topology(100);
+    metered.supply.runner_pools["p"].metered = true;
+    let error = supply::budget(
+        &supply::build(&[enrolled_workflow], Some(&metered)),
+        "updater",
+        1.0,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("runsPerUpdate"), "{error}");
+}
+
+#[test]
+fn budget_rejects_conflicting_facts_and_keeps_totals_consistent() {
+    let workflow = |producer: &str, minutes: f64| {
+        doc(
+            producer,
+            json!({
+                "nodes": [
+                    {"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {
+                        "observed": {"runs": 1, "agentMinutes": minutes}}},
+                    {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": 1}}
+                ],
+                "edges": [
+                    {"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"},
+                    enrolled("h/o/a", "updater/x", json!({"enabled": true}))
+                ]
+            }),
+        )
+    };
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"], "metered": true}},
+            "budgets": {"b": {"pools": ["p"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let run = |docs: &[FactsDocument]| {
+        supply::budget(&supply::build(docs, Some(&topology)), "updater", 1.0)
+    };
+
+    let error = run(&[workflow("simit", 10.0), workflow("canix", 20.0)]).unwrap_err();
+    assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
+
+    // 0.6 observed + 0.6 updater: rounded components 1 + 1, not round(1.2).
+    let report = run(&[workflow("simit", 0.6)]).unwrap();
+    let forecast = &report.budgets[0];
+    assert_eq!(
+        (forecast.observed_minutes, forecast.updater_minutes),
+        (1, 1)
+    );
+    assert_eq!(forecast.forecast_minutes, 2);
+}
+
+#[test]
+fn budget_requires_runs_and_minutes_and_checks_orchestrator_conflicts() {
+    let facts = |observed: Value, runs_per_update: i64| {
+        doc(
+            "simit",
+            json!({
+                "nodes": [
+                    {"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {"observed": observed}},
+                    {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": runs_per_update}}
+                ],
+                "edges": [
+                    {"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"},
+                    enrolled("h/o/a", "updater/x", json!({"enabled": true}))
+                ]
+            }),
+        )
+    };
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"], "metered": true}},
+            "budgets": {"b": {"pools": ["p"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let run = |docs: &[FactsDocument]| {
+        supply::budget(&supply::build(docs, Some(&topology)), "updater", 1.0)
+    };
+    let ok = json!({"runs": 1, "agentMinutes": 10});
+    assert!(run(&[facts(ok.clone(), 1)]).is_ok());
+    for partial in [json!({}), json!({"runs": 1}), json!({"agentMinutes": 10})] {
+        assert!(run(&[facts(partial.clone(), 1)]).is_err(), "{partial}");
+    }
+    let error = run(&[facts(ok.clone(), 1), facts(ok, 5)]).unwrap_err();
+    assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
+}
+
+#[test]
+fn topology_gaps_count_their_usages_in_the_blocker_summary() {
+    let facts = doc(
+        "simit",
+        json!({
+            "nodes": [
+                usage("h/o/a", "ci.primary", "current"),
+                usage("h/o/b", "ci.primary", "current"),
+                {"id": "runner:git.example.test/nix", "kind": "runner"}
+            ],
+            "edges": [
+                {"from": "usage:h/o/a#ci.primary", "to": "runner:git.example.test/nix", "kind": "runsOn"},
+                {"from": "usage:h/o/b#ci.primary", "to": "runner:git.example.test/nix", "kind": "runsOn"}
+            ]
+        }),
+    );
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {}, "supply": {}
+    }))
+    .unwrap();
+    let report = supply::gaps(&supply::build(&[facts], Some(&topology)));
+    let unknown = report
+        .summary
+        .by_blocker
+        .iter()
+        .find(|entry| entry.blocker == "unknown-runner")
+        .unwrap();
+    assert_eq!(
+        (unknown.gaps, unknown.repositories, unknown.usages),
+        (2, 2, 2)
+    );
+}
+
+#[test]
+fn budget_sums_every_enabled_enrollment_and_guards_each_orchestrator() {
+    let facts = |extra_runs: i64| {
+        doc(
+            "simit",
+            json!({
+                "nodes": [
+                    {"id": "workflow:h/o/a#w", "kind": "workflow", "attrs": {
+                        "observed": {"runs": 1, "agentMinutes": 10}}},
+                    {"id": "orchestrator:updater/x", "kind": "orchestrator", "attrs": {"runsPerUpdate": 1}},
+                    {"id": "orchestrator:updater/y", "kind": "orchestrator", "attrs": {"runsPerUpdate": extra_runs}}
+                ],
+                "edges": [
+                    {"from": "workflow:h/o/a#w", "to": "runner:h/m", "kind": "runsOn"},
+                    enrolled("h/o/a", "updater/x", json!({"enabled": true})),
+                    enrolled("h/o/a", "updater/y", json!({"enabled": true}))
+                ]
+            }),
+        )
+    };
+    let topology: Topology = serde_json::from_value(json!({
+        "links": {}, "hosts": {}, "domains": {}, "services": {},
+        "supply": {
+            "runnerPools": {"p": {"forgeHost": "h", "labels": ["m"], "metered": true}},
+            "budgets": {"b": {"pools": ["p"], "minutesPerMonth": 100}}
+        }
+    }))
+    .unwrap();
+    let run = |docs: &[FactsDocument]| {
+        supply::budget(&supply::build(docs, Some(&topology)), "updater", 1.0)
+    };
+    // (1 + 3) runs x 10 average minutes.
+    assert_eq!(run(&[facts(3)]).unwrap().budgets[0].updater_minutes, 40);
+    // A conflict on the second orchestrator node is caught too.
+    let error = run(&[facts(3), facts(5)]).unwrap_err();
+    assert!(error.to_string().contains("workflow:h/o/a#w"), "{error}");
+}

@@ -3,7 +3,9 @@ name: Nix installable builds
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - "trunk"
+      - "simit/update/**"
   pull_request:
   workflow_dispatch:
 

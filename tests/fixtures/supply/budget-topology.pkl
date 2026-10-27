@@ -1,0 +1,23 @@
+// Topology for the Crow agent-minute budget fixture.
+import "../../../lib/topology/Schema.pkl" as S
+
+schemaVersion: UInt16 = 2
+links = new {}
+hosts = new {}
+domains = new S.Domains {}
+services = new S.Services {}
+supply = new S.Supply {
+  runnerPools = new {
+    ["codefloe-infra"] = new S.RunnerPool {
+      forgeHost = "codefloe.com"
+      labels = new Listing { "codefloe-infra" }
+      metered = true
+    }
+  }
+  budgets = new {
+    ["codefloe-crow"] = new S.Budget {
+      pools = new Listing { "codefloe-infra" }
+      minutesPerMonth = 2500
+    }
+  }
+}

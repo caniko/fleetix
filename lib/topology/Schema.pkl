@@ -236,6 +236,9 @@ typealias HttpAction = ProxyAction | FilesAction | RedirectAction | RespondActio
 class ProxyAction {
   type: "proxy" = "proxy"
   endpoint: String
+  /// Ordered endpoints tried after `endpoint` when it is unavailable. They must
+  /// share the primary's transport and tlsServerName.
+  fallbackEndpoints: Listing<String> = new Listing {}
   stripPrefix: String? = null
 }
 
@@ -265,14 +268,14 @@ class HttpRoute {
   responseHeaders: Mapping<String, Listing<String>> = new {}
 }
 
-typealias IngressScope = "public" | "vpn"
+typealias IngressScope = "public" | "vpn" | "lan"
 
 class IngressGroup {
   scope: IngressScope
   hosts: Listing<String>
 }
 
-typealias HttpAccess = "cloudflare" | "direct" | "vpn"
+typealias HttpAccess = "cloudflare" | "direct" | "vpn" | "lan"
 typealias DnsPublication = "managed" | "external" | "none"
 
 class HttpSite {
@@ -415,6 +418,33 @@ class SshKnownHost {
 
 class Trust {
   sshKnownHosts: Listing<SshKnownHost> = new Listing {}
+}
+
+/// Shared build supply that `fleetix supply` joins usage facts against.
+/// Forges and repositories stay out of topology.
+class RunnerPool {
+  forgeHost: String
+  labels: Listing<String>
+  service: String? = null
+  /// Usage on this pool is billed, so updater qualification counts against budgets.
+  metered: Boolean = false
+}
+
+class BinaryCache {
+  url: String
+  service: String? = null
+}
+
+class Supply {
+  runnerPools: Mapping<String, RunnerPool> = new {}
+  caches: Mapping<String, BinaryCache> = new {}
+  budgets: Mapping<String, Budget> = new {}
+}
+
+/// A monthly agent-minute allowance shared by the named runner pools.
+class Budget {
+  pools: Listing<String>(!isEmpty)
+  minutesPerMonth: UInt32(this > 0)
 }
 
 class SshAccess {
