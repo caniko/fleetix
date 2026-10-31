@@ -69,12 +69,14 @@ libc = { version = "0.2", optional = true }
 nix-manager-core = { version = "0.4.2", optional = true }
 signal-hook = { version = "0.4", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
+ureq = { version = "3", features = ["json"], optional = true }
 
 [features]
 default = ["cli"]
 cli = ["dep:clap", "mcp", "pkl", "health"]
 pkl = ["dep:pklx", "dep:tokio", "dep:fleetix-sidecar"]
 health = ["pkl", "dep:reqwest"]
+forge = ["dep:ureq"]
 mcp = ["dep:toml_edit", "dep:fs2"]
 build-train-runtime = ["dep:fs2", "dep:libc"]
 build-train-native = ["build-train-runtime", "dep:nix-manager-core"]

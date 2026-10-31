@@ -1,5 +1,7 @@
 pub mod accessors;
 pub mod build_train;
+#[cfg(feature = "forge")]
+pub mod forge;
 mod fsutil;
 pub mod gpu;
 #[cfg(feature = "health")]
