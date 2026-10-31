@@ -25,17 +25,20 @@ pub struct Repository {
     pub host: String,
     pub name: String,
     pub full_name: String,
-    /// Git storage in bytes as reported by the forge.
-    pub size_bytes: u64,
+    /// Git storage in bytes as reported by the forge; `None` when GitLab
+    /// withholds statistics (below the Reporter role).
+    pub size_bytes: Option<u64>,
     pub private: bool,
     pub fork: bool,
     pub mirror: bool,
     pub archived: bool,
-    pub empty: bool,
+    /// `None` for GitHub, which does not report emptiness.
+    pub empty: Option<bool>,
     /// RFC 3339 timestamp of the last update/activity.
     pub updated_at: String,
     pub default_branch: Option<String>,
-    pub open_issues: u64,
+    /// `None` for GitHub, whose count also includes open pull requests.
+    pub open_issues: Option<u64>,
     pub ssh_url: Option<String>,
     pub clone_url: Option<String>,
     /// Pull requests in any state; filled by [`pull_request_totals`].
@@ -64,6 +67,8 @@ struct RawRepository {
     forked_from_project: Option<serde_json::Value>,
     #[serde(default)]
     mirror: bool,
+    #[serde(default)]
+    mirror_url: Option<String>,
     #[serde(default)]
     archived: bool,
     #[serde(default)]
@@ -96,7 +101,7 @@ struct RawStatistics {
 
 impl RawRepository {
     fn normalize(self, source: &Source) -> Repository {
-        let gitlab = source.provider == "gitlab";
+        let (gitlab, github) = (source.provider == "gitlab", source.provider == "github");
         Repository {
             host: source.host.clone(),
             full_name: if self.full_name.is_empty() {
@@ -106,21 +111,22 @@ impl RawRepository {
             },
             name: self.name,
             // Forgejo and GitHub report KiB; GitLab reports bytes in statistics.
-            size_bytes: match self.statistics {
-                Some(statistics) if gitlab => statistics.repository_size,
-                _ => self.size * 1024,
+            size_bytes: if gitlab {
+                self.statistics.map(|statistics| statistics.repository_size)
+            } else {
+                Some(self.size * 1024)
             },
             private: self.private || self.visibility.is_some_and(|v| v != "public"),
             fork: self.fork || self.forked_from_project.is_some(),
-            mirror: self.mirror,
+            mirror: self.mirror || self.mirror_url.is_some(),
             archived: self.archived,
-            empty: self.empty || self.empty_repo,
+            empty: (!github).then_some(self.empty || self.empty_repo),
             updated_at: self
                 .updated_at
                 .or(self.last_activity_at)
                 .unwrap_or_default(),
             default_branch: self.default_branch,
-            open_issues: self.open_issues_count,
+            open_issues: (!github).then_some(self.open_issues_count),
             ssh_url: self.ssh_url.or(self.ssh_url_to_repo),
             clone_url: self.clone_url.or(self.http_url_to_repo),
             pull_requests_total: None,
@@ -146,7 +152,8 @@ pub struct Filter {
 impl Filter {
     pub fn matches(&self, repository: &Repository) -> bool {
         let flag = |want: Option<bool>, have: bool| want.is_none_or(|want| want == have);
-        self.min_bytes.is_none_or(|min| repository.size_bytes >= min)
+        self.min_bytes
+            .is_none_or(|min| repository.size_bytes.is_some_and(|size| size >= min))
             && flag(self.private, repository.private)
             && flag(self.fork, repository.fork)
             && flag(self.archived, repository.archived)
@@ -188,6 +195,11 @@ pub fn list(source: &Source) -> Result<Vec<Repository>> {
                 "https://api.github.com/orgs/{}/repos?per_page=100&page=",
                 source.namespace
             ),
+            100,
+        ),
+        // The public user endpoint hides private repositories even from their owner.
+        ("github", "user") if github_login(source)?.eq_ignore_ascii_case(&source.namespace) => (
+            "https://api.github.com/user/repos?affiliation=owner&per_page=100&page=".to_owned(),
             100,
         ),
         ("github", "user") => (
@@ -234,10 +246,29 @@ pub fn list(source: &Source) -> Result<Vec<Repository>> {
                 .map(|raw| raw.normalize(source)),
         );
         if count < page_size {
-            break;
+            return Ok(repositories);
         }
     }
-    Ok(repositories)
+    Err(miette::miette!(
+        "{endpoint}: more than 100 pages; refusing to return a partial inventory"
+    ))
+}
+
+/// The token owner's GitHub login, or an empty string without a token.
+fn github_login(source: &Source) -> Result<String> {
+    #[derive(Deserialize)]
+    struct User {
+        login: String,
+    }
+    let Some(token) = source.token.as_deref() else {
+        return Ok(String::new());
+    };
+    let url = "https://api.github.com/user";
+    get(url, Some(token))?
+        .body_mut()
+        .read_json::<User>()
+        .map(|user| user.login)
+        .map_err(|error| miette::miette!("parse forge response from {url}: {error}"))
 }
 
 /// Fill [`Repository::pull_requests_total`] (Forgejo only).
@@ -322,18 +353,26 @@ mod tests {
             r#"{"name":"a","full_name":"me/a","size":2,"private":true,"mirror":true,
                 "updated_at":"2026-01-02T00:00:00Z","ssh_url":"ssh://a"}"#,
         );
-        assert_eq!(forgejo.size_bytes, 2048);
+        assert_eq!(forgejo.size_bytes, Some(2048));
         assert!(forgejo.private && forgejo.mirror && !forgejo.fork);
+        assert_eq!((forgejo.empty, forgejo.open_issues), (Some(false), Some(0)));
         assert_eq!(forgejo.ssh_url.as_deref(), Some("ssh://a"));
 
         let github = parse(
             "github",
-            r#"{"name":"b","full_name":"me/b","size":3,"fork":true}"#,
+            r#"{"name":"b","full_name":"me/b","size":3,"fork":true,
+                "mirror_url":"https://up/b.git","open_issues_count":4}"#,
         );
         assert_eq!(
-            (github.size_bytes, github.fork, github.private),
-            (3072, true, false)
+            (
+                github.size_bytes,
+                github.fork,
+                github.private,
+                github.mirror
+            ),
+            (Some(3072), true, false, true)
         );
+        assert_eq!((github.empty, github.open_issues), (None, None));
 
         let gitlab = parse(
             "gitlab",
@@ -342,16 +381,19 @@ mod tests {
                 "last_activity_at":"2025-05-05T00:00:00Z","empty_repo":true}"#,
         );
         assert_eq!(gitlab.full_name, "grp/c");
-        assert_eq!(gitlab.size_bytes, 5000);
-        assert!(gitlab.private && gitlab.fork && gitlab.empty);
+        assert_eq!(gitlab.size_bytes, Some(5000));
+        assert!(gitlab.private && gitlab.fork && gitlab.empty == Some(true));
         assert_eq!(gitlab.updated_at, "2025-05-05T00:00:00Z");
+
+        let restricted = parse("gitlab", r#"{"name":"d","path_with_namespace":"grp/d"}"#);
+        assert_eq!(restricted.size_bytes, None);
     }
 
     #[test]
     fn filter_combines_criteria() {
         let repository = Repository {
             full_name: "me/Big-Repo".into(),
-            size_bytes: 100 << 20,
+            size_bytes: Some(100 << 20),
             private: true,
             archived: true,
             updated_at: "2026-03-01T10:00:00+02:00".into(),
@@ -390,6 +432,18 @@ mod tests {
             name_contains: Some("small".into()),
             ..Filter::default()
         }));
+
+        let unknown_size = Repository {
+            size_bytes: None,
+            ..repository.clone()
+        };
+        assert!(
+            !Filter {
+                min_bytes: Some(1),
+                ..Filter::default()
+            }
+            .matches(&unknown_size)
+        );
 
         let unknown_pulls = Repository {
             pull_requests_total: None,
