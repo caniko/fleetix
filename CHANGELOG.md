@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the optional `forge` feature and `fleetix::forge`, which lists Forgejo,
+  GitHub and GitLab namespace repositories as normalized `Repository` records
+  (size in bytes, visibility, fork, mirror, archived, empty, last update).
+  `Filter` selects repositories by those fields, `pull_request_totals` counts
+  Forgejo pull requests in any state, and `quota` returns the Forgejo user
+  quota. Callers supply tokens.
+
 ## [0.8.0] - 2026-10-27
 
 ### Added
