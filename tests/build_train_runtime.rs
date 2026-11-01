@@ -1547,21 +1547,31 @@ fn policy_rollover_requires_a_stopped_drained_fenced_terminal_train() {
         .unwrap();
     let fence = client.drain("m", Duration::from_secs(1)).unwrap();
     assert!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token)
-            .unwrap_err()
-            .contains("stop")
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap_err()
+        .contains("stop")
     );
     server.shutdown();
     let journal = std::fs::read(old.state_dir.join("train.json")).unwrap();
     assert!(
-        rollover(&old, &next, server.backend.as_ref(), "wrong")
+        rollover(&old, &next, server.backend.as_ref(), Some("wrong"))
             .unwrap_err()
             .contains("fence")
     );
     assert!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token)
-            .unwrap_err()
-            .contains("cancel pending")
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap_err()
+        .contains("cancel pending")
     );
     assert_eq!(
         journal,
@@ -1569,6 +1579,79 @@ fn policy_rollover_requires_a_stopped_drained_fenced_terminal_train() {
     );
     assert!(!old.state_dir.join("rollover.json").exists());
     assert!(server.backend.released_requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn idle_unfenced_journal_is_adopted_without_a_drain_fence() {
+    let mut server = Server::start();
+    let old = server.config.clone();
+    let next = Config {
+        policy: "new-policy".into(),
+        ..old.clone()
+    };
+    let client = server.client();
+    client.call(Command::Submit(request("m", "murph"))).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    client.call(Command::Retire("m".into())).unwrap();
+    server.shutdown();
+    let idle: Train =
+        serde_json::from_reader(std::fs::File::open(old.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    // A fence can only be taken by a live request, so a train which finished
+    // its work before the policy changed leaves no token to authorize handover.
+    assert!(idle.fence.is_none() && idle.requests.is_empty() && idle.nodes.is_empty());
+    assert!(
+        std::fs::read_dir(old.state_dir.join("archive"))
+            .unwrap()
+            .count()
+            > 0
+    );
+    assert_eq!(
+        rollover(&old, &next, server.backend.as_ref(), Some("stale")).unwrap_err(),
+        "rollover has no retained drain fence; omit the token to adopt an idle journal"
+    );
+    let receipt = rollover(&old, &next, server.backend.as_ref(), None).unwrap();
+    assert!(receipt.ends_with("receipt.json"));
+    assert!(!old.state_dir.join("rollover.json").exists());
+    let replacement: Train =
+        serde_json::from_reader(std::fs::File::open(old.state_dir.join("train.json")).unwrap())
+            .unwrap();
+    assert_eq!(replacement.policy, next.policy);
+    assert!(replacement.requests.is_empty() && replacement.fence.is_none());
+    server.config = next;
+    server.restart();
+    assert!(
+        server
+            .client()
+            .call(Command::Submit(request("n", "atlas")))
+            .is_ok()
+    );
+}
+
+#[test]
+fn unfenced_rollover_still_requires_pending_requests_to_be_cancelled() {
+    let mut server = Server::start();
+    let old = server.config.clone();
+    let next = Config {
+        policy: "new-policy".into(),
+        ..old.clone()
+    };
+    server
+        .client()
+        .call(Command::Register(request("held", "atlas")))
+        .unwrap();
+    server.shutdown();
+    assert_eq!(
+        rollover(&old, &next, server.backend.as_ref(), None).unwrap_err(),
+        "cancel pending requests explicitly before policy rollover"
+    );
+    assert!(
+        rollover(&old, &next, server.backend.as_ref(), Some("token"))
+            .unwrap_err()
+            .contains("no retained drain fence")
+    );
 }
 
 #[test]
@@ -1596,7 +1679,13 @@ fn policy_rollover_preserves_old_failure_fence_and_history_without_admitting_old
     let fence = client.drain("m", Duration::from_secs(1)).unwrap();
     let original = std::fs::read(old.state_dir.join("train.json")).unwrap();
     server.shutdown();
-    let receipt = rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap();
+    let receipt = rollover(
+        &old,
+        &next,
+        server.backend.as_ref(),
+        Some(fence.token.as_str()),
+    )
+    .unwrap();
     let snapshot: serde_json::Value = serde_json::from_slice(
         &std::fs::read(receipt.parent().unwrap().join("snapshot.json")).unwrap(),
     )
@@ -1609,7 +1698,13 @@ fn policy_rollover_preserves_old_failure_fence_and_history_without_admitting_old
     assert_eq!(snapshot["archives"].as_array().unwrap().len(), 1);
     assert!(!old.state_dir.join("rollover.json").exists());
     assert_eq!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap(),
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap(),
         receipt
     );
     assert_eq!(server.backend.released_requests.lock().unwrap().len(), 3);
@@ -1659,7 +1754,13 @@ fn policy_rollover_preserves_old_failure_fence_and_history_without_admitting_old
     server.shutdown();
     // Retrying a completed handover cannot reset work admitted by the new policy.
     assert_eq!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap(),
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap(),
         receipt
     );
     assert_eq!(
@@ -1685,9 +1786,14 @@ fn interrupted_policy_rollover_blocks_startup_and_recovers_only_with_exact_evide
     server.shutdown();
     server.backend.release_fails.store(true, Ordering::Relaxed);
     assert!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token)
-            .unwrap_err()
-            .contains("injected")
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap_err()
+        .contains("injected")
     );
     assert!(old.state_dir.join("rollover.json").exists());
     for config in [&old, &next] {
@@ -1706,13 +1812,24 @@ fn interrupted_policy_rollover_blocks_startup_and_recovers_only_with_exact_evide
         ..next.clone()
     };
     assert!(
-        rollover(&old, &wrong, server.backend.as_ref(), &fence.token)
-            .unwrap_err()
-            .contains("different configs")
+        rollover(
+            &old,
+            &wrong,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap_err()
+        .contains("different configs")
     );
     assert!(server.backend.released_requests.lock().unwrap().is_empty());
     server.backend.release_fails.store(false, Ordering::Relaxed);
-    rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap();
+    rollover(
+        &old,
+        &next,
+        server.backend.as_ref(),
+        Some(fence.token.as_str()),
+    )
+    .unwrap();
     assert_eq!(
         server.backend.released_requests.lock().unwrap().as_slice(),
         ["m"]
@@ -1751,11 +1868,23 @@ fn successive_rollovers_keep_each_policy_history_and_survive_post_publication_in
     });
     let fence = first_client.drain("first", Duration::from_secs(1)).unwrap();
     server.shutdown();
-    let receipt = rollover(&first, &second, server.backend.as_ref(), &fence.token).unwrap();
+    let receipt = rollover(
+        &first,
+        &second,
+        server.backend.as_ref(),
+        Some(fence.token.as_str()),
+    )
+    .unwrap();
     // Recreate a crash after the replacement journal and receipt were durably
     // written, but before the marker was removed. No roots may be released twice.
     std::fs::copy(&receipt, first.state_dir.join("rollover.json")).unwrap();
-    rollover(&first, &second, server.backend.as_ref(), &fence.token).unwrap();
+    rollover(
+        &first,
+        &second,
+        server.backend.as_ref(),
+        Some(fence.token.as_str()),
+    )
+    .unwrap();
     assert_eq!(
         server.backend.released_requests.lock().unwrap().as_slice(),
         ["first"]
@@ -1781,7 +1910,7 @@ fn successive_rollovers_keep_each_policy_history_and_survive_post_publication_in
         &second,
         &third,
         server.backend.as_ref(),
-        &second_fence.token,
+        Some(second_fence.token.as_str()),
     )
     .unwrap();
     server.config = third;
@@ -1828,7 +1957,13 @@ fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work
     });
     let fence = client.drain("m", Duration::from_secs(1)).unwrap();
     server.shutdown();
-    let receipt = rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap();
+    let receipt = rollover(
+        &old,
+        &next,
+        server.backend.as_ref(),
+        Some(fence.token.as_str()),
+    )
+    .unwrap();
     let journal = std::fs::read(next.state_dir.join("train.json")).unwrap();
     let path = receipt.parent().unwrap().join("snapshot.json");
     let original = std::fs::read(&path).unwrap();
@@ -1836,9 +1971,14 @@ fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work
     changed.push(b' ');
     std::fs::write(&path, changed).unwrap();
     assert!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token)
-            .unwrap_err()
-            .contains("checksum changed")
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap_err()
+        .contains("checksum changed")
     );
     assert_eq!(
         journal,
@@ -1851,7 +1991,13 @@ fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work
     );
     std::fs::write(path, original).unwrap();
     assert_eq!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token).unwrap(),
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap(),
         receipt
     );
     let journal_path = next.state_dir.join("train.json");
@@ -1860,9 +2006,14 @@ fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work
     let raw = serde_json::to_vec(&incompatible).unwrap();
     std::fs::write(&journal_path, &raw).unwrap();
     assert!(
-        rollover(&old, &next, server.backend.as_ref(), &fence.token)
-            .unwrap_err()
-            .contains("unsupported rollover journal version")
+        rollover(
+            &old,
+            &next,
+            server.backend.as_ref(),
+            Some(fence.token.as_str())
+        )
+        .unwrap_err()
+        .contains("unsupported rollover journal version")
     );
     assert_eq!(std::fs::read(&journal_path).unwrap(), raw);
     assert_eq!(

@@ -103,8 +103,9 @@ pub enum TrainCommand {
         previous_config: PathBuf,
         #[arg(long)]
         config: PathBuf,
+        /// Drained activation fence token; omit it to adopt an idle journal.
         #[arg(long)]
-        token: String,
+        token: Option<String>,
     },
 }
 
@@ -231,7 +232,11 @@ pub fn execute(command: TrainCommand) -> Result<Execution, String> {
             config,
             token,
         } => {
-            let receipt = native::rollover(service(&previous_config)?, service(&config)?, &token)?;
+            let receipt = native::rollover(
+                service(&previous_config)?,
+                service(&config)?,
+                token.as_deref(),
+            )?;
             Ok(Execution::Rollover { receipt })
         }
     }

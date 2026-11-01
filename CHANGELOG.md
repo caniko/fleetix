@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `build-train rollover` can adopt a stopped, idle journal which never took a
+  drain fence. A fence requires a live request, so a train which finished and
+  retired its work before the policy changed could not be handed over at all and
+  the coordinator crash-looped on the persisted policy mismatch. Without a fence
+  the handover still holds the coordinator and socket leases and rejects pending
+  or running work; an existing fence still requires its exact token. `--token` is
+  now optional and is rejected when no fence exists.
+
 ## [0.9.0] - 2026-10-31
 
 ### Added
