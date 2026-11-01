@@ -121,6 +121,8 @@ pub enum DeviceType {
     Desktop,
     #[serde(rename = "laptop")]
     Laptop,
+    #[serde(rename = "worker")]
+    Worker,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -989,6 +991,14 @@ mod tests {
             output["deployment"]["publicPriorities"],
             value["deployment"]["publicPriorities"]
         );
+    }
+
+    #[test]
+    fn worker_device_type_round_trips() {
+        let value = serde_json::json!("worker");
+        let device: DeviceType = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(device, DeviceType::Worker);
+        assert_eq!(serde_json::to_value(device).unwrap(), value);
     }
 
     #[test]

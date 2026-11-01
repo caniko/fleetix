@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-01
+
+### Changed
+
+- **Breaking:** `DeviceType` gains the `Worker` variant; exhaustive matches
+  need a new arm.
+
+### Added
+
+- Add the `worker` device type (`DeviceType::Worker`) for headless compute
+  hosts that keep only ephemeral data.
+- Add free-form `Host.tags` for consumer-defined host classes (#23).
+
 ## [0.9.0] - 2026-10-31
 
 ### Added
@@ -308,7 +321,8 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.9.0...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.10.0...HEAD
+[0.10.0]: https://github.com/caniko/fleetix/compare/0.9.0...0.10.0
 [0.9.0]: https://github.com/caniko/fleetix/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/caniko/fleetix/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/caniko/fleetix/compare/0.6.0...0.7.0
