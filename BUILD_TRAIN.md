@@ -150,6 +150,16 @@ the train, cancel pending requests individually and stop the old service. Then:
 fleetix build-train rollover --previous-config /nix/store/…-original-service.json --config /etc/fleetix-train/next-service.json --token exact-retained-token
 ```
 
+A fence can only be taken by a live request, so a train which finished and
+retired its work before the policy changed leaves no token behind. When the
+stopped journal has no fence and no pending or running work, hand over without
+one; the coordinator and socket leases still prove that no old coordinator is
+alive, and any fence on the journal still requires its exact token:
+
+```text
+fleetix build-train rollover --previous-config /nix/store/…-original-service.json --config /etc/fleetix-train/next-service.json
+```
+
 After rollover succeeds, clear `retainedDeployment`, activate the configuration
 under the same host lease, and start the service with the replacement policy.
 Never restart the retained old-policy service against the replaced journal. Interrupted
