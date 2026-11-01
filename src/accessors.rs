@@ -549,6 +549,7 @@ mod tests {
             system: String::new(),
             device_type: None,
             availability_class: "unknown".to_string(),
+            tags: vec![],
             host_pubkey: None,
             host_names: vec![],
             network: Network::default(),
