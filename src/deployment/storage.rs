@@ -156,6 +156,10 @@ pub(super) fn private_dir(path: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     trusted_path(path)?;
+    check_private_dir(path)
+}
+
+fn check_private_dir(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.is_dir() || metadata.uid() != uid() || metadata.mode() & 0o077 != 0 {
         return Err(format!(
@@ -177,6 +181,10 @@ fn private_parents(path: &Path) -> Result<(), String> {
 pub(super) fn lock(path: &Path) -> Result<File, LockFailure> {
     absolute(path)?;
     trusted_path(path.parent().ok_or("lock has no parent")?)?;
+    lock_anchor(path)
+}
+
+fn lock_anchor(path: &Path) -> Result<File, LockFailure> {
     let create = OpenOptions::new()
         .read(true)
         .write(true)
@@ -262,28 +270,32 @@ mod tests {
     fn private_state_rejects_shared_or_symlinked_directories() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("state");
-        private_dir(&state).unwrap();
+        // Nix's build sandbox root can be owned by an unmapped uid. Test the
+        // real leaf checks independently of admission of that foreign root;
+        // the deployment VM exercises the complete privileged path.
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        check_private_dir(&state).unwrap();
         let link = root.path().join("alias");
         symlink(&state, &link).unwrap();
-        assert!(private_dir(&link).is_err());
+        assert!(check_private_dir(&link).is_err());
         fs::set_permissions(&state, fs::Permissions::from_mode(0o770)).unwrap();
-        assert!(private_dir(&state).is_err());
+        assert!(check_private_dir(&state).is_err());
     }
 
     #[test]
     fn activation_uses_existing_kernel_lock_without_replacing_anchor() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("lock");
-        let first = lock(&path).unwrap();
+        let first = lock_anchor(&path).unwrap();
         let inode = fs::metadata(&path).unwrap().ino();
-        let busy = lock(&path).unwrap_err();
+        let busy = lock_anchor(&path).unwrap_err();
         assert!(busy.busy);
         let shared = root.path().join("shared");
         fs::create_dir(&shared).unwrap();
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!lock(&shared.join("lock")).unwrap_err().busy);
         drop(first);
-        assert!(lock(&path).is_ok());
+        assert!(lock_anchor(&path).is_ok());
         assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
     }
 }
