@@ -131,8 +131,7 @@ impl Policy {
             &mut policy.health_command[0],
         ] {
             storage::trusted_path(Path::new(executable))?;
-            *executable = std::fs::canonicalize(&*executable)
-                .map_err(|error| error.to_string())?
+            *executable = freeze_executable(Path::new(executable))?
                 .to_str()
                 .ok_or("policy executable is not UTF-8")?
                 .to_owned();
@@ -168,6 +167,28 @@ impl Policy {
     fn command_timeout(&self) -> Duration {
         Duration::from_secs(self.command_timeout_seconds)
     }
+}
+
+fn freeze_executable(path: &Path) -> Result<PathBuf, String> {
+    let resolved = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+    // Multicall binaries dispatch on argv[0]. Keep their installed alias in
+    // the resolved package, not the mutable profile used to find that package.
+    let pinned = resolved.with_file_name(path.file_name().ok_or("executable has no name")?);
+    if pinned != resolved {
+        let target = std::fs::read_link(&pinned).map_err(|error| error.to_string())?;
+        let direct = if target.is_absolute() {
+            target
+        } else {
+            pinned
+                .parent()
+                .ok_or("executable has no parent")?
+                .join(target)
+        };
+        if direct != resolved {
+            return Err("executable alias must directly name its immutable target".into());
+        }
+    }
+    Ok(pinned)
 }
 
 fn unix_seconds() -> Result<u64, String> {
@@ -725,5 +746,31 @@ mod tests {
         bad = good;
         bad.state_root = "/var/lib/../home/can".into();
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn pinning_preserves_multicall_names_without_retaining_mutable_aliases() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let package = root.path().join("package");
+        std::fs::create_dir(&package).unwrap();
+        std::fs::write(package.join("nix"), b"fixture binary").unwrap();
+        symlink("nix", package.join("nix-store")).unwrap();
+        symlink("nix", package.join("nix-env")).unwrap();
+        let current = root.path().join("current");
+        symlink(&package, &current).unwrap();
+        assert_eq!(
+            freeze_executable(&current.join("nix")).unwrap(),
+            package.join("nix")
+        );
+        for name in ["nix-store", "nix-env"] {
+            let pinned = freeze_executable(&current.join(name)).unwrap();
+            assert_eq!(pinned, package.join(name));
+            assert_eq!(std::fs::canonicalize(pinned).unwrap(), package.join("nix"));
+        }
+        // A sibling alias that delegates through mutable state is not pinning.
+        symlink("current/nix", root.path().join("redirect")).unwrap();
+        symlink(root.path().join("redirect"), package.join("unsafe-alias")).unwrap();
+        assert!(freeze_executable(&current.join("unsafe-alias")).is_err());
     }
 }
