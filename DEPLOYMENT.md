@@ -21,6 +21,14 @@ qualification evidence, configuration-only effects and rollback compatibility.
 Unknown effects, destructive hooks and incompatible state migrations must be
 refused. Root ownership of a Nix store object does **not** authorize its code.
 
+No-sudo activation uses the same request/worker boundary, not a second approval
+path. Toolbelt's opt-in `requestUsers` grants named users write access to a
+dedicated watched inbox. Publishing a request starts the fixed root worker;
+the user cannot select its privileged policy or argv. Filesystem access permits
+nomination only: the installed verifier still decides eligibility. Home Manager
+uses the equivalent same-owner user service. No generic sudo/polkit grant is
+needed, and private recovery state remains inaccessible to system submitters.
+
 The health command is also fixed by policy. It must cover the deployed service
 and its dependencies, not merely successful activation or a running timer.
 Commands use explicit argv, have deadlines, and never prompt for credentials.
