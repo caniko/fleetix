@@ -329,7 +329,8 @@ in
 
       def settle_recovery():
           # A failed deploy may have queued OnFailure; serialize before the
-          # next scenario and leave a fresh recovery-marker timestamp.
+          # next independent scenario with fresh fixture rate-limit accounting.
+          machine.succeed("systemctl reset-failed fleetix-fixture-recover.service")
           machine.succeed("systemctl start fleetix-fixture-recover.service")
           machine.wait_until_succeeds("! systemctl is-active --quiet fleetix-fixture-recover.service")
 
