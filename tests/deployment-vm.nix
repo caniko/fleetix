@@ -198,6 +198,7 @@ in
           Type = "oneshot";
           ExecStartPre = "${pkgs.coreutils}/bin/touch /run/fleetix-fixture-recovery-ran";
           ExecStart = "${worker}/bin/fleetix-deploy recover --policy /etc/fleetix-fixture.json";
+          SuccessExitStatus = [75];
           TimeoutStartSec = 300;
           UMask = "0077";
           KillMode = "control-group";
@@ -381,6 +382,11 @@ in
       machine.wait_until_fails("${pkgs.util-linux}/bin/flock --nonblock " + shlex.quote(LOCK) + " true")
       status, _ = machine.execute("${worker}/bin/fleetix-deploy run --policy /etc/fleetix-fixture.json --request /root/absent.json")
       assert status == 75
+      status, _ = machine.execute("${worker}/bin/fleetix-deploy recover --policy /etc/fleetix-fixture.json")
+      assert status == 75
+      machine.succeed("systemctl start fleetix-fixture-recover.service")
+      assert run("systemctl show -p Result --value fleetix-fixture-recover.service") == "success"
+      assert run("systemctl show -p ExecMainStatus --value fleetix-fixture-recover.service") == "75"
       machine.succeed("systemctl stop fleetix-fixture-lock-holder.service")
       assert snapshot() == baseline
       assert run("stat -c %a " + shlex.quote(LOCK)) == "600"

@@ -50,12 +50,11 @@ fn main() -> ExitCode {
             policy,
             retry_failed,
         } => {
-            let result = if retry_failed {
+            if retry_failed {
                 runtime::retry_recovery(&policy)
             } else {
                 runtime::recover(&policy)
-            };
-            result.map_err(runtime::WorkerError::from)
+            }
         }
         Action::Status { policy } => runtime::status(&policy).map_err(runtime::WorkerError::from),
     };
@@ -65,13 +64,14 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("deployment refused or failed: {error}");
             if error.retryable {
+                eprintln!("deployment deferred: {error}");
                 // The installed unit forces a restart only for this exit code,
                 // so lock contention re-runs admission instead of needing an
                 // operator; every refused or unsafe state stays final.
                 ExitCode::from(75)
             } else {
+                eprintln!("deployment refused or failed: {error}");
                 ExitCode::FAILURE
             }
         }

@@ -60,6 +60,12 @@ The worker refuses to overwrite an unrelated generation during recovery. A
 failed restoration is recorded as a recovery failure and needs operator action;
 it is never reported as a healthy deployment.
 
+Both run and recovery commands exit 75 only when the activation lock is busy.
+Recovery units must accept that code as a deferred scan, not a failed service
+that would poison an otherwise healthy NixOS activation. The periodic timer
+retries the scan. A deferred scan does not certify restoration; genuine recovery
+failures still exit 1 and remain visible.
+
 Inspect `fleetix-deploy status --policy POLICY` before an explicit maintenance
 retry with `fleetix-deploy recover --policy POLICY --retry-failed`. Normal
 recovery timers never clear a failed-restoration terminal. An unrelated current

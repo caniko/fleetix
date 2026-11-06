@@ -41,6 +41,15 @@ impl From<&str> for WorkerError {
     }
 }
 
+impl From<storage::LockFailure> for WorkerError {
+    fn from(error: storage::LockFailure) -> Self {
+        Self {
+            retryable: error.busy,
+            message: error.message,
+        }
+    }
+}
+
 /// Installed policy, not part of the user-supplied request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -515,22 +524,24 @@ fn recover_locked(policy: &Policy, retry_failed: bool) -> Result<Vec<Transaction
 
 /// Recover only unsettled transactions using their frozen policy. Completed
 /// deployments are never rolled back merely because this service was triggered.
-pub fn recover(policy_path: &Path) -> Result<String, String> {
+pub fn recover(policy_path: &Path) -> Result<String, WorkerError> {
     recover_with_retry(policy_path, false)
 }
 
 /// Explicit maintenance action after inspecting a failed restoration. The
 /// unrelated-generation guard still applies; this cannot force a rollback.
-pub fn retry_recovery(policy_path: &Path) -> Result<String, String> {
+pub fn retry_recovery(policy_path: &Path) -> Result<String, WorkerError> {
     recover_with_retry(policy_path, true)
 }
 
-fn recover_with_retry(policy_path: &Path, retry_failed: bool) -> Result<String, String> {
+fn recover_with_retry(policy_path: &Path, retry_failed: bool) -> Result<String, WorkerError> {
     let policy = Policy::load(policy_path)?;
     storage::private_dir(&policy.state_root)?;
-    let _lock = storage::lock(&policy.lock_path).map_err(|error| error.to_string())?;
-    serde_json::to_string(&recover_locked(&policy, retry_failed)?)
-        .map_err(|error| error.to_string())
+    let _lock = storage::lock(&policy.lock_path)?;
+    Ok(
+        serde_json::to_string(&recover_locked(&policy, retry_failed)?)
+            .map_err(|error| error.to_string())?,
+    )
 }
 
 /// Read atomic snapshots without creating state, changing locks or activating.
@@ -552,10 +563,7 @@ pub fn status(policy_path: &Path) -> Result<String, String> {
 pub fn run(policy_path: &Path, request_path: &Path) -> Result<String, WorkerError> {
     let policy = Policy::load(policy_path)?;
     storage::private_dir(&policy.state_root)?;
-    let _lock = storage::lock(&policy.lock_path).map_err(|error| WorkerError {
-        retryable: error.busy,
-        message: error.message,
-    })?;
+    let _lock = storage::lock(&policy.lock_path)?;
     recover_locked(&policy, false)?;
     let plan: Plan = storage::read_json(request_path, false)?;
     let (system, profile) = observation(&policy)?;
@@ -772,5 +780,24 @@ mod tests {
         symlink("current/nix", root.path().join("redirect")).unwrap();
         symlink(root.path().join("redirect"), package.join("unsafe-alias")).unwrap();
         assert!(freeze_executable(&current.join("unsafe-alias")).is_err());
+    }
+
+    #[test]
+    fn only_lock_contention_is_a_retryable_worker_failure() {
+        assert!(
+            WorkerError::from(storage::LockFailure {
+                busy: true,
+                message: "busy".into()
+            })
+            .retryable
+        );
+        assert!(
+            !WorkerError::from(storage::LockFailure {
+                busy: false,
+                message: "unsafe anchor".into()
+            })
+            .retryable
+        );
+        assert!(!WorkerError::from("restoration failed").retryable);
     }
 }
