@@ -136,6 +136,7 @@ in
       ];
 
       systemd.services.fleetix-fixture-deploy = {
+        restartIfChanged = false;
         onFailure = ["fleetix-fixture-recover.service"];
         serviceConfig = {
           Type = "oneshot";
@@ -150,7 +151,9 @@ in
       # only the untrusted request; policy, worker argv and recovery remain
       # administrator-owned. The same recovery unit is its OnFailure target.
       systemd.services.fleetix-fixture-inbox = {
+        restartIfChanged = false;
         onFailure = ["fleetix-fixture-recover.service"];
+        unitConfig.ConditionPathExists = requestPath;
         serviceConfig = {
           Type = "oneshot";
           User = "root";
@@ -169,6 +172,14 @@ in
         pathConfig = {
           Unit = "fleetix-fixture-inbox.service";
           PathChanged = requestPath;
+        };
+      };
+
+      systemd.timers.fleetix-fixture-inbox = {
+        wantedBy = ["timers.target"];
+        timerConfig = {
+          OnBootSec = "30s";
+          Unit = "fleetix-fixture-inbox.service";
         };
       };
 
@@ -192,7 +203,7 @@ in
       # Target-local recovery: runs at boot and when the trial fails. The
       # initiating terminal is never part of the recovery path.
       systemd.services.fleetix-fixture-recover = {
-        wantedBy = ["multi-user.target"];
+        restartIfChanged = false;
         after = ["fleetix-fixture-profile.service"];
         serviceConfig = {
           Type = "oneshot";
@@ -205,12 +216,25 @@ in
         };
       };
 
+      # Boot/periodic scans must not be target dependencies of an activation
+      # oneshot: switch-to-configuration starts active targets and waits on them.
+      systemd.timers.fleetix-fixture-recover = {
+        wantedBy = ["timers.target"];
+        timerConfig = {
+          OnBootSec = "30s";
+          OnUnitInactiveSec = "60s";
+          AccuracySec = "1s";
+        };
+      };
+
       specialisation.good.configuration = {
         environment.etc."fleetix-fixture-marker".text = lib.mkForce "good";
       };
 
       specialisation.bad.configuration = {
         environment.etc."fleetix-fixture-marker".text = lib.mkForce "bad";
+        # Restoration changes the active recovery unit, but must not kill it.
+        systemd.services.fleetix-fixture-recover.description = "Bad fixture recovery";
         # A real root-owned fixture service: its sentinel proves the bad
         # specialisation was actually activated, and survives rollback.
         systemd.services.fleetix-fixture-trial = {
@@ -391,7 +415,9 @@ in
       machine.succeed("systemctl stop fleetix-fixture-lock-holder.service")
       assert snapshot() == baseline
       assert run("stat -c %a " + shlex.quote(LOCK)) == "600"
-      assert run("systemctl is-enabled fleetix-fixture-recover.service") == "enabled"
+      assert run("systemctl is-enabled fleetix-fixture-recover.timer") == "enabled"
+      assert "fleetix-fixture-recover.service" not in run("systemctl show -p After --value multi-user.target").split()
+      assert "fleetix-fixture-inbox.service" not in run("systemctl show -p After --value multi-user.target").split()
 
       assert marker() == "baseline"
       machine.succeed(HEALTH)
@@ -480,10 +506,13 @@ in
       machine.wait_until_succeeds("test \"$(readlink -f /run/current-system)\" = " + shlex.quote(before_kill[0]), timeout=180)
       machine.wait_until_succeeds("test \"$(readlink -f /nix/var/nix/profiles/system)\" = " + shlex.quote(before_kill[1]), timeout=180)
       machine.wait_until_succeeds("test \"$(cat /etc/fleetix-fixture-marker)\" = " + shlex.quote(before_kill[2]), timeout=180)
-      machine.wait_until_succeeds("systemctl is-failed fleetix-fixture-deploy.service")
+      # The real NixOS switcher resets failed units. The journal, not a transient
+      # systemd failure state, is the durable proof that recovery finished.
+      wait_journal("kill-bad", RESTORED, before_kill[0], before_kill[1], bad)
+      machine.wait_until_succeeds("! systemctl is-active --quiet fleetix-fixture-recover.service", timeout=180)
+      machine.succeed("! systemctl is-failed --quiet fleetix-fixture-recover.service")
       assert snapshot() == before_kill
       machine.succeed(HEALTH)
-      wait_journal("kill-bad", RESTORED, before_kill[0], before_kill[1], bad)
       assert_rooted([before_kill[0], before_kill[1]])
       machine.wait_until_succeeds("test \"$(stat -c %y /run/fleetix-fixture-recovery-ran)\" != " + shlex.quote(recovery_stamp), timeout=180)
       machine.succeed("test -e /run/fleetix-fixture-trial")

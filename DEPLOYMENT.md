@@ -66,6 +66,12 @@ that would poison an otherwise healthy NixOS activation. The periodic timer
 retries the scan. A deferred scan does not certify restoration; genuine recovery
 failures still exit 1 and remain visible.
 
+Trigger NixOS workers at boot through timers, not `multi-user.target.wants`.
+The switcher starts active targets and otherwise waits for its own activation
+oneshot. Set `restartIfChanged = false` so changing a worker unit cannot kill its
+running transaction. NixOS also resets failed-unit state during activation;
+terminal journal state and health, not a failed-unit flag, confirm restoration.
+
 Inspect `fleetix-deploy status --policy POLICY` before an explicit maintenance
 retry with `fleetix-deploy recover --policy POLICY --retry-failed`. Normal
 recovery timers never clear a failed-restoration terminal. An unrelated current
