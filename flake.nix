@@ -68,6 +68,7 @@
         strictDeps = true;
         nativeBuildInputs = [pkgs.pkl];
         cargoExtraArgs = "--workspace --all-features";
+        RUST_TEST_THREADS = "2";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
     in {
@@ -115,9 +116,11 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
-            cargoExtraArgs = "--package fleetix --features cli,build-train-cli";
+            cargoExtraArgs = "--package fleetix --features cli,build-train-cli,deployment-cli";
             meta.mainProgram = "fleetix";
           });
+
+        fleetix-deploy = fleetixCrate;
 
         fleetix-sidecar = craneLib.buildPackage (commonArgs
           // {
@@ -162,7 +165,7 @@
         };
       in {
         default = fleetixCrate;
-        inherit fleetixCrate fleetix-sidecar exportNix pklToNix;
+        inherit fleetixCrate fleetix-sidecar fleetix-deploy exportNix pklToNix;
       }
     );
 
@@ -214,568 +217,574 @@
             default = [];
           };
         };
-      in {
-        build-train-policy = let
-          contract = import ./tests/build-train-policy.nix;
-        in
-          pkgs.writeText "fleetix-build-train-policy.json" (builtins.toJSON contract);
-        build-train-module = import ./tests/build-train-module.nix {inherit pkgs;};
-        gpu-contract = assert import ./tests/gpu.nix;
-          pkgs.writeText "fleetix-gpu-contract" "ok";
-        gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
-          pkgs.writeText "gatus-profiles" "ok";
-        publication-projections = assert import ./tests/publication.nix {inherit (nixpkgs) lib;};
-          pkgs.writeText "publication-projections" "ok";
-        mcp-adapters = assert import ./tests/mcp.nix {inherit (nixpkgs) lib;};
-          pkgs.runCommand "fleetix-mcp-adapters" {} ''touch $out'';
+      in ({
+          build-train-policy = let
+            contract = import ./tests/build-train-policy.nix;
+          in
+            pkgs.writeText "fleetix-build-train-policy.json" (builtins.toJSON contract);
+          build-train-module = import ./tests/build-train-module.nix {inherit pkgs;};
+          gpu-contract = assert import ./tests/gpu.nix;
+            pkgs.writeText "fleetix-gpu-contract" "ok";
+          gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
+            pkgs.writeText "gatus-profiles" "ok";
+          publication-projections = assert import ./tests/publication.nix {inherit (nixpkgs) lib;};
+            pkgs.writeText "publication-projections" "ok";
+          mcp-adapters = assert import ./tests/mcp.nix {inherit (nixpkgs) lib;};
+            pkgs.runCommand "fleetix-mcp-adapters" {} ''touch $out'';
 
-        fleetix-tests = craneLib.cargoTest (
-          commonArgs
-          // {
-            inherit cargoArtifacts;
-            cargoExtraArgs = "--workspace --all-features";
-          }
-        );
-
-        fleetix-clippy = craneLib.cargoClippy (
-          commonArgs
-          // {
-            inherit cargoArtifacts;
-            cargoExtraArgs = "--workspace --all-features";
-            cargoClippyExtraArgs = "--all-targets -- -D warnings";
-          }
-        );
-
-        fleetix-no-default-features = craneLib.cargoClippy (
-          commonArgs
-          // {
-            cargoArtifacts = libraryArtifacts;
-            cargoExtraArgs = "--workspace --no-default-features";
-            cargoClippyExtraArgs = "--all-targets -- -D warnings";
-          }
-        );
-
-        fleetix-publication-policy = assert !(cargoToml.dependencies.pklx ? git);
-        assert cargoToml.package.documentation == "https://docs.rs/fleetix";
-          pkgs.runCommand "fleetix-publication-policy" {} ''
-            touch $out
-          '';
-
-        fleetix-fmt = (treefmtFor system).config.build.check self;
-
-        validate-example-export =
-          pkgs.runCommand "validate-example-export" {
-            nativeBuildInputs = [self.packages.${system}.fleetixCrate];
-            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-          } ''
-            fixture="$TMPDIR/example-root"
-            mkdir -p "$fixture/examples" "$fixture/lib/topology"
-            cp ${./examples/Topology.pkl} "$fixture/examples/Topology.pkl"
-            cp ${./lib/topology/Schema.pkl} "$fixture/lib/topology/Schema.pkl"
-            fleetix eval "$fixture/examples/Topology.pkl" > topology.nix
-            (
-              cd "$fixture"
-              fleetix pkl-to-nix --no-cache examples/Topology.pkl "$TMPDIR/relative.nix"
-            )
-            fleetix pkl-to-nix --no-cache "$fixture/examples/Topology.pkl" "$TMPDIR/absolute.nix"
-            cmp "$TMPDIR/relative.nix" "$TMPDIR/absolute.nix"
-            fleetix validate "$fixture/examples/Topology.pkl" --format json > validation.json
-            grep -q "schemaVersion = 2" topology.nix
-            grep -q "hosts =" topology.nix
-            grep -q "pagesSites =" topology.nix
-            grep -q "redirects =" topology.nix
-            grep -q "endpoints =" topology.nix
-            grep -q "httpSites =" topology.nix
-            grep -q "buildCache =" topology.nix
-            grep -q "packageAttrNames =" topology.nix
-            grep -q "vpnProfiles =" topology.nix
-            grep -q 'privateKeyRef = "vpn/example/private-key"' topology.nix
-            grep -q 'type = "wireguard"' topology.nix
-            grep -q 'type = "nat-pmp"' topology.nix
-            grep -q 'dashboard' topology.nix
-            grep -q 'requiredAvailability = "always-on"' topology.nix
-            grep -q 'serviceIntents' topology.nix
-            grep -q 'sshKnownHosts' topology.nix
-            grep -q 'git.example.test' topology.nix
-            grep -A1 'fallbackEndpoints = \[$' topology.nix | grep -Fq '"dashboard-standby"'
-            grep -Fq 'scope = "lan"' topology.nix
-            grep -Fq 'access = "lan"' topology.nix
-            grep -q 'runnerPools =' topology.nix
-            touch $out
-          '';
-
-        validate-modular-aggregate-export =
-          pkgs.runCommand "validate-modular-aggregate-export" {
-            nativeBuildInputs = [self.packages.${system}.pklToNix];
-            SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-          } ''
-            fixture="$TMPDIR/topology"
-            mkdir -p "$fixture/links" "$fixture/hosts"
-
-            cat > "$fixture/Schema.pkl" <<'EOF'
-            class Link {
-              subnet: String
+          fleetix-tests = craneLib.cargoTest (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoExtraArgs = "--workspace --all-features";
             }
+          );
 
-            class Host {
-              system: String
+          fleetix-clippy = craneLib.cargoClippy (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoExtraArgs = "--workspace --all-features";
+              cargoClippyExtraArgs = "--all-targets -- -D warnings";
             }
+          );
 
-            class SshKnownHost {
-              hostNames: Listing<String>
-              publicKeys: Listing<String>
+          fleetix-no-default-features = craneLib.cargoClippy (
+            commonArgs
+            // {
+              cargoArtifacts = libraryArtifacts;
+              cargoExtraArgs = "--workspace --no-default-features";
+              cargoClippyExtraArgs = "--all-targets -- -D warnings";
             }
+          );
 
-            class Trust {
-              sshKnownHosts: Listing<SshKnownHost> = new Listing {}
-            }
-            EOF
+          fleetix-publication-policy = assert !(cargoToml.dependencies.pklx ? git);
+          assert cargoToml.package.documentation == "https://docs.rs/fleetix";
+            pkgs.runCommand "fleetix-publication-policy" {} ''
+              touch $out
+            '';
 
-            cat > "$fixture/links/WgHome.pkl" <<'EOF'
-            import "../Schema.pkl" as S
+          fleetix-fmt = (treefmtFor system).config.build.check self;
 
-            links = new {
-              ["wg-home"] = new S.Link {
-                subnet = "198.51.100.0/24"
+          validate-example-export =
+            pkgs.runCommand "validate-example-export" {
+              nativeBuildInputs = [self.packages.${system}.fleetixCrate];
+              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            } ''
+              fixture="$TMPDIR/example-root"
+              mkdir -p "$fixture/examples" "$fixture/lib/topology"
+              cp ${./examples/Topology.pkl} "$fixture/examples/Topology.pkl"
+              cp ${./lib/topology/Schema.pkl} "$fixture/lib/topology/Schema.pkl"
+              fleetix eval "$fixture/examples/Topology.pkl" > topology.nix
+              (
+                cd "$fixture"
+                fleetix pkl-to-nix --no-cache examples/Topology.pkl "$TMPDIR/relative.nix"
+              )
+              fleetix pkl-to-nix --no-cache "$fixture/examples/Topology.pkl" "$TMPDIR/absolute.nix"
+              cmp "$TMPDIR/relative.nix" "$TMPDIR/absolute.nix"
+              fleetix validate "$fixture/examples/Topology.pkl" --format json > validation.json
+              grep -q "schemaVersion = 2" topology.nix
+              grep -q "hosts =" topology.nix
+              grep -q "pagesSites =" topology.nix
+              grep -q "redirects =" topology.nix
+              grep -q "endpoints =" topology.nix
+              grep -q "httpSites =" topology.nix
+              grep -q "buildCache =" topology.nix
+              grep -q "packageAttrNames =" topology.nix
+              grep -q "vpnProfiles =" topology.nix
+              grep -q 'privateKeyRef = "vpn/example/private-key"' topology.nix
+              grep -q 'type = "wireguard"' topology.nix
+              grep -q 'type = "nat-pmp"' topology.nix
+              grep -q 'dashboard' topology.nix
+              grep -q 'requiredAvailability = "always-on"' topology.nix
+              grep -q 'serviceIntents' topology.nix
+              grep -q 'sshKnownHosts' topology.nix
+              grep -q 'git.example.test' topology.nix
+              grep -A1 'fallbackEndpoints = \[$' topology.nix | grep -Fq '"dashboard-standby"'
+              grep -Fq 'scope = "lan"' topology.nix
+              grep -Fq 'access = "lan"' topology.nix
+              grep -q 'runnerPools =' topology.nix
+              touch $out
+            '';
+
+          validate-modular-aggregate-export =
+            pkgs.runCommand "validate-modular-aggregate-export" {
+              nativeBuildInputs = [self.packages.${system}.pklToNix];
+              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            } ''
+              fixture="$TMPDIR/topology"
+              mkdir -p "$fixture/links" "$fixture/hosts"
+
+              cat > "$fixture/Schema.pkl" <<'EOF'
+              class Link {
+                subnet: String
               }
-            }
-            EOF
 
-            cat > "$fixture/hosts/Hub.pkl" <<'EOF'
-            import "../Schema.pkl" as S
-
-            hosts = new {
-              ["hub"] = new S.Host {
-                system = "x86_64-linux"
+              class Host {
+                system: String
               }
-            }
-            EOF
 
-            cat > "$fixture/Domains.pkl" <<'EOF'
-            domains = new {
-              zones = new Listing<String> {
-                "example.test"
+              class SshKnownHost {
+                hostNames: Listing<String>
+                publicKeys: Listing<String>
               }
-              redirects = new Listing {
-                new {
-                  from = "old.example.test"
-                  to = "new.example.test"
-                  status = 301
-                  preservePath = true
+
+              class Trust {
+                sshKnownHosts: Listing<SshKnownHost> = new Listing {}
+              }
+              EOF
+
+              cat > "$fixture/links/WgHome.pkl" <<'EOF'
+              import "../Schema.pkl" as S
+
+              links = new {
+                ["wg-home"] = new S.Link {
+                  subnet = "198.51.100.0/24"
                 }
               }
-            }
-            EOF
+              EOF
 
-            cat > "$fixture/Services.pkl" <<'EOF'
-            services = new {
-              endpoints = new {}
-              httpSites = new {}
-            }
-            EOF
+              cat > "$fixture/hosts/Hub.pkl" <<'EOF'
+              import "../Schema.pkl" as S
 
-            cat > "$fixture/Trust.pkl" <<'EOF'
-            import "Schema.pkl" as S
-
-            trust = new S.Trust {
-              sshKnownHosts = new Listing<S.SshKnownHost> {
-                new S.SshKnownHost {
-                  hostNames = new Listing { "git.example.test" }
-                  publicKeys = new Listing { "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleGit" }
+              hosts = new {
+                ["hub"] = new S.Host {
+                  system = "x86_64-linux"
                 }
               }
-            }
-            EOF
+              EOF
 
-            cat > "$fixture/Topology.aggregated.pkl" <<'EOF'
-            import "links/WgHome.pkl" as W
-            import "hosts/Hub.pkl" as H
-            import "Domains.pkl" as D
-            import "Services.pkl" as S
-            import "Trust.pkl" as T
-            links = W.links
-            hosts = H.hosts
-            schemaVersion: UInt16 = 2
-            domains = D.domains
-            services = S.services
-            trust = T.trust
-            access = new { sshPort = 1337 }
-            EOF
+              cat > "$fixture/Domains.pkl" <<'EOF'
+              domains = new {
+                zones = new Listing<String> {
+                  "example.test"
+                }
+                redirects = new Listing {
+                  new {
+                    from = "old.example.test"
+                    to = "new.example.test"
+                    status = 301
+                    preservePath = true
+                  }
+                }
+              }
+              EOF
 
-            chmod -R a-w "$fixture"
-            fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix --no-cache
-            grep -Fq 'sshPort = 1337' topology.nix
-            grep -Fq 'links = {' topology.nix
-            grep -Fq 'hosts = {' topology.nix
-            grep -Fq 'domains = {' topology.nix
-            grep -Fq 'services = {' topology.nix
-            grep -q 'wg-home =' topology.nix
-            grep -Fq 'redirects =' topology.nix
-            grep -Fq 'sshKnownHosts = [' topology.nix
-            grep -Fq 'git.example.test' topology.nix
-            touch $out
-          '';
+              cat > "$fixture/Services.pkl" <<'EOF'
+              services = new {
+                endpoints = new {}
+                httpSites = new {}
+              }
+              EOF
 
-        fleetix-lib-helpers = let
-          topology = {
-            schemaVersion = 2;
-            links = {
-              mesh = {
-                subnet = "198.51.100.0/24";
-                port = 51820;
-                endpointSubdomain = "mesh";
+              cat > "$fixture/Trust.pkl" <<'EOF'
+              import "Schema.pkl" as S
+
+              trust = new S.Trust {
+                sshKnownHosts = new Listing<S.SshKnownHost> {
+                  new S.SshKnownHost {
+                    hostNames = new Listing { "git.example.test" }
+                    publicKeys = new Listing { "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleGit" }
+                  }
+                }
+              }
+              EOF
+
+              cat > "$fixture/Topology.aggregated.pkl" <<'EOF'
+              import "links/WgHome.pkl" as W
+              import "hosts/Hub.pkl" as H
+              import "Domains.pkl" as D
+              import "Services.pkl" as S
+              import "Trust.pkl" as T
+              links = W.links
+              hosts = H.hosts
+              schemaVersion: UInt16 = 2
+              domains = D.domains
+              services = S.services
+              trust = T.trust
+              access = new { sshPort = 1337 }
+              EOF
+
+              chmod -R a-w "$fixture"
+              fleetix-pkl-to-nix "$fixture/Topology.aggregated.pkl" topology.nix --no-cache
+              grep -Fq 'sshPort = 1337' topology.nix
+              grep -Fq 'links = {' topology.nix
+              grep -Fq 'hosts = {' topology.nix
+              grep -Fq 'domains = {' topology.nix
+              grep -Fq 'services = {' topology.nix
+              grep -q 'wg-home =' topology.nix
+              grep -Fq 'redirects =' topology.nix
+              grep -Fq 'sshKnownHosts = [' topology.nix
+              grep -Fq 'git.example.test' topology.nix
+              touch $out
+            '';
+
+          fleetix-lib-helpers = let
+            topology = {
+              schemaVersion = 2;
+              links = {
+                mesh = {
+                  subnet = "198.51.100.0/24";
+                  port = 51820;
+                  endpointSubdomain = "mesh";
+                };
+                direct-link.subnet = "203.0.113.0/24";
               };
-              direct-link.subnet = "203.0.113.0/24";
-            };
-            hosts = {
-              hub = {
-                network = {
-                  lanIp = "192.0.2.10";
-                  directLinkIp = "203.0.113.1";
-                };
-                links.mesh = {
-                  address = "198.51.100.5";
-                  role = "server";
-                  publicKey = "server-key";
-                };
-                links.direct-link.address = "203.0.113.1";
-                users.alice.hasAccount = true;
-                vpnProfiles.example = {
-                  provider = "Example VPN";
-                  owner = "alice";
-                  dnsServers = ["192.0.2.53"];
-                  connection = {
-                    type = "wireguard";
-                    addresses = ["198.51.100.2/32"];
-                    privateKeyRef = "vpn/example/private-key";
-                    peers = [];
+              hosts = {
+                hub = {
+                  network = {
+                    lanIp = "192.0.2.10";
+                    directLinkIp = "203.0.113.1";
+                  };
+                  links.mesh = {
+                    address = "198.51.100.5";
+                    role = "server";
+                    publicKey = "server-key";
+                  };
+                  links.direct-link.address = "203.0.113.1";
+                  users.alice.hasAccount = true;
+                  vpnProfiles.example = {
+                    provider = "Example VPN";
+                    owner = "alice";
+                    dnsServers = ["192.0.2.53"];
+                    connection = {
+                      type = "wireguard";
+                      addresses = ["198.51.100.2/32"];
+                      privateKeyRef = "vpn/example/private-key";
+                      peers = [];
+                    };
                   };
                 };
+                spoke = {
+                  network = {};
+                  links.direct-link.address = "203.0.113.2";
+                };
               };
-              spoke = {
-                network = {};
-                links.direct-link.address = "203.0.113.2";
-              };
-            };
-            domains = {
-              zones = [
-                "example.test"
-                "internal.example.test"
-              ];
-              dnsZones = [];
-              managedZones = [
-                "example.test"
-                "internal.example.test"
-              ];
-              dynamicHosts = [
-                {
-                  fqdn = "example.test";
-                  proxied = true;
-                }
-                {
-                  fqdn = "wg.example.test";
-                  proxied = false;
-                }
-                {
-                  fqdn = "host.internal.example.test";
-                  proxied = false;
-                }
-              ];
-              pagesSites = [
-                {
-                  subdomain = "docs";
-                  repository = "example/docs";
-                  cnameTarget = "example.github.io";
-                }
-              ];
-            };
-            services.endpoints = {
-              photos = {
-                port = 2283;
-                targetHost = "hub";
-                transport = "http";
-                bind = "loopback";
-                remoteVia = "photos-lan";
-              };
-              photos-lan = {
-                port = 2283;
-                targetHost = "hub";
-                transport = "http";
-                bind = "lan";
-              };
-              models = {
-                port = 11434;
-                targetHost = "hub";
-                transport = "http";
-                bind = "loopback";
-              };
-              photos-standby = {
-                port = 2284;
-                targetHost = "hub";
-                transport = "http";
-                bind = "lan";
-              };
-            };
-            services.httpSites = {
-              photos = {
-                hostname = "photos.example.test";
-                ingress = "public";
-                access = "cloudflare";
-                dnsPublication = "managed";
-                routes = [
+              domains = {
+                zones = [
+                  "example.test"
+                  "internal.example.test"
+                ];
+                dnsZones = [];
+                managedZones = [
+                  "example.test"
+                  "internal.example.test"
+                ];
+                dynamicHosts = [
                   {
-                    __pkl_class = "HttpRoute";
-                    match = {
-                      __pkl_class = "HttpMatch";
-                      paths = [];
-                      absentQueryParams = [];
-                    };
-                    action = {
-                      __pkl_class = "ProxyAction";
-                      type = "proxy";
-                      endpoint = "photos";
-                      fallbackEndpoints = ["photos-standby"];
-                    };
-                    responseHeaders = {};
+                    fqdn = "example.test";
+                    proxied = true;
+                  }
+                  {
+                    fqdn = "wg.example.test";
+                    proxied = false;
+                  }
+                  {
+                    fqdn = "host.internal.example.test";
+                    proxied = false;
+                  }
+                ];
+                pagesSites = [
+                  {
+                    subdomain = "docs";
+                    repository = "example/docs";
+                    cnameTarget = "example.github.io";
                   }
                 ];
               };
-              models = {
-                hostname = "models.internal.example.test";
-                ingress = "vpn";
-                access = "vpn";
-                dnsPublication = "none";
-                routes = [];
+              services.endpoints = {
+                photos = {
+                  port = 2283;
+                  targetHost = "hub";
+                  transport = "http";
+                  bind = "loopback";
+                  remoteVia = "photos-lan";
+                };
+                photos-lan = {
+                  port = 2283;
+                  targetHost = "hub";
+                  transport = "http";
+                  bind = "lan";
+                };
+                models = {
+                  port = 11434;
+                  targetHost = "hub";
+                  transport = "http";
+                  bind = "loopback";
+                };
+                photos-standby = {
+                  port = 2284;
+                  targetHost = "hub";
+                  transport = "http";
+                  bind = "lan";
+                };
               };
-              docs = {
-                hostname = "docs.example.test";
-                ingress = "public";
-                access = "direct";
-                dnsPublication = "managed";
-                routes = [];
-              };
-              # LAN names get explicit records, never managed CNAMEs.
-              nas = {
-                hostname = "nas.example.test";
-                ingress = "lan";
-                access = "lan";
-                dnsPublication = "managed";
-                routes = [];
+              services.httpSites = {
+                photos = {
+                  hostname = "photos.example.test";
+                  ingress = "public";
+                  access = "cloudflare";
+                  dnsPublication = "managed";
+                  routes = [
+                    {
+                      __pkl_class = "HttpRoute";
+                      match = {
+                        __pkl_class = "HttpMatch";
+                        paths = [];
+                        absentQueryParams = [];
+                      };
+                      action = {
+                        __pkl_class = "ProxyAction";
+                        type = "proxy";
+                        endpoint = "photos";
+                        fallbackEndpoints = ["photos-standby"];
+                      };
+                      responseHeaders = {};
+                    }
+                  ];
+                };
+                models = {
+                  hostname = "models.internal.example.test";
+                  ingress = "vpn";
+                  access = "vpn";
+                  dnsPublication = "none";
+                  routes = [];
+                };
+                docs = {
+                  hostname = "docs.example.test";
+                  ingress = "public";
+                  access = "direct";
+                  dnsPublication = "managed";
+                  routes = [];
+                };
+                # LAN names get explicit records, never managed CNAMEs.
+                nas = {
+                  hostname = "nas.example.test";
+                  ingress = "lan";
+                  access = "lan";
+                  dnsPublication = "managed";
+                  routes = [];
+                };
               };
             };
-          };
-          endpoint = self.lib.services.resolveEndpoint {
-            inherit topology;
-            endpointName = "photos";
-            ingressHost = "spoke";
-          };
-          proxyEndpoints = self.lib.services.resolveProxyEndpoints {
-            inherit topology;
-            inherit (builtins.head topology.services.httpSites.photos.routes) action;
-            ingressHost = "spoke";
-          };
-          missingEndpoint = self.lib.services.resolveEndpoint {
-            inherit topology;
-            endpointName = "missing";
-            require = false;
-          };
-          addressExcludes = self.lib.domains.dynamicHostAddressExcludes {
-            inherit topology;
-            zone = "example.test";
-          };
-          internalAddressExcludes = self.lib.domains.dynamicHostAddressExcludes {
-            inherit topology;
-            zone = "internal.example.test";
-          };
-          serviceIntents = self.lib.services.managedDnsCnameIntents {inherit topology;};
-          pagesIntents = self.lib.services.pagesCnameIntents {inherit topology;};
-          normalized = self.lib.projections.normalize {inherit topology;};
-        in
-          pkgs.runCommand "fleetix-lib-helpers" {} ''
-            test "${self.lib.hosts.resolveHostAddress {
+            endpoint = self.lib.services.resolveEndpoint {
               inherit topology;
-              hostName = "hub";
-              policy = ["lan"];
-            }}" = "192.0.2.10"
-            test "${self.lib.hosts.resolveHostAddress {
+              endpointName = "photos";
+              ingressHost = "spoke";
+            };
+            proxyEndpoints = self.lib.services.resolveProxyEndpoints {
               inherit topology;
-              hostName = "spoke";
-              policy = ["direct-link"];
-            }}" = "203.0.113.2"
-            test "${(self.lib.hosts.vpnProfile {
+              inherit (builtins.head topology.services.httpSites.photos.routes) action;
+              ingressHost = "spoke";
+            };
+            missingEndpoint = self.lib.services.resolveEndpoint {
               inherit topology;
-              hostName = "hub";
-              profileName = "example";
-            }).connection.type}" = "wireguard"
-            test "${endpoint.name}" = "photos-lan"
-            test "${endpoint.targetHost}" = "hub"
-            test "${toString (map (e: e.name) proxyEndpoints)}" = "photos-lan photos-standby"
-            test "${
-              if missingEndpoint == null
-              then "null"
-              else "unexpected"
-            }" = "null"
-            test "${self.lib.domains.zoneForHost {
+              endpointName = "missing";
+              require = false;
+            };
+            addressExcludes = self.lib.domains.dynamicHostAddressExcludes {
               inherit topology;
-              fqdn = "host.internal.example.test";
-            }}" = "internal.example.test"
-            test "${self.lib.domains.relativeName {
-              fqdn = "wg.example.test";
               zone = "example.test";
-            }}" = "wg"
-            test "${toString (builtins.length addressExcludes)}" = "4"
-            test "${(builtins.elemAt addressExcludes 0).name}" = "@"
-            test "${(builtins.elemAt addressExcludes 2).name}" = "wg"
-            test "${toString (builtins.length internalAddressExcludes)}" = "2"
-            test "${(builtins.elemAt internalAddressExcludes 0).name}" = "host"
-            test "${(self.lib.services.serviceHosts {inherit topology;}).photos}" = "photos.example.test"
-            test "${toString (builtins.length serviceIntents)}" = "2"
-            test "${(builtins.elemAt serviceIntents 1).relativeName}" = "photos"
-            test "${(builtins.elemAt serviceIntents 1).target}" = "example.test"
-            test "${toString (builtins.elemAt serviceIntents 1).proxied}" = "1"
-            test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
-            test "${(builtins.elemAt pagesIntents 0).target}" = "example.github.io"
-            test "${normalized.hosts.hub.linkAddresses.mesh}" = "198.51.100.5"
-            test "${toString (self.lib.links.hostsShareLink {
+            };
+            internalAddressExcludes = self.lib.domains.dynamicHostAddressExcludes {
               inherit topology;
-              linkName = "direct-link";
-              hostNames = ["hub" "spoke"];
-            })}" = "1"
-            test "${toString (self.lib.links.hostsShareLink {
-              inherit topology;
-              linkName = "mesh";
-              hostNames = ["hub" "spoke"];
-            })}" = ""
-            test "${normalized.domains.serviceHosts.photos}" = "photos.example.test"
-            test "${normalized.links.mesh.serverAddress}" = "198.51.100.5"
-            test "${normalized.services.endpointByName.photos.targetHost}" = "hub"
-            test "${(builtins.head normalized.services.siteByName.photos.routes).action.type}" = "proxy"
-            test "${toString (builtins.hasAttr "__pkl_class" (builtins.head normalized.services.siteByName.photos.routes).action)}" = ""
-            test "${(self.lib.services.endpointsForHost {
-              inherit topology;
-              hostName = "hub";
-            }).photos-lan.bind}" = "lan"
-            touch $out
-          '';
+              zone = "internal.example.test";
+            };
+            serviceIntents = self.lib.services.managedDnsCnameIntents {inherit topology;};
+            pagesIntents = self.lib.services.pagesCnameIntents {inherit topology;};
+            normalized = self.lib.projections.normalize {inherit topology;};
+          in
+            pkgs.runCommand "fleetix-lib-helpers" {} ''
+              test "${self.lib.hosts.resolveHostAddress {
+                inherit topology;
+                hostName = "hub";
+                policy = ["lan"];
+              }}" = "192.0.2.10"
+              test "${self.lib.hosts.resolveHostAddress {
+                inherit topology;
+                hostName = "spoke";
+                policy = ["direct-link"];
+              }}" = "203.0.113.2"
+              test "${(self.lib.hosts.vpnProfile {
+                inherit topology;
+                hostName = "hub";
+                profileName = "example";
+              }).connection.type}" = "wireguard"
+              test "${endpoint.name}" = "photos-lan"
+              test "${endpoint.targetHost}" = "hub"
+              test "${toString (map (e: e.name) proxyEndpoints)}" = "photos-lan photos-standby"
+              test "${
+                if missingEndpoint == null
+                then "null"
+                else "unexpected"
+              }" = "null"
+              test "${self.lib.domains.zoneForHost {
+                inherit topology;
+                fqdn = "host.internal.example.test";
+              }}" = "internal.example.test"
+              test "${self.lib.domains.relativeName {
+                fqdn = "wg.example.test";
+                zone = "example.test";
+              }}" = "wg"
+              test "${toString (builtins.length addressExcludes)}" = "4"
+              test "${(builtins.elemAt addressExcludes 0).name}" = "@"
+              test "${(builtins.elemAt addressExcludes 2).name}" = "wg"
+              test "${toString (builtins.length internalAddressExcludes)}" = "2"
+              test "${(builtins.elemAt internalAddressExcludes 0).name}" = "host"
+              test "${(self.lib.services.serviceHosts {inherit topology;}).photos}" = "photos.example.test"
+              test "${toString (builtins.length serviceIntents)}" = "2"
+              test "${(builtins.elemAt serviceIntents 1).relativeName}" = "photos"
+              test "${(builtins.elemAt serviceIntents 1).target}" = "example.test"
+              test "${toString (builtins.elemAt serviceIntents 1).proxied}" = "1"
+              test "${(builtins.elemAt pagesIntents 0).relativeName}" = "docs"
+              test "${(builtins.elemAt pagesIntents 0).target}" = "example.github.io"
+              test "${normalized.hosts.hub.linkAddresses.mesh}" = "198.51.100.5"
+              test "${toString (self.lib.links.hostsShareLink {
+                inherit topology;
+                linkName = "direct-link";
+                hostNames = ["hub" "spoke"];
+              })}" = "1"
+              test "${toString (self.lib.links.hostsShareLink {
+                inherit topology;
+                linkName = "mesh";
+                hostNames = ["hub" "spoke"];
+              })}" = ""
+              test "${normalized.domains.serviceHosts.photos}" = "photos.example.test"
+              test "${normalized.links.mesh.serverAddress}" = "198.51.100.5"
+              test "${normalized.services.endpointByName.photos.targetHost}" = "hub"
+              test "${(builtins.head normalized.services.siteByName.photos.routes).action.type}" = "proxy"
+              test "${toString (builtins.hasAttr "__pkl_class" (builtins.head normalized.services.siteByName.photos.routes).action)}" = ""
+              test "${(self.lib.services.endpointsForHost {
+                inherit topology;
+                hostName = "hub";
+              }).photos-lan.bind}" = "lan"
+              touch $out
+            '';
 
-        module-integration-fixtures = let
-          topology = {
-            hosts.demo.system = "x86_64-linux";
-            links.mesh = {subnet = "10.0.0.0/24";};
-            links.lan = {subnet = "192.0.2.0/24";};
-            domains.zones = ["example.test"];
-            services = {};
-            deployment.localAccess.edge-lan = {
-              clients = ["demo"];
-              targetHost = "edge";
-              preferredLink = "lan";
-              fallbackLink = "mesh";
-              tcpPorts = [443];
-            };
-          };
-          nixos = nixpkgs.lib.evalModules {
-            modules = [
-              assertionsModule
-              self.nixosModules.topology
-              {
-                fleetix.enable = true;
-                fleetix.value = topology;
-              }
-            ];
-          };
-          integratedHome = nixpkgs.lib.evalModules {
-            modules = [
-              assertionsModule
-              self.homeModules.topology
-              {_module.args.osConfig = nixos.config;}
-            ];
-          };
-          standaloneHome = nixpkgs.lib.evalModules {
-            modules = [
-              assertionsModule
-              self.homeModules.topology
-              {_module.args.osConfig = null;}
-              {
-                fleetix.enable = true;
-                fleetix.value = topology;
-              }
-            ];
-          };
-          localAccessFixture = {
-            hosts = {
-              edge = {
-                system = "x86_64-linux";
-                network.lanIp = "192.0.2.1";
-                links.mesh.address = "10.0.0.1";
-              };
-              demo = {
-                system = "x86_64-linux";
-                network.lanIp = "192.0.2.2";
-                links.mesh.address = "10.0.0.2";
+          module-integration-fixtures = let
+            topology = {
+              hosts.demo.system = "x86_64-linux";
+              links.mesh = {subnet = "10.0.0.0/24";};
+              links.lan = {subnet = "192.0.2.0/24";};
+              domains.zones = ["example.test"];
+              services = {};
+              deployment.localAccess.edge-lan = {
+                clients = ["demo"];
+                targetHost = "edge";
+                preferredLink = "lan";
+                fallbackLink = "mesh";
+                tcpPorts = [443];
               };
             };
-            links = {
-              mesh.subnet = "10.0.0.0/24";
-              lan.subnet = "192.0.2.0/24";
+            nixos = nixpkgs.lib.evalModules {
+              modules = [
+                assertionsModule
+                self.nixosModules.topology
+                {
+                  fleetix.enable = true;
+                  fleetix.value = topology;
+                }
+              ];
             };
-            domains.zones = ["example.test"];
-            services = {};
-            deployment.localAccess.edge-lan = {
-              clients = ["demo"];
-              targetHost = "edge";
-              preferredLink = "lan";
-              fallbackLink = "mesh";
-              tcpPorts = [443];
+            integratedHome = nixpkgs.lib.evalModules {
+              modules = [
+                assertionsModule
+                self.homeModules.topology
+                {_module.args.osConfig = nixos.config;}
+              ];
             };
+            standaloneHome = nixpkgs.lib.evalModules {
+              modules = [
+                assertionsModule
+                self.homeModules.topology
+                {_module.args.osConfig = null;}
+                {
+                  fleetix.enable = true;
+                  fleetix.value = topology;
+                }
+              ];
+            };
+            localAccessFixture = {
+              hosts = {
+                edge = {
+                  system = "x86_64-linux";
+                  network.lanIp = "192.0.2.1";
+                  links.mesh.address = "10.0.0.1";
+                };
+                demo = {
+                  system = "x86_64-linux";
+                  network.lanIp = "192.0.2.2";
+                  links.mesh.address = "10.0.0.2";
+                };
+              };
+              links = {
+                mesh.subnet = "10.0.0.0/24";
+                lan.subnet = "192.0.2.0/24";
+              };
+              domains.zones = ["example.test"];
+              services = {};
+              deployment.localAccess.edge-lan = {
+                clients = ["demo"];
+                targetHost = "edge";
+                preferredLink = "lan";
+                fallbackLink = "mesh";
+                tcpPorts = [443];
+              };
+            };
+            localAccessStubs = {
+              options.networking.hostName = nixpkgs.lib.mkOption {
+                type = nixpkgs.lib.types.str;
+                default = "";
+              };
+              options.networking.firewall.checkReversePath = nixpkgs.lib.mkOption {
+                type = nixpkgs.lib.types.str;
+                default = "strict";
+              };
+              options.networking.networkmanager.dispatcherScripts = nixpkgs.lib.mkOption {
+                type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs;
+                default = [];
+              };
+              options.systemd.services = nixpkgs.lib.mkOption {
+                type = nixpkgs.lib.types.attrsOf nixpkgs.lib.types.attrs;
+                default = {};
+              };
+              options.systemd.timers = nixpkgs.lib.mkOption {
+                type = nixpkgs.lib.types.attrsOf nixpkgs.lib.types.attrs;
+                default = {};
+              };
+            };
+            localAccess = nixpkgs.lib.evalModules {
+              modules = [
+                assertionsModule
+                localAccessStubs
+                {_module.args.pkgs = pkgs;}
+                self.nixosModules.topology
+                self.nixosModules.local-access
+                {
+                  networking.hostName = "demo";
+                  fleetix.enable = true;
+                  fleetix.value = localAccessFixture;
+                  fleetix.localAccess.enable = true;
+                }
+              ];
+            };
+          in
+            pkgs.runCommand "fleetix-module-integration-fixtures" {} ''
+              test "${toString (builtins.hasAttr "fleetix" nixos.config)}" = 1
+              test "${nixos.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
+              test "${integratedHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
+              test "${standaloneHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
+              test "${toString localAccess.config.networking.firewall.checkReversePath}" = loose
+              grep -q "fleetix-local-access" "${localAccess.config.systemd.services.fleetix-local-access.serviceConfig.ExecStart}"
+              touch $out
+            '';
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          deployment-runtime = import ./tests/deployment-vm.nix {
+            inherit pkgs;
+            worker = self.packages.${system}.fleetix-deploy;
           };
-          localAccessStubs = {
-            options.networking.hostName = nixpkgs.lib.mkOption {
-              type = nixpkgs.lib.types.str;
-              default = "";
-            };
-            options.networking.firewall.checkReversePath = nixpkgs.lib.mkOption {
-              type = nixpkgs.lib.types.str;
-              default = "strict";
-            };
-            options.networking.networkmanager.dispatcherScripts = nixpkgs.lib.mkOption {
-              type = nixpkgs.lib.types.listOf nixpkgs.lib.types.attrs;
-              default = [];
-            };
-            options.systemd.services = nixpkgs.lib.mkOption {
-              type = nixpkgs.lib.types.attrsOf nixpkgs.lib.types.attrs;
-              default = {};
-            };
-            options.systemd.timers = nixpkgs.lib.mkOption {
-              type = nixpkgs.lib.types.attrsOf nixpkgs.lib.types.attrs;
-              default = {};
-            };
-          };
-          localAccess = nixpkgs.lib.evalModules {
-            modules = [
-              assertionsModule
-              localAccessStubs
-              {_module.args.pkgs = pkgs;}
-              self.nixosModules.topology
-              self.nixosModules.local-access
-              {
-                networking.hostName = "demo";
-                fleetix.enable = true;
-                fleetix.value = localAccessFixture;
-                fleetix.localAccess.enable = true;
-              }
-            ];
-          };
-        in
-          pkgs.runCommand "fleetix-module-integration-fixtures" {} ''
-            test "${toString (builtins.hasAttr "fleetix" nixos.config)}" = 1
-            test "${nixos.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
-            test "${integratedHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
-            test "${standaloneHome.config.fleetix.topology.hosts.demo.system}" = x86_64-linux
-            test "${toString localAccess.config.networking.firewall.checkReversePath}" = loose
-            grep -q "fleetix-local-access" "${localAccess.config.systemd.services.fleetix-local-access.serviceConfig.ExecStart}"
-            touch $out
-          '';
-      }
+        })
     );
 
     devShells = forSystems (

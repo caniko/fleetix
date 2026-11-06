@@ -79,9 +79,14 @@ jobs:
           CARGO_HOME: "/tmp/.cargo"
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
+          RUST_TEST_THREADS: "2"
         run: |
           set -eu
           bash scripts/qualify-hosted-source.sh
+          # The primary CI also runs nix flake check, including the real deployment VM.
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
           {
             printf '%s\n' 'NIX_CONFIG<<SIMIT_HOSTED_NIX_CONFIG'
             printf '%s\n' 'experimental-features = nix-command flakes' 'max-jobs = 1' 'cores = 2' 'log-lines = 200'
@@ -107,6 +112,7 @@ jobs:
           CARGO_HOME: "/tmp/.cargo"
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
+          RUST_TEST_THREADS: "2"
         run: nix develop -c cargo publish --dry-run --locked --manifest-path "$RUNNER_TEMP/verified-fleetix-sidecar/Cargo.toml"
       - name: Required gate generated-parity
         timeout-minutes: 30
@@ -117,6 +123,7 @@ jobs:
           CARGO_HOME: "/tmp/.cargo"
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
+          RUST_TEST_THREADS: "2"
         run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4c6841cce19327927ea8a8f6e856276dd5c878f0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
   publish-fleetix-sidecar:
     needs: [verify-fleetix-sidecar]
@@ -218,9 +225,14 @@ jobs:
           CARGO_HOME: "/tmp/.cargo"
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
+          RUST_TEST_THREADS: "2"
         run: |
           set -eu
           bash scripts/qualify-hosted-source.sh
+          # The primary CI also runs nix flake check, including the real deployment VM.
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
           {
             printf '%s\n' 'NIX_CONFIG<<SIMIT_HOSTED_NIX_CONFIG'
             printf '%s\n' 'experimental-features = nix-command flakes' 'max-jobs = 1' 'cores = 2' 'log-lines = 200'
@@ -246,6 +258,7 @@ jobs:
           CARGO_HOME: "/tmp/.cargo"
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
+          RUST_TEST_THREADS: "2"
         run: nix develop -c cargo publish --dry-run --locked --manifest-path "$RUNNER_TEMP/verified-fleetix/Cargo.toml"
       - name: Required gate generated-parity
         timeout-minutes: 30
@@ -256,6 +269,7 @@ jobs:
           CARGO_HOME: "/tmp/.cargo"
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
+          RUST_TEST_THREADS: "2"
         run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4c6841cce19327927ea8a8f6e856276dd5c878f0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
   publish-fleetix:
     needs: [verify-fleetix]
