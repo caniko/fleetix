@@ -560,6 +560,7 @@ mod tests {
             vpn_profiles: IndexMap::new(),
             gpu: Default::default(),
             storage: Default::default(),
+            service_surfaces: None,
         }
     }
 

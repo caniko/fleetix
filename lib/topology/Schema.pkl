@@ -121,6 +121,15 @@ class Storage {
   flakeRoot: String? = null
 }
 
+/// Static paired service-stack policy. Listing a service here requests the full
+/// dev + prod stack on this host; absence keeps existing host behavior.
+class ServiceSurfaces {
+  /// Logical `services.catalog` IDs hosted in this pair, not release state.
+  services: Listing<String> = new Listing {}
+  devContainer: String = "fleetix-dev"
+  prodContainer: String = "fleetix-prod"
+}
+
 class Host {
   system: String
   deviceType: String? = null
@@ -137,6 +146,8 @@ class Host {
   vpnProfiles: Mapping<String, VpnProfile> = new {}
   gpu: Gpu = new Gpu {}
   storage: Storage = new Storage {}
+  /// Presence requests the full paired service stack on this host.
+  serviceSurfaces: ServiceSurfaces? = null
 }
 
 /// Installed-system SSH routes. Bootstrap identity belongs to the installer.
