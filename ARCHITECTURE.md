@@ -5,9 +5,12 @@ CLI. Its target scope includes configurable deployment execution with a
 conventional NixOS backend, as well as topology, validation, planning, export,
 trust, and shared adapters.
 
-Deployment execution is an extraction target, not an API shipped by the current
-release. Existing `Deployment` topology data describes service
-intent/ingress; operational plans need a separate versioned contract.
+The opt-in [deployment slice](DEPLOYMENT.md) exposes recoverable NixOS and
+standalone Home Manager activation. The service-surfaces backend implements
+paired persistent NixOS service guests and exact-output promotion with a
+separate versioned policy/journal. See [SERVICE_SURFACES.md](SERVICE_SURFACES.md).
+Existing `Deployment` topology data continues to describe service intent/ingress,
+not operation state.
 
 The optional `build-train-native` layer is the shared construction slice:
 Fleetix composes published `nix-manager-core`, exposes explicit immutable service

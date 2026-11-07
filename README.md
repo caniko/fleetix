@@ -13,6 +13,10 @@ service topology. A consuming flake owns the real topology data and generated
 sidecars; Fleetix provides the Pkl schema shape, Rust bindings, export CLI, and
 Nix modules that expose a generated topology to NixOS and Home Manager.
 
+For paired full-stack dev/prod deployments and exact-output promotion, see
+[service surfaces](SERVICE_SURFACES.md). The opt-in NixOS modules and
+`fleetix-surfaces` CLI keep each surface's data and credentials separate.
+
 ## Layout
 
 - `Cargo.toml` — Cargo workspace containing the Fleetix and sidecar products.
