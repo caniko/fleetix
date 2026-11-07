@@ -9,6 +9,9 @@ use std::process::ExitCode;
 
 use pklx::pklr::EvalOptions;
 
+#[cfg(feature = "mcp-server")]
+mod mcp_serve;
+
 pub const EXIT_EVALUATION: u8 = 1;
 pub const EXIT_VALIDATION: u8 = 2;
 pub const EXIT_IO: u8 = 3;
@@ -79,6 +82,13 @@ pub enum Command {
         /// Inspect changes without writing configuration or state.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Serve an explicitly selected topology snapshot over MCP stdio.
+    #[cfg(feature = "mcp-server")]
+    McpServe {
+        path: PathBuf,
+        #[command(flatten)]
+        evaluator: EvaluatorArgs,
     },
     /// Validate a topology file for cross-reference invariants.
     Validate {
@@ -301,6 +311,16 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
                 serde_json::to_string_pretty(&report)
                     .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?
             );
+        }
+        #[cfg(feature = "mcp-server")]
+        Command::McpServe { path, evaluator } => {
+            let topology =
+                topology::evaluate_topology_with_options(&path, build_options(&evaluator)?).await?;
+            mcp_serve::server(topology)
+                .map_err(|error| CliError::new(EXIT_VALIDATION, error.to_string()))?
+                .serve_stdio()
+                .await
+                .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?;
         }
         Command::Trust(subcommand) => run_trust(subcommand).await?,
         Command::Supply(subcommand) => run_supply(subcommand).await?,
@@ -1051,6 +1071,30 @@ pub async fn main_exit(cli: Cli) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_registration_writer_keeps_its_existing_arguments() {
+        let cli = Cli::try_parse_from([
+            "fleetix",
+            "mcp",
+            "--manifest",
+            "plan.json",
+            "--state",
+            "/state.json",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::Mcp { dry_run: true, .. }));
+    }
+
+    #[test]
+    fn mcp_server_command_is_opt_in() {
+        assert_eq!(
+            Cli::try_parse_from(["fleetix", "mcp-serve", "Topology.pkl"]).is_ok(),
+            cfg!(feature = "mcp-server"),
+        );
+        assert!(Cli::try_parse_from(["fleetix", "mcp-serve"]).is_err());
+    }
 
     async fn supply(args: &[&str]) -> Result<(), CliError> {
         let argv = ["fleetix", "supply"].iter().chain(args);

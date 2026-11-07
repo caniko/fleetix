@@ -10,6 +10,8 @@ pub mod health;
 pub mod management;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "mcp-server")]
+pub mod mcp_server;
 #[cfg(feature = "pkl")]
 pub mod pkl;
 #[cfg(feature = "pkl")]

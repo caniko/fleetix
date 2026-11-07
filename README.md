@@ -28,6 +28,11 @@ For shared MCP server declarations and client configuration, see
 [MCP adapters](MCP.md): `fleetix.lib.mcp`, `fleetix.homeModules.mcp`, and the
 `fleetix mcp` managed-entry reconciler.
 
+The separate, opt-in `mcp-server` Cargo feature provides a composable Rust MCP
+server. `fleetix mcp-serve PATH` serves a selected topology snapshot over stdio;
+downstream applications can register typed handlers with their own authorization.
+See [MCP server](MCP_SERVER.md) for the API and trust boundary.
+
 `fleetix.lib` exposes pure helper functions for downstream flakes that need to
 derive runtime data from a generated topology sidecar:
 
