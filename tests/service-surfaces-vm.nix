@@ -170,8 +170,13 @@ in
       assert machine.succeed(prod + "readlink -f /run/current-system").strip() == "${releaseA}"
       assert machine.succeed(prod + sql + "'SELECT value FROM marker'").strip() == "prod"
 
+      boot_id = machine.succeed("cat /proc/sys/kernel/random/boot_id")
       machine.reboot()
+      # The default driver runs QEMU with -no-reboot, so restart the guest explicitly.
+      machine.wait_for_shutdown()
+      machine.start()
       machine.wait_for_unit("fleetix-surfaces-boot.service")
+      assert machine.succeed("cat /proc/sys/kernel/random/boot_id") != boot_id
       assert machine.succeed(prod + "readlink -f /run/current-system").strip() == "${releaseA}"
       assert machine.succeed(dev + "readlink -f /run/current-system").strip() == "${releaseB}"
       assert machine.succeed(prod + sql + "'SELECT value FROM marker'").strip() == "prod"
