@@ -94,8 +94,9 @@ TUN/network-administration capability. Runtime bindings, addresses, resolver and
 credential changes take effect on the next controlled restart/promotion, not an
 unrelated host rebuild. Credential directories must be outside container roots.
 All `/nix` bind sources and credentials need filesystems supporting idmapped
-mounts. The qualification VM uses a native read-only EROFS store image instead
-of the default shared/overlay store, preserving user-namespace isolation.
+mounts. The qualification VM uses a native ext4 root disk instead of the default
+shared/overlay store, supporting host Nix database registration while the guest
+store stays read-only and idmapped.
 Preserve numeric ownership in rootfs backups: nspawn's picked user-namespace
 range is recorded in ownership.
 

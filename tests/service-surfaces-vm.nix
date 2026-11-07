@@ -59,10 +59,12 @@ in
       system.stateVersion = "25.11";
       virtualisation.memorySize = 4096;
       virtualisation.cores = 2;
-      # The default overlay/shared store cannot be idmapped by nspawn.
-      # Use the kernel's idmap-capable EROFS store, without an overlay.
-      virtualisation.useNixStoreImage = true;
-      virtualisation.writableStore = false;
+      # Use a native host store for Nix registration and nspawn idmapped binds.
+      virtualisation.useBootLoader = true;
+      # Leave room for both persistent PostgreSQL/container roots.
+      virtualisation.diskSize = 8192;
+      boot.growPartition = true;
+      virtualisation.fileSystems."/".autoResize = true;
       environment.systemPackages = [pkgs.curl];
       system.extraDependencies = [releaseA releaseB];
       networking.firewall.allowedTCPPorts = [8088];
@@ -117,7 +119,8 @@ in
     testScript = ''
       start_all()
       machine.wait_for_unit("multi-user.target")
-      assert machine.succeed("findmnt --kernel --noheadings --output FSTYPE --target /nix/store").strip() == "erofs"
+      machine.wait_for_unit("register-nix-paths.service")
+      assert machine.succeed("stat -c %d /") == machine.succeed("stat -c %d /nix/store"), "Nix store must be on the native root filesystem"
       upstream.wait_for_unit("fixture-upstream.service")
       upstream.wait_for_unit("dnsmasq.service")
       cli = "${fleetixPackage}/bin/fleetix-surfaces --policy /etc/fleetix-surfaces/policy.json"
