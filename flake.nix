@@ -227,7 +227,8 @@
             default = [];
           };
         };
-      in {
+      in
+        {
           build-train-policy = let
             contract = import ./tests/build-train-policy.nix;
           in
