@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add recoverable, opt-in NixOS and standalone Home Manager deployments:
+  verifier-bound admission, retained original generations, trial activation,
+  consecutive health checks, durable recovery and explicit maintenance retry.
+  The pure `deployment` contract needs no default features; `deployment-cli`
+  builds the target-local `fleetix-deploy` worker. See [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## [0.9.0] - 2026-10-31
 
 ### Added

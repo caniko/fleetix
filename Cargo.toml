@@ -22,6 +22,7 @@ include = [
   "/SERVICE_PROFILES.md",
   "/ARCHITECTURE.md",
   "/BUILD_TRAIN.md",
+  "/DEPLOYMENT.md",
   "/SUPPLY.md",
   "/CHANGELOG.md",
   "/LICENSE*",
@@ -53,6 +54,11 @@ name = "fleetix"
 path = "src/main.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "fleetix-deploy"
+path = "src/bin/fleetix-deploy.rs"
+required-features = ["deployment-cli"]
+
 [dependencies]
 fleetix-sidecar = { workspace = true, optional = true }
 pklx = { workspace = true, optional = true }
@@ -81,6 +87,8 @@ mcp = ["dep:toml_edit", "dep:fs2"]
 build-train-runtime = ["dep:fs2", "dep:libc"]
 build-train-native = ["build-train-runtime", "dep:nix-manager-core"]
 build-train-cli = ["build-train-native", "dep:clap", "dep:signal-hook"]
+deployment-runtime = ["dep:fs2", "dep:libc", "dep:signal-hook"]
+deployment-cli = ["deployment-runtime", "dep:clap"]
 
 [dependencies.clap]
 workspace = true
