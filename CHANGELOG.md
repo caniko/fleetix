@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-07
+
 ### Added
 
 - Add recoverable, opt-in NixOS and standalone Home Manager deployments:
@@ -14,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consecutive health checks, durable recovery and explicit maintenance retry.
   The pure `deployment` contract needs no default features; `deployment-cli`
   builds the target-local `fleetix-deploy` worker. See [DEPLOYMENT.md](DEPLOYMENT.md).
+
+### Fixed
+
+- Preserve Nix multicall command names when pinning immutable executables;
+  classify recovery lock contention as deferred rather than failed activation.
+- Document timer-based NixOS boot triggers to avoid activation self-waits and
+  qualify worker-kill, reboot and no-sudo boundaries in a real disposable VM.
 
 ## [0.9.0] - 2026-10-31
 
