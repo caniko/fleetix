@@ -135,6 +135,10 @@ in
       machine.succeed(dev + sql + "\"CREATE TABLE marker(value text); INSERT INTO marker VALUES ('dev');\"")
       machine.succeed(f"{cli} promote --expected-dev ${releaseA}")
       assert machine.succeed(dev + "readlink -f /run/current-system").strip() == machine.succeed(prod + "readlink -f /run/current-system").strip() == "${releaseA}"
+      machine.succeed(dev + "test ! -e /var/lib/fleetix-surfaces/prod/system")
+      machine.succeed(prod + "test ! -e /var/lib/fleetix-surfaces/dev/system")
+      machine.fail(dev + "touch /var/lib/fleetix-surfaces/dev/guest-write")
+      machine.fail(prod + "touch /var/lib/fleetix-surfaces/prod/guest-write")
       machine.succeed(prod + sql + "\"CREATE TABLE marker(value text); INSERT INTO marker VALUES ('prod');\"")
       assert machine.succeed(dev + sql + "'SELECT value FROM marker'").strip() == "dev"
       assert machine.succeed(prod + sql + "'SELECT value FROM marker'").strip() == "prod"

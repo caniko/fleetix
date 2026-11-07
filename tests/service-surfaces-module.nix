@@ -56,6 +56,10 @@ in
   assert !config.containers.fleetix-dev.autoStart && !config.containers.fleetix-prod.autoStart;
   assert !config.containers.fleetix-dev.ephemeral && !config.containers.fleetix-prod.ephemeral;
   assert config.containers.fleetix-dev.privateUsers == "pick";
+  assert lib.all (surface:
+    lib.elem "--bind-ro=${cfg.stateDirectory}/${surface}:${cfg.stateDirectory}/${surface}:idmap"
+    config.containers.${cfg.${surface}.container}.extraFlags)
+  ["dev" "prod"];
   assert config.containers.fleetix-dev.bindMounts."/run/fleetix-surface/bindings.json".isReadOnly;
   assert policy.containers
   == {

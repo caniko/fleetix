@@ -247,6 +247,10 @@ in {
           extraFlags =
             [
               "--bind-ro=${binding.credentialsDirectory}:/run/fleetix-surface/credentials:idmap"
+              # nixos-containers passes `path` verbatim as SYSTEM_PATH and
+              # container-init sources it inside the guest, so this surface's
+              # link directory must be visible there read-only.
+              "--bind-ro=${cfg.stateDirectory}/${surface}:${cfg.stateDirectory}/${surface}:idmap"
             ]
             ++ lib.optional (config.nix.enable && config.nix.daemon.enable)
             "--inaccessible=/nix/var/nix/daemon-socket";
