@@ -59,6 +59,10 @@ in
       system.stateVersion = "25.11";
       virtualisation.memorySize = 4096;
       virtualisation.cores = 2;
+      # The default overlay/shared store cannot be idmapped by nspawn.
+      # Use the kernel's idmap-capable EROFS store, without an overlay.
+      virtualisation.useNixStoreImage = true;
+      virtualisation.writableStore = false;
       environment.systemPackages = [pkgs.curl];
       system.extraDependencies = [releaseA releaseB];
       networking.firewall.allowedTCPPorts = [8088];
@@ -113,6 +117,7 @@ in
     testScript = ''
       start_all()
       machine.wait_for_unit("multi-user.target")
+      assert machine.succeed("findmnt --kernel --noheadings --output FSTYPE --target /nix/store").strip() == "erofs"
       upstream.wait_for_unit("fixture-upstream.service")
       upstream.wait_for_unit("dnsmasq.service")
       cli = "${fleetixPackage}/bin/fleetix-surfaces --policy /etc/fleetix-surfaces/policy.json"

@@ -92,9 +92,12 @@ production credentials or delivery targets.
 Set `enableTun = true` only when both stacks contain VPN services requiring
 TUN/network-administration capability. Runtime bindings, addresses, resolver and
 credential changes take effect on the next controlled restart/promotion, not an
-unrelated host rebuild. Credential directories must be outside container roots
-and on a filesystem supporting idmapped mounts. Preserve numeric ownership in
-rootfs backups: nspawn's picked user-namespace range is recorded in ownership.
+unrelated host rebuild. Credential directories must be outside container roots.
+All `/nix` bind sources and credentials need filesystems supporting idmapped
+mounts. The qualification VM uses a native read-only EROFS store image instead
+of the default shared/overlay store, preserving user-namespace isolation.
+Preserve numeric ownership in rootfs backups: nspawn's picked user-namespace
+range is recorded in ownership.
 
 Containers share the host kernel and read-only Nix store. They are not a boundary
 for hostile kernel workloads. Exclusive devices, physical networking and services
