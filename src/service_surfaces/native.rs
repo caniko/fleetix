@@ -932,7 +932,14 @@ mod tests {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 
     fn script(path: &Path, body: &str) {
-        fs::write(path, body).unwrap();
+        let harness_path = std::env::var("PATH").expect("test harness PATH");
+        let quoted_path = harness_path.replace('\'', "'\\''");
+        let body = body.strip_prefix("#!/bin/sh\n").unwrap_or(body);
+        fs::write(
+            path,
+            format!("#!/bin/sh\nexport PATH='{quoted_path}'\n{body}"),
+        )
+        .unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
