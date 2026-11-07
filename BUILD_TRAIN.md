@@ -56,6 +56,37 @@ The NixOS service preserves its private runtime directory on stop so offline
 rollover can acquire the same socket lease as the operator. Reboot clears `/run`;
 start and stop the service to provision that namespace before offline rollover.
 
+### Operator user service
+
+Set `fleetix.services.buildTrain.serviceScope = "user"` to run the same coordinator
+under the operator's user manager. The default is `"system"`; existing system-mode
+policy identities are unchanged. User mode enables lingering for the selected
+operator and restricts the global user unit with `ConditionUser`. Routine control
+then uses `systemctl --user start|stop|restart fleetix-build-train.service` and
+`journalctl --user -u fleetix-build-train.service`, without sudo.
+
+Socket, journal, preparation and GC-root paths remain unchanged. System tmpfiles
+provisions their private operator-owned directories, including `/run` after each
+boot. The user unit does not use `RuntimeDirectory` or `StateDirectory`: stopping
+it must not remove recovery state or replace lock anchors. Private temporary
+directories use user namespaces, so user mode requires `security.allowUserNamespaces`.
+Nix clients connect to the system daemon socket; ordering against a user-manager
+`nix-daemon.service` would not order the system daemon.
+
+Changing manager scope changes policy and requires the same guarded handover as
+other incompatible upgrades. Record the original `serviceScope` alongside the
+package, user and immutable config in `retainedDeployment` (its default remains
+`"system"`). This keeps the original manager selected while the next contract is
+staged; only clear retention after the old service is stopped and rollover succeeds.
+The initial handoff still needs permission to stop the system unit and activate
+the replacement configuration. Never start both managers against one journal.
+
+User mode retains the coordinator memory ceiling and stop/retention semantics, but
+does not move Nix daemon builders or grant host-resource authority. Consumers must
+qualify the new cgroup ancestors, aggregate host budget, CPU/IO/swap policy and
+network routing before enabling it; a per-user ceiling alone does not preserve a
+system-slice aggregate budget. Keep those effective policies in `admissionContract`.
+
 ## Request lifecycle
 
 Every client uses the selected builder's connection contract. A second request

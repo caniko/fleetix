@@ -4,6 +4,7 @@ let
     enable = true;
     builder = "atlas";
     user = "can";
+    serviceScope = "system";
     package.executable = "/tools/fleetix";
     admissionContract = "qualified-resource-policy";
     runtimeDirectory = "fleetix-train";
