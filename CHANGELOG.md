@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add the optional `mcp-server` feature: a composable Rust MCP server built on
   the official `rmcp` SDK (re-exported as `fleetix::mcp_server::rmcp`), and
-  `fleetix mcp-serve PATH`, which serves a topology snapshot over stdio.
-  Downstream applications register typed handlers with their own authorization.
-  See [MCP server](MCP_SERVER.md).
+  `fleetix mcp-serve PATH`, which serves an operator-selected topology snapshot,
+  evaluated once at startup, over stdio. The packaged `fleetix` binary enables
+  the feature. Downstream applications register typed handlers with their own
+  authorization. See [MCP server](MCP_SERVER.md).
 
 ### Security
 
