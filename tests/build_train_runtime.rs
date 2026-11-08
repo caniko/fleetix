@@ -1564,6 +1564,11 @@ fn policy_rollover_requires_a_stopped_drained_fenced_terminal_train() {
             .contains("fence")
     );
     assert!(
+        rollover(&old, &next, server.backend.as_ref(), None)
+            .unwrap_err()
+            .contains("fence")
+    );
+    assert!(
         rollover(
             &old,
             &next,
@@ -1615,6 +1620,12 @@ fn idle_unfenced_journal_is_adopted_without_a_drain_fence() {
     let receipt = rollover(&old, &next, server.backend.as_ref(), None).unwrap();
     assert!(receipt.ends_with("receipt.json"));
     assert!(!old.state_dir.join("rollover.json").exists());
+    // A completed unfenced handover is idempotent and still refuses a token.
+    assert_eq!(
+        rollover(&old, &next, server.backend.as_ref(), None).unwrap(),
+        receipt
+    );
+    assert!(rollover(&old, &next, server.backend.as_ref(), Some("stale")).is_err());
     let replacement: Train =
         serde_json::from_reader(std::fs::File::open(old.state_dir.join("train.json")).unwrap())
             .unwrap();
@@ -1820,6 +1831,12 @@ fn interrupted_policy_rollover_blocks_startup_and_recovers_only_with_exact_evide
         )
         .unwrap_err()
         .contains("different configs")
+    );
+    // A fenced interruption cannot be resumed as an unfenced adoption.
+    assert!(
+        rollover(&old, &next, server.backend.as_ref(), None)
+            .unwrap_err()
+            .contains("different configs")
     );
     assert!(server.backend.released_requests.lock().unwrap().is_empty());
     server.backend.release_fails.store(false, Ordering::Relaxed);
