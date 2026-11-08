@@ -125,6 +125,8 @@ class Host {
   system: String
   deviceType: String? = null
   availabilityClass: String = "unknown"
+  /// Free-form host labels consumers select on, e.g. "weak" for hosts too small for pooled work.
+  tags: Listing<String> = new Listing {}
   hostPubkey: String? = null
   hostNames: Listing<String> = new Listing {}
   network: Network = new Network {}

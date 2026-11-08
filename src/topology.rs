@@ -73,6 +73,8 @@ pub struct Host {
     #[serde(default = "default_availability_class")]
     pub availability_class: String,
     #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
     pub host_pubkey: Option<String>,
     #[serde(default)]
     pub host_names: Vec<String>,

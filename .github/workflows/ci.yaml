@@ -25,6 +25,7 @@ jobs:
       CARGO_HOME: "/tmp/.cargo"
       CARGO_BUILD_JOBS: "2"
       RUSTDOCFLAGS: "-D warnings"
+      RUST_TEST_THREADS: "2"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,6 +45,10 @@ jobs:
         run: |
           set -eu
           bash scripts/qualify-hosted-source.sh
+          # The primary CI also runs nix flake check, including the real deployment VM.
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
           {
             printf '%s\n' 'NIX_CONFIG<<SIMIT_HOSTED_NIX_CONFIG'
             printf '%s\n' 'experimental-features = nix-command flakes' 'max-jobs = 1' 'cores = 2' 'log-lines = 200'
