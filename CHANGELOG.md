@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the optional `mcp-server` feature: a composable Rust MCP server built on
+  the official `rmcp` SDK (re-exported as `fleetix::mcp_server::rmcp`), and
+  `fleetix mcp-serve PATH`, which serves a topology snapshot over stdio.
+  Downstream applications register typed handlers with their own authorization.
+  See [MCP server](MCP_SERVER.md).
+
+### Security
+
+- Require tokio 1.53.3 for the AsyncFd I/O safety fix (RUSTSEC-2026-0386).
+
 ## [0.9.1] - 2026-11-07
 
 ### Added
