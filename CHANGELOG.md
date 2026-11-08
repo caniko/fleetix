@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fleetix mcp-serve`: `fleetix_show` accepts a `fields` filter, and three
+  read-only tools report the serving host's live memory
+  (`fleetix_host_metrics`), cgroup v2 accounting (`fleetix_host_cgroups`) and
+  kernel OOM kills (`fleetix_host_events`).
+
 ## [0.9.1] - 2026-11-07
 
 ### Added

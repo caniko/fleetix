@@ -1,6 +1,9 @@
-//! Read-only tools over one operator-selected, immutable topology snapshot.
+//! Read-only tools over one operator-selected, immutable topology snapshot,
+//! plus live memory views of the host running the server.
 
-use std::{future::ready, sync::Arc};
+mod host;
+
+use std::{future::ready, path::Path, sync::Arc};
 
 use crate::Topology;
 use crate::mcp_server::{Effect, Server, rmcp};
@@ -16,6 +19,26 @@ use serde::{Deserialize, Serialize};
 struct HostSelection {
     /// Return a single host instead of the entire topology.
     host: Option<String>,
+    /// Keep only these top-level keys of the result, e.g. ["hosts"] or ["gpu", "network"].
+    fields: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CgroupSelection {
+    /// Levels below /sys/fs/cgroup to descend (default 4, at most 8).
+    depth: Option<usize>,
+    /// Skip cgroups whose memory.current is below this (default 256 MiB).
+    min_bytes: Option<u64>,
+    /// Return at most this many cgroups, largest first (default 40).
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EventSelection {
+    /// journalctl --since value (default "48 hours ago").
+    since: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -43,7 +66,58 @@ pub(super) fn server(topology: Topology) -> Result<Server, ErrorData> {
                 "Inspect the selected topology or a single host",
             )?,
             move |Parameters(args): Parameters<HostSelection>| {
-                ready(show(&snapshot, args.host.as_deref()))
+                ready(show(&snapshot, args.host.as_deref(), args.fields.as_deref()))
+            },
+        ),
+    )?;
+
+    server.register(
+        Effect::Read,
+        ToolRoute::new(
+            tool::<Empty>(
+                "fleetix_host_metrics",
+                "Live memory, swap, PSI, load and VRAM of the host running this server",
+            )?,
+            |Parameters(_): Parameters<Empty>| {
+                ready(encoded(&host::metrics(Path::new("/proc"), Path::new("/sys"))))
+            },
+        ),
+    )?;
+
+    server.register(
+        Effect::Read,
+        ToolRoute::new(
+            tool::<CgroupSelection>(
+                "fleetix_host_cgroups",
+                "Live cgroup v2 memory (current/anon/file/peak/max/swap, OOM events), largest first",
+            )?,
+            |Parameters(args): Parameters<CgroupSelection>| {
+                ready(encoded(&host::cgroups(
+                    Path::new("/sys/fs/cgroup"),
+                    args.depth.unwrap_or(4).min(8),
+                    args.min_bytes.unwrap_or(256 << 20),
+                    args.limit.unwrap_or(40),
+                )))
+            },
+        ),
+    )?;
+
+    server.register(
+        Effect::Read,
+        ToolRoute::new(
+            tool::<EventSelection>(
+                "fleetix_host_events",
+                "Kernel OOM kills on this host with cgroup, victim and killed-process counts",
+            )?,
+            |Parameters(args): Parameters<EventSelection>| async move {
+                let since = args.since.unwrap_or_else(|| "48 hours ago".to_owned());
+                match tokio::task::spawn_blocking(move || host::oom_events(&since)).await {
+                    Ok(Ok(events)) => encoded(&events),
+                    Ok(Err(message)) => Ok(CallToolResult::structured_error(
+                        serde_json::json!({"code": "journal_unavailable", "message": message}),
+                    )),
+                    Err(_) => Err(ErrorData::internal_error("journal reader failed", None)),
+                }
             },
         ),
     )?;
@@ -92,16 +166,38 @@ fn encoded(value: &impl Serialize) -> Result<CallToolResult, ErrorData> {
         .map_err(|_| ErrorData::internal_error("could not serialize topology result", None))
 }
 
-fn show(topology: &Topology, host: Option<&str>) -> Result<CallToolResult, ErrorData> {
-    match host {
+fn show(
+    topology: &Topology,
+    host: Option<&str>,
+    fields: Option<&[String]>,
+) -> Result<CallToolResult, ErrorData> {
+    let value = match host {
         Some(name) => match topology.hosts.get(name) {
-            Some(host) => encoded(host),
-            None => Ok(CallToolResult::structured_error(
-                serde_json::json!({"code": "host_not_found"}),
-            )),
+            Some(host) => serde_json::to_value(host),
+            None => {
+                return Ok(CallToolResult::structured_error(
+                    serde_json::json!({"code": "host_not_found"}),
+                ));
+            }
         },
-        None => encoded(topology),
+        None => serde_json::to_value(topology),
     }
+    .map_err(|_| ErrorData::internal_error("could not serialize topology result", None))?;
+    let (Some(fields), serde_json::Value::Object(object)) = (fields, &value) else {
+        return encoded(&value);
+    };
+    if fields.iter().any(|field| !object.contains_key(field)) {
+        return Ok(CallToolResult::structured_error(serde_json::json!({
+            "code": "fields_not_found",
+            "available": object.keys().collect::<Vec<_>>(),
+        })));
+    }
+    let kept: serde_json::Map<_, _> = object
+        .iter()
+        .filter(|(key, _)| fields.contains(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    encoded(&kept)
 }
 
 fn links(topology: &Topology, name: Option<&str>) -> Result<CallToolResult, ErrorData> {
@@ -160,7 +256,17 @@ mod tests {
                 .into_iter()
                 .map(|tool| tool.name.into_owned())
                 .collect();
-            assert_eq!(names, ["fleetix_links", "fleetix_show", "fleetix_validate"]);
+            assert_eq!(
+                names,
+                [
+                    "fleetix_host_cgroups",
+                    "fleetix_host_events",
+                    "fleetix_host_metrics",
+                    "fleetix_links",
+                    "fleetix_show",
+                    "fleetix_validate"
+                ]
+            );
 
             let bad = client
                 .call_tool(
@@ -201,16 +307,33 @@ mod tests {
             "domains": {}, "services": {}
         }))
         .unwrap();
-        let all = show(&topology, None).unwrap();
+        let all = show(&topology, None, None).unwrap();
         assert_eq!(
             all.structured_content.unwrap()["hosts"]["edge"]["system"],
             "x86_64-linux"
         );
-        let host = show(&topology, Some("edge")).unwrap();
+        let host = show(&topology, Some("edge"), None).unwrap();
         assert_eq!(host.structured_content.unwrap()["system"], "x86_64-linux");
         assert_eq!(
-            show(&topology, Some("missing")).unwrap().is_error,
+            show(&topology, Some("missing"), None).unwrap().is_error,
             Some(true)
+        );
+        let only_hosts = show(&topology, None, Some(&["hosts".to_owned()]))
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert_eq!(only_hosts["hosts"]["edge"]["system"], "x86_64-linux");
+        assert!(only_hosts.get("links").is_none());
+        let unknown = show(
+            &topology,
+            Some("edge"),
+            Some(&["system".to_owned(), "nope".to_owned()]),
+        )
+        .unwrap();
+        assert_eq!(unknown.is_error, Some(true));
+        assert_eq!(
+            unknown.structured_content.unwrap()["code"],
+            "fields_not_found"
         );
         let link = links(&topology, Some("mesh")).unwrap();
         assert_eq!(

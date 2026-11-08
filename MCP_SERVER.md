@@ -82,13 +82,21 @@ the server to load a new snapshot. This grants connected clients read access to
 the selected topology, including private network metadata. Do not supply
 credential-bearing material.
 
-The server registers three typed read tools:
+The server registers six typed read tools:
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `fleetix_show` | Optional `host` | Topology or selected host |
+| `fleetix_show` | Optional `host`, optional `fields` | Topology or selected host, optionally only the named top-level keys |
 | `fleetix_links` | Optional `name` | Link definitions and derived addresses |
 | `fleetix_validate` | Empty object | Cross-reference validation report |
+| `fleetix_host_metrics` | Empty object | Live memory, swap, PSI, load, uptime and VRAM of the serving host |
+| `fleetix_host_cgroups` | Optional `depth`, `min_bytes`, `limit` | Live cgroup v2 memory accounting, largest first |
+| `fleetix_host_events` | Optional `since` (journalctl syntax) | Kernel OOM kills with cgroup, victim and killed-process counts |
+
+The `fleetix_host_*` tools read the host running the server, not the topology:
+`/proc`, `/sys/fs/cgroup`, DRM sysfs and the kernel journal, with the server
+process's permissions. Unreadable sources are omitted; `null` limits mean an
+explicit unlimited `max`.
 
 Validation failures are structured tool errors, not server termination.
 Unknown selections and malformed arguments do not terminate the server.
