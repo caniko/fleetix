@@ -66,7 +66,11 @@ pub(super) fn server(topology: Topology) -> Result<Server, ErrorData> {
                 "Inspect the selected topology or a single host",
             )?,
             move |Parameters(args): Parameters<HostSelection>| {
-                ready(show(&snapshot, args.host.as_deref(), args.fields.as_deref()))
+                ready(show(
+                    &snapshot,
+                    args.host.as_deref(),
+                    args.fields.as_deref(),
+                ))
             },
         ),
     )?;
@@ -79,7 +83,10 @@ pub(super) fn server(topology: Topology) -> Result<Server, ErrorData> {
                 "Live memory, swap, PSI, load and VRAM of the host running this server",
             )?,
             |Parameters(_): Parameters<Empty>| {
-                ready(encoded(&host::metrics(Path::new("/proc"), Path::new("/sys"))))
+                ready(encoded(&host::metrics(
+                    Path::new("/proc"),
+                    Path::new("/sys"),
+                )))
             },
         ),
     )?;

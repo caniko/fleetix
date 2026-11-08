@@ -232,7 +232,9 @@ pub(super) fn parse_oom_events(text: &str) -> Vec<Value> {
             }
             events.push((event, BTreeMap::new()));
         } else if let Some((_, rest)) = line.split_once("Killed process ") {
-            let command = rest.split_once('(').and_then(|(_, rest)| rest.split_once(')'));
+            let command = rest
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'));
             if let (Some((command, _)), Some((_, killed))) = (command, events.last_mut()) {
                 *killed.entry(command.to_owned()).or_default() += 1;
             }
@@ -241,7 +243,10 @@ pub(super) fn parse_oom_events(text: &str) -> Vec<Value> {
     events
         .into_iter()
         .map(|(mut event, killed)| {
-            event.insert("killedProcesses".into(), json!(killed.values().sum::<u64>()));
+            event.insert(
+                "killedProcesses".into(),
+                json!(killed.values().sum::<u64>()),
+            );
             event.insert("killedByCommand".into(), json!(killed));
             Value::Object(event)
         })
@@ -280,9 +285,8 @@ mod tests {
         assert_eq!(psi["some"]["avg10"], 0.96);
         assert_eq!(psi["full"]["total"], 2.0);
 
-        let swaps = parse_swaps(
-            "Filename Type Size Used Priority\n/dev/nvme3n1p2 partition 2 1 100\n",
-        );
+        let swaps =
+            parse_swaps("Filename Type Size Used Priority\n/dev/nvme3n1p2 partition 2 1 100\n");
         assert_eq!(swaps[0]["sizeBytes"], 2048);
         assert_eq!(swaps[0]["priority"], 100);
     }
@@ -315,9 +319,20 @@ mod tests {
         for absent in ["peakBytes", "anonBytes", "events", "swapBytes"] {
             assert!(!builders.contains_key(absent), "{absent}");
         }
-        assert!(found["cgroups"][0].as_object().unwrap().contains_key("maxBytes"));
+        assert!(
+            found["cgroups"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("maxBytes")
+        );
         assert_eq!(cgroups(root.path(), 0, 10, 10)["matched"], 0);
-        assert_eq!(cgroups(root.path(), 3, 10, 1)["cgroups"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            cgroups(root.path(), 3, 10, 1)["cgroups"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
