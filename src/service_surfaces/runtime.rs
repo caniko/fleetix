@@ -457,6 +457,14 @@ pub fn promote(
             "stale expected dev release: recorded {dev}, requested {expected_dev}"
         ));
     }
+    // A repeat promotion would record the current prod release as its own
+    // rollback baseline, making the last good release unreachable.
+    if state.prod.artifact() == Some(expected_dev) {
+        return Err(format!(
+            "prod already records {expected_dev} as its current release; a repeat \
+             promotion would overwrite the rollback baseline"
+        ));
+    }
     // Manifest, closure and exact-output checks happen before any observation,
     // admission or root mutation.
     backend.validate(expected_dev)?;

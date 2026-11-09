@@ -461,6 +461,35 @@ fn promote_rejects_live_prod_drift_before_journal() {
 }
 
 #[test]
+fn repeat_promotion_is_refused_and_preserves_the_rollback_baseline() {
+    let root = TempDir::new().unwrap();
+    let policy = test_policy(root.path());
+    let first = artifact(1, "guest-system");
+    let second = artifact(2, "guest-system");
+    let fake = Fake::new(&[&first, &second]);
+    establish_pair(&policy, &fake, &first);
+    runtime::deploy_dev(&policy, &fake, &second).unwrap();
+    runtime::promote(&policy, &fake, &second).unwrap();
+
+    let error = runtime::promote(&policy, &fake, &second).unwrap_err();
+    assert!(error.contains("rollback baseline"), "{error}");
+    assert!(pending_of(&policy, &fake).is_none());
+    let status = state_of(&policy, &fake);
+    assert_eq!(status.state.prod.artifact.as_deref(), Some(second.as_str()));
+    assert_eq!(status.state.prod.previous.as_deref(), Some(first.as_str()));
+    assert_eq!(
+        fake.activations(Surface::Prod),
+        vec![first.clone(), second.clone()],
+        "a repeat promotion must not restart prod"
+    );
+
+    runtime::rollback(&policy, &fake, Some(&second)).unwrap();
+    let status = state_of(&policy, &fake);
+    assert_eq!(status.state.prod.artifact.as_deref(), Some(first.as_str()));
+    assert_eq!(status.state.prod.previous.as_deref(), Some(second.as_str()));
+}
+
+#[test]
 fn admission_failure_is_durable_blocks_changes_and_requires_explicit_recovery() {
     let root = TempDir::new().unwrap();
     let policy = test_policy(root.path());
