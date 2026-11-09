@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluated once at startup, over stdio. The packaged `fleetix` binary enables
   the feature. Downstream applications register typed handlers with their own
   authorization. See [MCP server](MCP_SERVER.md).
+- `fleetix mcp-serve`: `fleetix_show` accepts a `fields` filter, and three
+  read-only tools report the serving host's live memory
+  (`fleetix_host_metrics`), cgroup v2 accounting (`fleetix_host_cgroups`) and
+  kernel OOM kills (`fleetix_host_events`).
 
 ### Fixed
 

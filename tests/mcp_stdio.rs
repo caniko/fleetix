@@ -65,7 +65,7 @@ fn standalone_stdio_keeps_protocol_output_clean_and_closes_on_eof() {
                     json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
                     true,
                 );
-                assert_eq!(listed["tools"].as_array().unwrap().len(), 3);
+                assert_eq!(listed["tools"].as_array().unwrap().len(), 6);
                 let bad = request(
                     json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {"name": "fleetix_show", "arguments": {"path": "/not-authorized"}}}),
