@@ -20,7 +20,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_MANIFEST_BYTES: u64 = 128 * 1024;
 const MAX_CONTAINER_CONFIG_BYTES: u64 = 64 * 1024;
@@ -29,10 +29,14 @@ const MAX_CLOSURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CLOSURE_PATHS: usize = 100_000;
 const VALIDITY_CHUNK: usize = 256;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Bound for the cgroup kill that follows a timed-out guest command. The lease
+/// stays held while it runs, so it must not be able to wait indefinitely.
+const SCOPE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTAINER_ROOT: &str = "/var/lib/nixos-containers";
 const GUEST_READLINK: &str = "/run/current-system/sw/bin/readlink";
 
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static SCOPE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct Native {
     policy: Policy,
@@ -102,6 +106,7 @@ impl Native {
             runtime::command_timeout(&self.policy),
             "nix-store --query --requisites",
             max_bytes,
+            None,
         )?;
         if truncated {
             return Err(format!(
@@ -395,6 +400,50 @@ impl Native {
             &format!("systemctl {action}"),
         )
     }
+
+    /// Run one guest health attempt inside a transient systemd scope.
+    ///
+    /// `nixos-container run` reaches the release hook through `su -l -c`, which
+    /// calls setsid(): a hung hook leaves the spawned process group, so only a
+    /// cgroup-wide kill contains it. The scope is named so the timeout path can
+    /// kill exactly this attempt without touching any other unit.
+    fn run_health_scoped(
+        &self,
+        argv: &[String],
+        timeout: Duration,
+        label: &str,
+    ) -> Result<CommandEvidence, String> {
+        let systemctl = path_string("systemctl", &self.policy.tools.systemctl)?;
+        // systemd-run ships in the same systemd output as the configured
+        // systemctl, so no separate policy field is needed.
+        let systemd_run = path_string(
+            "systemd_run",
+            &self.policy.tools.systemctl.with_file_name("systemd-run"),
+        )?;
+        let unit = format!(
+            "fleetix-surfaces-health-{}-{}-{}.scope",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(),
+            SCOPE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut scoped = vec![
+            systemd_run,
+            "--scope".into(),
+            "--collect".into(),
+            "--quiet".into(),
+            format!("--unit={unit}"),
+            "--".into(),
+        ];
+        scoped.extend_from_slice(argv);
+        let cleanup = vec![
+            systemctl,
+            "kill".into(),
+            "--kill-whom=all".into(),
+            "--signal=KILL".into(),
+            unit,
+        ];
+        run_bounded(&scoped, None, timeout, label, Some(&cleanup))
+    }
 }
 
 impl Backend for Native {
@@ -517,9 +566,8 @@ impl Backend for Native {
             surface.as_str().to_owned(),
             artifact.to_owned(),
         ];
-        run(
+        self.run_health_scoped(
             &argv,
-            None,
             runtime::command_timeout(&self.policy),
             "release health check",
         )
@@ -628,8 +676,24 @@ fn run(
     timeout: Duration,
     label: &str,
 ) -> Result<CommandEvidence, String> {
-    let (evidence, truncated) =
-        run_with_limit(argv, environment, timeout, label, MAX_CAPTURE_BYTES)?;
+    run_bounded(argv, environment, timeout, label, None)
+}
+
+fn run_bounded(
+    argv: &[String],
+    environment: Option<(&str, String)>,
+    timeout: Duration,
+    label: &str,
+    cleanup: Option<&[String]>,
+) -> Result<CommandEvidence, String> {
+    let (evidence, truncated) = run_with_limit(
+        argv,
+        environment,
+        timeout,
+        label,
+        MAX_CAPTURE_BYTES,
+        cleanup,
+    )?;
     if truncated {
         return Err(format!(
             "{label}: output exceeded the {MAX_CAPTURE_BYTES} byte bound or could not be read completely"
@@ -644,6 +708,7 @@ fn run_with_limit(
     timeout: Duration,
     label: &str,
     capture_limit: usize,
+    cleanup: Option<&[String]>,
 ) -> Result<(CommandEvidence, bool), String> {
     let executable = argv.first().ok_or("command has no executable")?;
     let mut command = Command::new(executable);
@@ -702,12 +767,13 @@ fn run_with_limit(
         let _ = sender.send((1u8, drain(stderr, MAX_CAPTURE_BYTES)));
     });
     let deadline = Instant::now() + timeout;
+    let mut containment = Ok(());
     let (status, timed_out) = loop {
         match child_exited(process_group) {
             Ok(true) => {
                 // Keep the zombie leader unreaped until after terminating its
                 // group: its PID/PGID cannot be reused for an unrelated owner.
-                kill_process_group(process_group);
+                let _ = terminate(process_group, cleanup);
                 let status = child
                     .wait()
                     .map_err(|error| format!("{label}: reap child: {error}"))?;
@@ -715,14 +781,14 @@ fn run_with_limit(
             }
             Ok(false) => {
                 if Instant::now() >= deadline {
-                    kill_process_group(process_group);
+                    containment = terminate(process_group, cleanup);
                     let _ = child.wait();
                     break (None, true);
                 }
                 thread::sleep(POLL_INTERVAL);
             }
             Err(error) => {
-                kill_process_group(process_group);
+                let _ = terminate(process_group, cleanup);
                 let _ = child.wait();
                 return Err(format!("{label}: wait for {executable}: {error}"));
             }
@@ -767,8 +833,12 @@ fn run_with_limit(
     };
     let truncated = stdout_truncated || stderr_truncated;
     if timed_out {
+        let containment = match containment {
+            Ok(()) => String::new(),
+            Err(error) => format!("; additionally failed to kill the command's cgroup: {error}"),
+        };
         return Err(format!(
-            "{label} timed out after {}s: {}",
+            "{label} timed out after {}s: {}{containment}",
             timeout.as_secs(),
             evidence.output()
         ));
@@ -875,6 +945,21 @@ fn kill_process_group(process_group: u32) {
         // group. Failure (for example ESRCH) is harmless here.
         let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
     }
+}
+
+/// Kill the command's process group and, when the command is bounded by a
+/// transient systemd scope, its whole cgroup.
+///
+/// Guest commands reach the release hook through `su -l -c`, which calls
+/// setsid() for a command invocation. The hook therefore leaves the process
+/// group and would survive a group-only kill while the lease is released; only
+/// the scope's cgroup still contains it.
+fn terminate(process_group: u32, cleanup: Option<&[String]>) -> Result<(), String> {
+    kill_process_group(process_group);
+    let Some(argv) = cleanup else {
+        return Ok(());
+    };
+    run(argv, None, SCOPE_CLEANUP_TIMEOUT, "kill command scope").map(|_| ())
 }
 
 fn child_exited(pid: u32) -> io::Result<bool> {
@@ -1430,6 +1515,111 @@ mod tests {
                     thread::sleep(POLL_INTERVAL);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn setsid_escape_worker() {
+        let Some(marker) = std::env::var_os("FLEETIX_ESCAPED_MARKER") else {
+            return;
+        };
+        // SAFETY: setsid has no preconditions and only detaches this worker.
+        let session = unsafe { libc::setsid() };
+        assert!(
+            session >= 0,
+            "setsid escape worker: {}",
+            io::Error::last_os_error()
+        );
+        fs::write(marker, std::process::id().to_string()).unwrap();
+        thread::sleep(Duration::from_secs(300));
+    }
+
+    #[test]
+    fn scoped_guest_command_kills_a_setsid_escaped_health_process() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = fixture_policy(root.path());
+        let unit_log = root.path().join("scope.unit");
+        let escaped_pid = root.path().join("escaped.pid");
+        let escaped_marker = root.path().join("escaped.session");
+        let kill_log = root.path().join("systemctl.kill");
+        let systemd_run = policy.tools.systemctl.with_file_name("systemd-run");
+        script(
+            &systemd_run,
+            &format!(
+                "#!/bin/sh\n\
+                 while [ $# -gt 0 ]; do\n\
+                 case \"$1\" in\n\
+                 --scope|--collect|--quiet) shift ;;\n\
+                 --unit=*) echo \"${{1#--unit=}}\" > '{}'; shift ;;\n\
+                 --) shift; break ;;\n\
+                 *) break ;;\n\
+                 esac\n\
+                 done\n\
+                 exec \"$@\"\n",
+                unit_log.display()
+            ),
+        );
+        script(
+            &policy.tools.systemctl,
+            &format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$*\" >> '{}'\n\
+                 if [ \"$1\" = kill ]; then\n\
+                 pid=$(cat '{}' 2>/dev/null)\n\
+                 [ -n \"$pid\" ] && kill -KILL \"$pid\" 2>/dev/null\n\
+                 fi\n",
+                kill_log.display(),
+                escaped_pid.display()
+            ),
+        );
+        // `nixos-container run` reaches the hook through `su -l -c`, which
+        // calls setsid(); this worker reproduces that detachment for real.
+        script(
+            &policy.tools.nixos_container,
+            &format!(
+                "#!/bin/sh\nFLEETIX_ESCAPED_MARKER='{}' '{}' --exact \
+                 service_surfaces::native::tests::setsid_escape_worker &\n\
+                 echo $! > '{}'\nwait\n",
+                escaped_marker.display(),
+                std::env::current_exe().unwrap().display(),
+                escaped_pid.display()
+            ),
+        );
+        let argv = vec![
+            policy.tools.nixos_container.to_str().unwrap().to_owned(),
+            "run".into(),
+            "fleetix-dev".into(),
+            "--".into(),
+            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-guest/bin/fleetix-surface-health".into(),
+        ];
+        let native = Native { policy };
+
+        let error = native
+            .run_health_scoped(&argv, Duration::from_secs(2), "release health check")
+            .unwrap_err();
+        assert!(error.contains("release health check timed out after"), "{error}");
+        assert!(
+            fs::read_to_string(&escaped_marker).is_ok(),
+            "escape worker never completed setsid()"
+        );
+        let unit = fs::read_to_string(&unit_log).unwrap();
+        assert!(unit.starts_with("fleetix-surfaces-health-"), "{unit}");
+        assert!(unit.trim_end().ends_with(".scope"), "{unit}");
+        let killed = fs::read_to_string(&kill_log).unwrap_or_default();
+        assert!(
+            killed.contains("kill --kill-whom=all --signal=KILL"),
+            "scope kill was not issued: {killed:?}"
+        );
+        assert!(killed.contains(unit.trim()), "{killed}");
+
+        let escaped: i32 = fs::read_to_string(&escaped_pid).unwrap().trim().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while unsafe { libc::kill(escaped, 0) } == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "setsid-escaped health process {escaped} survived the scope kill"
+            );
+            thread::sleep(POLL_INTERVAL);
         }
     }
 
