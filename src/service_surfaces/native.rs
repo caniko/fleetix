@@ -432,6 +432,11 @@ impl Native {
             "--collect".into(),
             "--quiet".into(),
             format!("--unit={unit}"),
+            // systemd itself stops the scope if this process dies before cleanup.
+            format!(
+                "--property=RuntimeMaxSec={}",
+                (timeout + SCOPE_CLEANUP_TIMEOUT).as_secs()
+            ),
             "--".into(),
         ];
         scoped.extend_from_slice(argv);
@@ -1539,6 +1544,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let policy = fixture_policy(root.path());
         let unit_log = root.path().join("scope.unit");
+        let property_log = root.path().join("scope.properties");
         let escaped_pid = root.path().join("escaped.pid");
         let escaped_marker = root.path().join("escaped.session");
         let kill_log = root.path().join("systemctl.kill");
@@ -1551,12 +1557,14 @@ mod tests {
                  case \"$1\" in\n\
                  --scope|--collect|--quiet) shift ;;\n\
                  --unit=*) echo \"${{1#--unit=}}\" > '{}'; shift ;;\n\
+                 --property=*) echo \"${{1#--property=}}\" >> '{}'; shift ;;\n\
                  --) shift; break ;;\n\
                  *) break ;;\n\
                  esac\n\
                  done\n\
                  exec \"$@\"\n",
-                unit_log.display()
+                unit_log.display(),
+                property_log.display()
             ),
         );
         script(
@@ -1605,6 +1613,11 @@ mod tests {
         let unit = fs::read_to_string(&unit_log).unwrap();
         assert!(unit.starts_with("fleetix-surfaces-health-"), "{unit}");
         assert!(unit.trim_end().ends_with(".scope"), "{unit}");
+        // Crash-safe bound: systemd stops the scope even if the CLI is killed.
+        assert_eq!(
+            fs::read_to_string(&property_log).unwrap(),
+            "RuntimeMaxSec=7\n"
+        );
         let killed = fs::read_to_string(&kill_log).unwrap_or_default();
         assert!(
             killed.contains("kill --kill-whom=all --signal=KILL"),
