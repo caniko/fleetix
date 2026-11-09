@@ -432,11 +432,11 @@ impl Native {
             "--collect".into(),
             "--quiet".into(),
             format!("--unit={unit}"),
-            // systemd itself stops the scope if this process dies before cleanup.
-            format!(
-                "--property=RuntimeMaxSec={}",
-                (timeout + SCOPE_CLEANUP_TIMEOUT).as_secs()
-            ),
+            // If this process dies before cleanup, systemd SIGKILLs the scope
+            // 500 ms after the command timeout: after the live timeout path,
+            // before the crash keeper releases the lease at one second.
+            format!("--property=RuntimeMaxSec={}ms", timeout.as_millis() + 500),
+            "--property=KillSignal=SIGKILL".into(),
             "--".into(),
         ];
         scoped.extend_from_slice(argv);
@@ -1616,7 +1616,7 @@ mod tests {
         // Crash-safe bound: systemd stops the scope even if the CLI is killed.
         assert_eq!(
             fs::read_to_string(&property_log).unwrap(),
-            "RuntimeMaxSec=7\n"
+            "RuntimeMaxSec=2500ms\nKillSignal=SIGKILL\n"
         );
         let killed = fs::read_to_string(&kill_log).unwrap_or_default();
         assert!(
