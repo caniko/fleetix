@@ -147,12 +147,14 @@ consumer's normal build/cache workflow. Promotion never evaluates or compiles.
 Promotion requires the expected dev output, fresh live dev health and an unchanged
 prod baseline. A write-ahead journal blocks another operation after interruption;
 explicit recovery consults the same independent admission policy. Prior outputs
-remain rooted. Before any activation intent, an initial failed admission can be
-cancelled through guarded `recover` only with confirmed inactivity and no selected
-release. After activation intent, an initial install has no rollback baseline:
-use guarded `resume` to forward-complete its exact candidate. Unknown live state
-never counts as an empty slot. Known stopped deployments can be started through
-`boot` before a new deployment; outstanding systemd jobs must finish first.
+remain rooted. Before any activation intent, a failed admission can be cancelled
+through guarded `recover`, which requires the live surface to still match its
+journaled baseline: the previous release, or confirmed inactivity with no
+selected release for an initial install. After activation intent, an initial
+install has no rollback baseline: use guarded `resume` to forward-complete its
+exact candidate. Unknown live state never counts as an empty slot. Known stopped
+deployments can be started through `boot` before a new deployment; outstanding
+systemd jobs must finish first.
 Host reboot starts only committed surfaces under the configured
 host activation lock; pending operations remain blocked for recovery.
 

@@ -677,8 +677,9 @@ pub fn rollback(
 
 /// Explicit recovery. Restores the exact committed state snapshot captured by
 /// the pending operation, but only after the operator admission command
-/// authorizes the restore. Before activation an initial install can be safely
-/// cancelled; after activation it must forward-complete through `resume`.
+/// authorizes the restore. Before activation no operation has touched the live
+/// surface, so any journal can be cancelled against its unchanged baseline;
+/// after activation an initial install must forward-complete through `resume`.
 pub fn recover(
     policy: &Policy,
     backend: &dyn Backend,
@@ -718,8 +719,11 @@ pub fn recover(
         });
     }
     let surface = pending.surface();
-    if pending.previous().is_none() && matches!(pending.phase, Phase::Prepared | Phase::Admitted) {
-        return cancel_initial_pre_activation(policy, backend, pending);
+    // Never activated: admission refused before any activation intent, so the
+    // live surface is still on its recorded baseline. Restoring here would
+    // restart a healthy prod (or dev) for a refusal that changed nothing.
+    if matches!(pending.phase, Phase::Prepared | Phase::Admitted) {
+        return cancel_pre_activation(policy, backend, pending);
     }
     let target = pending.previous().map(str::to_owned).ok_or_else(|| {
         format!(
@@ -798,10 +802,12 @@ pub fn recover(
     commit(policy, &mut pending)
 }
 
-/// No-op cancellation for an initial install that provably never started
-/// activation. Not a general journal clear: later phases must use resume or
-/// recover.
-fn cancel_initial_pre_activation(
+/// No-op cancellation for any journal that provably never started activation
+/// (`Prepared` or `Admitted`). The live surface must still match the journal's
+/// recorded baseline: the previous release when one exists, otherwise a
+/// confirmed inactive, unselected guest. Not a general journal clear: later
+/// phases must use resume or recover.
+fn cancel_pre_activation(
     policy: &Policy,
     backend: &dyn Backend,
     mut pending: Pending,
@@ -813,12 +819,37 @@ fn cancel_initial_pre_activation(
             pending.id
         ));
     }
-    check_baseline(policy, backend, surface, None)?;
+    if let Some(previous) = pending.previous() {
+        // A live surface must still be the recorded previous release. A
+        // confirmed inactive surface is also an unchanged baseline (for
+        // example after a reboot): aborting leaves committed state
+        // authoritative for `boot`.
+        backend.idle(surface)?;
+        match backend.observe(surface) {
+            Ok(live) if live == previous => {}
+            Ok(live) => {
+                return Err(format!(
+                    "{surface} drift: live system {live} does not match recorded {previous}"
+                ));
+            }
+            Err(error) => {
+                if !backend.inactive(surface)? {
+                    return Err(format!(
+                        "cannot verify live {surface} baseline before abort: {error}; \
+                         guest is not confirmed inactive"
+                    ));
+                }
+            }
+        }
+    } else {
+        check_baseline(policy, backend, surface, None)?;
+    }
     let candidate = pending.candidate().to_owned();
+    let previous = pending.previous().map(str::to_owned);
     let admission = Admission {
         operation: "abort",
         surface,
-        previous: Some(&candidate),
+        previous: previous.as_deref(),
         candidate: &candidate,
     };
     if let Err(error) = backend.admission(&admission) {

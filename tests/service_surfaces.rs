@@ -526,19 +526,94 @@ fn admission_failure_is_durable_blocks_changes_and_requires_explicit_recovery() 
     assert!(blocked.contains(&pending.id), "{blocked}");
 
     fake.set_admission_failure(None);
+    let prod_activations = fake.activations(Surface::Prod);
     let recovered = runtime::recover(&policy, &fake, Some(&pending.id)).unwrap();
-    assert!(recovered.recovered);
+    assert_eq!(
+        fake.activations(Surface::Prod),
+        prod_activations,
+        "recovering a refused admission must not restart healthy prod"
+    );
+    assert!(recovered.aborted);
     assert_eq!(recovered.surface, Surface::Prod);
-    assert_eq!(recovered.artifact, first);
+    assert!(
+        fake.stops.lock().unwrap().is_empty(),
+        "recovering a refused admission must not stop healthy prod"
+    );
     let status = state_of(&policy, &fake);
     assert!(status.pending.is_none());
     assert_eq!(status.state.dev.artifact.as_deref(), Some(second.as_str()));
     assert_eq!(status.state.prod.artifact.as_deref(), Some(first.as_str()));
     let last = fake.admissions().pop().unwrap();
-    assert_eq!(last.operation, "recover");
+    assert_eq!(last.operation, "abort");
     assert_eq!(last.surface, Surface::Prod);
-    assert_eq!(last.previous.as_deref(), Some(second.as_str()));
-    assert_eq!(last.candidate, first);
+    assert_eq!(last.previous.as_deref(), Some(first.as_str()));
+    assert_eq!(last.candidate, second);
+
+    // The same non-activating cancel path covers a refused deploy-dev: dev is
+    // live on its committed release and must not be restarted or stopped.
+    let dev_activations = fake.activations(Surface::Dev);
+    fake.set_admission_failure(Some("dev database backup is stale"));
+    let refused = runtime::deploy_dev(&policy, &fake, &third).unwrap_err();
+    assert!(refused.contains("dev database backup is stale"), "{refused}");
+    fake.set_admission_failure(None);
+    let aborted = runtime::recover(&policy, &fake, None).unwrap();
+    assert_eq!(
+        fake.activations(Surface::Dev),
+        dev_activations,
+        "recovering a refused deploy-dev must not restart healthy dev"
+    );
+    assert!(aborted.aborted);
+    assert_eq!(aborted.surface, Surface::Dev);
+    assert_eq!(
+        fake.activations(Surface::Prod),
+        prod_activations,
+        "recovering a refused deploy-dev must not touch prod"
+    );
+    assert!(fake.stops.lock().unwrap().is_empty());
+    assert_eq!(
+        state_of(&policy, &fake).state.dev.artifact.as_deref(),
+        Some(second.as_str())
+    );
+}
+
+#[test]
+fn refused_admission_after_reboot_aborts_without_activation_and_boot_restores_prod() {
+    let root = TempDir::new().unwrap();
+    let policy = test_policy(root.path());
+    let first = artifact(1, "guest-system");
+    let second = artifact(2, "guest-system");
+    let fake = Fake::new(&[&first, &second]);
+    establish_pair(&policy, &fake, &first);
+    runtime::deploy_dev(&policy, &fake, &second).unwrap();
+    fake.set_admission_failure(Some("database backup is stale"));
+    runtime::promote(&policy, &fake, &second).unwrap_err();
+    fake.set_admission_failure(None);
+    install_boot_artifacts(&policy, &first);
+    fs::remove_file(runtime::surface_link(&policy, Surface::Dev)).unwrap();
+    symlink(&second, runtime::surface_link(&policy, Surface::Dev)).unwrap();
+    symlink(&second, runtime::root_path(&policy, &second).unwrap()).unwrap();
+    let activations = fake.activations(Surface::Prod);
+
+    // A reboot stops both guests while the refused journal stays prepared.
+    fake.stop(Surface::Prod).unwrap();
+    fake.stop(Surface::Dev).unwrap();
+    let aborted = runtime::recover(&policy, &fake, None).unwrap();
+    assert_eq!(
+        fake.activations(Surface::Prod),
+        activations,
+        "aborting a refused admission must not restart prod"
+    );
+    assert!(aborted.aborted);
+
+    // With the journal cleared, boot restores the committed prod release.
+    let report = runtime::boot(&policy, &fake).unwrap();
+    assert!(report.ok(), "{:?}", report.errors);
+    assert_eq!(report.started, vec![Surface::Dev, Surface::Prod]);
+    assert_eq!(fake.live_of(Surface::Prod).as_deref(), Some(first.as_str()));
+    assert_eq!(
+        state_of(&policy, &fake).state.prod.artifact.as_deref(),
+        Some(first.as_str())
+    );
 }
 
 #[test]
