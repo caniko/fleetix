@@ -1108,9 +1108,9 @@ fn resume_restarts_committed_dev_after_reboot_during_initial_promotion() {
     fake.set_activate_failure(None);
     install_boot_artifacts(&policy, &first);
 
-    // A reboot stops both guests; unattended boot skips the pending prod
-    // surface (covered above), so resume must restart the committed dev
-    // release from its unchanged pin before forward-completing.
+    // A reboot stops both guests. If unattended boot never ran (it would
+    // start dev and skip the pending prod surface), resume must restart the
+    // committed dev release from its unchanged pin before forward-completing.
     fake.stop(Surface::Prod).unwrap();
     fake.stop(Surface::Dev).unwrap();
     assert!(runtime::recover(&policy, &fake, None).is_err());

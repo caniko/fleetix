@@ -114,6 +114,9 @@ module does not move existing host services or migrate their data.
 OPERATION SURFACE PREVIOUS_OUTPUT_OR_EMPTY CANDIDATE_OUTPUT CONTAINER_NAME
 ```
 
+An `abort` of a never-activated operation passes the retained baseline as
+PREVIOUS (empty for an initial install) and the cancelled candidate.
+
 It must be read-only and idempotent. It must verify live schema compatibility,
 backup/recovery readiness, required service coverage, runtime-binding isolation,
 capacity and hardware support. Missing evidence must fail closed. It must also
