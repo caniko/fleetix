@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add paired full-stack dev/prod service surfaces: optional host topology
+  declarations, NixOS host/guest modules, immutable-output promotion and guarded
+  recovery through the standalone `fleetix-surfaces` frontend. Persistent data
+  and credentials stay surface-local; promotion never rebuilds or copies state.
+  Exhaustive Rust `Host` literals must add `service_surfaces: None` or use
+  `..Default::default()`; serialized hosts without the field remain compatible.
 - Add the optional `mcp-server` feature: a composable Rust MCP server built on
   the official `rmcp` SDK (re-exported as `fleetix::mcp_server::rmcp`), and
   `fleetix mcp-serve PATH`, which serves an operator-selected topology snapshot,

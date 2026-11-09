@@ -85,6 +85,16 @@
     # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
     nixosModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     nixosModules.local-access = import ./modules/local-access.nix;
+    nixosModules.service-surface-guest = import ./modules/service-surface-guest.nix;
+    nixosModules.service-surfaces = {
+      lib,
+      pkgs,
+      ...
+    }: {
+      key = "fleetix.nixosModules.service-surfaces";
+      imports = [./modules/service-surfaces.nix];
+      fleetix.serviceSurfaces.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.fleetixCrate;
+    };
     nixosModules.build-train = {
       lib,
       pkgs,
@@ -116,7 +126,7 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
-            cargoExtraArgs = "--package fleetix --features cli,build-train-cli,deployment-cli,mcp-server";
+            cargoExtraArgs = "--package fleetix --features cli,build-train-cli,deployment-cli,mcp-server,service-surfaces-cli";
             meta.mainProgram = "fleetix";
           });
 
@@ -217,12 +227,18 @@
             default = [];
           };
         };
-      in ({
+      in
+        {
           build-train-policy = let
             contract = import ./tests/build-train-policy.nix;
           in
             pkgs.writeText "fleetix-build-train-policy.json" (builtins.toJSON contract);
           build-train-module = import ./tests/build-train-module.nix {inherit pkgs;};
+          service-surfaces-module = assert import ./tests/service-surfaces-module.nix {inherit pkgs;}; pkgs.writeText "fleetix-service-surfaces-module" "paired service stacks and isolation verified\n";
+          service-surfaces-vm = import ./tests/service-surfaces-vm.nix {
+            inherit pkgs;
+            fleetixPackage = self.packages.${system}.fleetixCrate;
+          };
           gpu-contract = assert import ./tests/gpu.nix;
             pkgs.writeText "fleetix-gpu-contract" "ok";
           gatus-profiles = assert import ./tests/gatus.nix {inherit (nixpkgs) lib;};
@@ -784,7 +800,7 @@
             inherit pkgs;
             worker = self.packages.${system}.fleetix-deploy;
           };
-        })
+        }
     );
 
     devShells = forSystems (

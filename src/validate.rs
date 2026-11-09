@@ -1,6 +1,6 @@
 use crate::topology::{
     DnsPublication, EndpointBind, HttpAccess, HttpAction, IngressScope, LinkRole, PathMatch,
-    Topology, VpnConnection, VpnPortForwarding,
+    ServiceLifecycle, ServiceSurfaces, Topology, VpnConnection, VpnPortForwarding,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -112,6 +112,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
     publication::validate(topology, &mut report);
     validate_vpn_profiles(topology, &mut report);
     validate_deployment(topology, &mut report);
+    validate_service_surfaces(topology, &mut report);
     validate_local_access(topology, &mut report);
     validate_services(topology, &mut report);
     validate_supply(topology, &mut report);
@@ -1031,6 +1032,97 @@ fn validate_deployment(topology: &Topology, report: &mut ValidationReport) {
             None,
             "service intent dependencies must form an acyclic graph",
         );
+    }
+}
+
+fn validate_service_surfaces(topology: &Topology, report: &mut ValidationReport) {
+    for (host_name, host) in &topology.hosts {
+        let Some(surfaces) = &host.service_surfaces else {
+            continue;
+        };
+        let base = format!("hosts.{host_name}.serviceSurfaces");
+
+        if surfaces.services.is_empty() {
+            report.error(
+                "host.empty_service_surfaces",
+                Some(format!("{base}.services")),
+                None,
+                format!("host '{host_name}' serviceSurfaces must list at least one service"),
+            );
+        }
+        let mut seen = HashSet::new();
+        for service in &surfaces.services {
+            if !seen.insert(service.as_str()) {
+                report.error(
+                    "host.duplicate_service_surface",
+                    Some(format!("{base}.services")),
+                    Some(service.clone()),
+                    format!("host '{host_name}' serviceSurfaces lists '{service}' more than once"),
+                );
+            }
+            if service.trim().is_empty() {
+                report.error(
+                    "host.empty_service_surface_id",
+                    Some(format!("{base}.services")),
+                    None,
+                    format!("host '{host_name}' serviceSurfaces service IDs must not be empty"),
+                );
+                continue;
+            }
+            match topology.services.catalog.get(service) {
+                None => report.error(
+                    "host.unknown_service_surface",
+                    Some(format!("{base}.services")),
+                    Some(service.clone()),
+                    format!(
+                        "host '{host_name}' serviceSurfaces references unknown service '{service}'"
+                    ),
+                ),
+                Some(profile)
+                    if !matches!(
+                        profile.lifecycle,
+                        ServiceLifecycle::Active | ServiceLifecycle::OnDemand
+                    ) =>
+                {
+                    report.error(
+                        "host.inactive_service_surface",
+                        Some(format!("{base}.services")),
+                        Some(service.clone()),
+                        format!(
+                            "host '{host_name}' serviceSurfaces references {:?} service '{service}'; only active or on-demand services may run",
+                            profile.lifecycle
+                        ),
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+
+        for (field, container) in [
+            ("devContainer", &surfaces.dev_container),
+            ("prodContainer", &surfaces.prod_container),
+        ] {
+            if !ServiceSurfaces::valid_container_name(container) {
+                report.error(
+                    "host.invalid_service_container",
+                    Some(format!("{base}.{field}")),
+                    Some(container.clone()),
+                    format!(
+                        "host '{host_name}' serviceSurfaces.{field} '{container}' must match [a-z][a-z0-9-]* and be at most 12 characters"
+                    ),
+                );
+            }
+        }
+        if surfaces.dev_container == surfaces.prod_container {
+            report.error(
+                "host.same_service_containers",
+                Some(format!("{base}.prodContainer")),
+                Some(surfaces.prod_container.clone()),
+                format!(
+                    "host '{host_name}' serviceSurfaces devContainer and prodContainer must differ"
+                ),
+            );
+        }
     }
 }
 

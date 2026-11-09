@@ -64,6 +64,43 @@ pub enum LinkRole {
     Peer,
 }
 
+/// Static paired service-stack policy for a host. Presence requests the full
+/// dev + prod stack; absence keeps existing host behavior unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceSurfaces {
+    /// Logical `services.catalog` IDs hosted in this pair, never release state.
+    #[serde(default)]
+    pub services: Vec<String>,
+    #[serde(default = "default_dev_container")]
+    pub dev_container: String,
+    #[serde(default = "default_prod_container")]
+    pub prod_container: String,
+}
+
+impl ServiceSurfaces {
+    /// Accept only names that fit Linux `ve-<name>` interface names (15 bytes),
+    /// so 12 is the hard limit. The mandated `fleetix-prod` default is 12.
+    pub fn valid_container_name(name: &str) -> bool {
+        name.len() <= 12
+            && name
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    }
+}
+
+fn default_dev_container() -> String {
+    "fleetix-dev".to_string()
+}
+
+fn default_prod_container() -> String {
+    "fleetix-prod".to_string()
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
@@ -94,6 +131,9 @@ pub struct Host {
     pub gpu: Gpu,
     #[serde(default)]
     pub storage: Storage,
+    /// Presence requests the full paired service stack on this host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_surfaces: Option<ServiceSurfaces>,
 }
 
 /// Explicit installed-system management routes, independent of service publication.

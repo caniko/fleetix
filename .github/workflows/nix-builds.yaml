@@ -43,6 +43,8 @@ jobs:
           - ".#checks.x86_64-linux.fleetix-lib-helpers"
           - ".#checks.x86_64-linux.module-integration-fixtures"
           - ".#checks.x86_64-linux.deployment-runtime"
+          - ".#checks.x86_64-linux.service-surfaces-module"
+          - ".#checks.x86_64-linux.service-surfaces-vm"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:

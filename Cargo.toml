@@ -21,6 +21,7 @@ include = [
   "/MCP.md",
   "/MCP_SERVER.md",
   "/SERVICE_PROFILES.md",
+  "/SERVICE_SURFACES.md",
   "/ARCHITECTURE.md",
   "/BUILD_TRAIN.md",
   "/DEPLOYMENT.md",
@@ -61,6 +62,11 @@ name = "fleetix-deploy"
 path = "src/bin/fleetix-deploy.rs"
 required-features = ["deployment-cli"]
 
+[[bin]]
+name = "fleetix-surfaces"
+path = "src/bin/fleetix-surfaces.rs"
+required-features = ["service-surfaces-cli"]
+
 [dependencies]
 fleetix-sidecar = { workspace = true, optional = true }
 pklx = { workspace = true, optional = true }
@@ -95,6 +101,8 @@ build-train-native = ["build-train-runtime", "dep:nix-manager-core"]
 build-train-cli = ["build-train-native", "dep:clap", "dep:signal-hook"]
 deployment-runtime = ["dep:fs2", "dep:libc", "dep:signal-hook"]
 deployment-cli = ["deployment-runtime", "dep:clap"]
+service-surfaces-runtime = ["dep:fs2", "dep:libc"]
+service-surfaces-cli = ["service-surfaces-runtime", "dep:clap"]
 
 [dependencies.clap]
 workspace = true
