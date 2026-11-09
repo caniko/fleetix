@@ -48,6 +48,13 @@ impl Native {
         for (field, path) in policy.tools.all() {
             validate_tool(field, path)?;
         }
+        // systemd-run ships in the same systemd output as the configured
+        // systemctl, so no separate policy field is needed; validate the
+        // derived tool here with the others rather than when a scope is built.
+        validate_tool(
+            "systemd_run",
+            &policy.tools.systemctl.with_file_name("systemd-run"),
+        )?;
         validate_executable("admission_check", &policy.admission_check)?;
         Ok(Self {
             policy: policy.clone(),
@@ -1139,6 +1146,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("exceeded"), "{error}");
+    }
+
+    #[test]
+    fn native_new_validates_the_derived_systemd_run_tool() {
+        if unsafe { libc::geteuid() } == 0 {
+            // Root validation requires every tool to be an immutable Nix store
+            // executable, which this fixture cannot provide.
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let policy = fixture_policy(root.path());
+        for tool in [
+            &policy.tools.systemctl,
+            &policy.tools.nixos_container,
+            &policy.tools.nix_store,
+        ] {
+            script(tool, "#!/bin/sh\nexit 0\n");
+        }
+        let Err(error) = Native::new(&policy) else {
+            panic!("Native::new must reject a missing systemd-run");
+        };
+        assert!(error.contains("systemd_run"), "{error}");
+        script(
+            &policy.tools.systemctl.with_file_name("systemd-run"),
+            "#!/bin/sh\nexit 0\n",
+        );
+        let Err(error) = Native::new(&policy) else {
+            panic!("Native::new must still reject the fixture admission_check");
+        };
+        assert!(!error.contains("systemd_run"), "{error}");
     }
 
     #[test]
