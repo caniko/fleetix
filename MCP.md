@@ -1,5 +1,9 @@
 # Shared MCP adapters
 
+For the optional composable Rust protocol server and `fleetix mcp-serve`, see
+[MCP server](MCP_SERVER.md). The adapters below manage client registrations;
+they do not execute tools.
+
 Fleetix owns the server contract, client dialects, and managed-entry writer.
 Consumers own server packages, endpoints, credentials, and enablement. The opt-in
 module is independent of inference services and OpenPencil.
