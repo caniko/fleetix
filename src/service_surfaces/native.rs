@@ -1661,7 +1661,13 @@ mod tests {
             "command must not unlock the caller's lease"
         );
         drop(held);
-        HostLock::acquire(&policy).unwrap();
+        // The host-only keeper releases its lease copy once the group kill
+        // that ended the command reaches it; under load that takes a moment.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while let Err(error) = HostLock::acquire(&policy) {
+            assert!(Instant::now() < deadline, "{error}");
+            thread::sleep(POLL_INTERVAL);
+        }
     }
 
     #[test]
