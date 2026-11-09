@@ -204,7 +204,7 @@ pub(super) fn cgroups(root: &Path, depth: usize, min_bytes: u64, limit: usize) -
     }
     let mut found = Vec::new();
     walk(root, root, depth, min_bytes, &mut found);
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     let total = found.len();
     let cgroups: Vec<Value> = found.into_iter().take(limit).map(|(_, v)| v).collect();
     json!({"cgroups": cgroups, "matched": total})
