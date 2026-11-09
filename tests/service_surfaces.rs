@@ -964,7 +964,7 @@ fn boot_no_state_is_a_safe_noop() {
 }
 
 #[test]
-fn boot_refuses_pending_and_starts_only_durable_verified_releases() {
+fn boot_skips_the_pending_surface_and_starts_only_durable_verified_releases() {
     let root = TempDir::new().unwrap();
     let policy = test_policy(root.path());
     let first = artifact(1, "guest-system");
@@ -972,15 +972,56 @@ fn boot_refuses_pending_and_starts_only_durable_verified_releases() {
     let fake = Fake::new(&[&first, &second]);
     establish_pair(&policy, &fake, &first);
 
+    // A crashed deploy-dev leaves a pending dev operation. Boot starts the
+    // committed prod release, skips dev, and reports the refusal visibly.
     fake.set_activate_failure(Some((Surface::Dev, &second)));
     runtime::deploy_dev(&policy, &fake, &second).unwrap_err();
-    let refused = runtime::boot(&policy, &fake).unwrap_err();
-    assert!(refused.contains("refusing unattended boot"), "{refused}");
-    assert!(fake.starts.lock().unwrap().is_empty());
+    install_boot_artifacts(&policy, &first);
+    let report = runtime::boot(&policy, &fake).unwrap();
+    assert!(!report.ok());
+    assert_eq!(report.started, vec![Surface::Prod]);
+    assert_eq!(
+        fake.starts.lock().unwrap().clone(),
+        vec![(Surface::Prod, first.clone())]
+    );
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.errors[0].starts_with("dev:"), "{:?}", report.errors);
+    assert!(
+        report.errors[0].contains("refusing unattended boot"),
+        "{:?}",
+        report.errors
+    );
+    assert_eq!(fake.live_of(Surface::Prod).as_deref(), Some(first.as_str()));
+    assert_eq!(fake.live_of(Surface::Dev).as_deref(), Some(second.as_str()));
 
-    // A new fixture proves boot with no pending journal starts only the
-    // recorded prod release and verifies it. The previous crash stays pending
-    // in its own fixture by design.
+    // The converse: a pending prod operation must not keep dev down.
+    let root = TempDir::new().unwrap();
+    let policy = test_policy(root.path());
+    let first = artifact(1, "guest-system");
+    let second = artifact(2, "guest-system");
+    let fake = Fake::new(&[&first, &second]);
+    establish_pair(&policy, &fake, &first);
+    runtime::deploy_dev(&policy, &fake, &second).unwrap();
+    fake.set_activate_failure(Some((Surface::Prod, &second)));
+    runtime::promote(&policy, &fake, &second).unwrap_err();
+    install_boot_artifacts(&policy, &second);
+    let report = runtime::boot(&policy, &fake).unwrap();
+    assert!(!report.ok());
+    assert_eq!(report.started, vec![Surface::Dev]);
+    assert_eq!(
+        fake.starts.lock().unwrap().clone(),
+        vec![(Surface::Dev, second.clone())]
+    );
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.errors[0].starts_with("prod:"), "{:?}", report.errors);
+    assert!(
+        report.errors[0].contains("refusing unattended boot"),
+        "{:?}",
+        report.errors
+    );
+    assert_eq!(fake.live_of(Surface::Dev).as_deref(), Some(second.as_str()));
+
+    // With no pending journal boot starts and verifies both recorded releases.
     let root = TempDir::new().unwrap();
     let policy = test_policy(root.path());
     let first = artifact(1, "guest-system");
@@ -1067,11 +1108,11 @@ fn resume_restarts_committed_dev_after_reboot_during_initial_promotion() {
     fake.set_activate_failure(None);
     install_boot_artifacts(&policy, &first);
 
-    // A reboot stops both guests; unattended boot refuses the pending journal.
+    // A reboot stops both guests; unattended boot skips the pending prod
+    // surface (covered above), so resume must restart the committed dev
+    // release from its unchanged pin before forward-completing.
     fake.stop(Surface::Prod).unwrap();
     fake.stop(Surface::Dev).unwrap();
-    let refused = runtime::boot(&policy, &fake).unwrap_err();
-    assert!(refused.contains("refusing unattended boot"), "{refused}");
     assert!(runtime::recover(&policy, &fake, None).is_err());
     assert!(fake.starts.lock().unwrap().is_empty());
 

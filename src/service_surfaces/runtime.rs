@@ -1075,25 +1075,41 @@ pub fn resume(
 }
 
 /// Boot known durable deployments only. No journal creation, initialization,
-/// build or new release selection happens here. A pending transaction refuses
-/// unattended boot; a missing state directory is a safe no-op.
+/// build or new release selection happens here. A pending transaction blocks
+/// only its own surface: that surface is reported as an error and the other
+/// surface still starts. A missing state directory is a safe no-op.
 pub fn boot(policy: &Policy, backend: &dyn Backend) -> Result<BootReport, String> {
     policy.validate()?;
     let _lock = HostLock::acquire(policy)?;
     let state = load_state_readonly(policy)?;
-    if let Some(pending) = load_pending_readonly(policy)? {
-        pending.validate(policy)?;
-        if !pending.committed(&state)? {
-            return Err(format!(
-                "refusing unattended boot: pending {} operation {} at {}",
-                pending.operation.label(),
-                pending.id,
-                pending.phase
-            ));
+    let blocked = match load_pending_readonly(policy)? {
+        Some(pending) => {
+            pending.validate(policy)?;
+            if pending.committed(&state)? {
+                None
+            } else {
+                Some((
+                    pending.surface(),
+                    format!(
+                        "refusing unattended boot: pending {} operation {} at {}",
+                        pending.operation.label(),
+                        pending.id,
+                        pending.phase
+                    ),
+                ))
+            }
         }
-    }
+        None => None,
+    };
     let mut report = BootReport::default();
     for surface in [Surface::Dev, Surface::Prod] {
+        if let Some((_, error)) = blocked
+            .as_ref()
+            .filter(|(pending_surface, _)| *pending_surface == surface)
+        {
+            report.errors.push(format!("{surface}: {error}"));
+            continue;
+        }
         let Some(artifact) = state.record(surface).artifact() else {
             continue;
         };

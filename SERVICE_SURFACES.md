@@ -154,9 +154,9 @@ selected release for an initial install. After activation intent, an initial
 install has no rollback baseline: use guarded `resume` to forward-complete its
 exact candidate. Unknown live state never counts as an empty slot. Known stopped
 deployments can be started through `boot` before a new deployment; outstanding
-systemd jobs must finish first.
-Host reboot starts only committed surfaces under the configured
-host activation lock; pending operations remain blocked for recovery.
+systemd jobs must finish first. Host reboot starts only committed surfaces under
+the configured host activation lock; a pending operation blocks only its own
+surface, and the other surface still starts with the refusal reported.
 
 All host-activation frontends must share `lockPath`. Never remove a persistent
 lock anchor to clear contention. Set `manageLockAnchor = false` when the host
