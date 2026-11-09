@@ -105,18 +105,9 @@ its flags remain unchanged.
 
 ## Downstream boundary
 
-Fleetix owns the protocol, composition API and generic fleet operations.
-Toolbelt can add reusable architecture operations; Canix supplies fleet-specific
-defaults, credentials, roles and policy. Direct typed library calls are preferred.
-Legacy CLI commands using process-global stdout, signals or re-execution require
-explicit adapters; calling an entire CLI dispatcher inside this server is unsafe.
-
-This is the provider slice, not a claim of complete CLI coverage. Broader
-command coverage must account for each command, including interactive,
-pass-through and secret-revealing commands. Name-derived safety metadata must
-never authorize those operations. Publish and verify the provider on crates.io
-before changing downstream dependency versions. No toolbelt/Canix integration,
-release or deployment is implied by these source changes.
+Fleetix owns the protocol and composition API; consumers own their handlers,
+credentials and authorization policy. Do not run an entire CLI dispatcher inside
+this server, and never let name-derived safety metadata authorize an operation.
 
 ## Validation
 

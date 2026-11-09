@@ -70,7 +70,7 @@ fn read_snapshot(history: &Path, marker: &Marker) -> Result<Snapshot, String> {
             .train
             .fence
             .as_ref()
-            .is_none_or(|f| f.token != marker.token)
+            .is_some_and(|f| f.token != marker.token)
         || active_requests(&snapshot.train)? != 0
     {
         return Err("rollover snapshot contract changed".into());
@@ -78,20 +78,25 @@ fn read_snapshot(history: &Path, marker: &Marker) -> Result<Snapshot, String> {
     Ok(snapshot)
 }
 
-/// Archive a stopped, drained, fenced train and initialize a different policy.
+/// Archive a stopped, drained train and initialize a different policy.
 ///
 /// Every request must already be terminal; cancel pending requests explicitly
-/// through the original coordinator. This operation takes the coordinator and
-/// socket leases, preserves the entire old journal (including supersession and
-/// fence evidence), archives requests before releasing their roots, and publishes
-/// the new empty journal last. An interrupted handover blocks service startup and
-/// is completed only by repeating the exact configs and fence token. Historical
-/// status/retirement stays available, but old requests cannot execute or activate.
+/// through the original coordinator. When the journal retains a drain fence the
+/// exact token is required. An idle journal with no fence at all can be adopted
+/// without a token: a fence can only be taken by a live request, so a train that
+/// never drained (or has nothing left to drain) would otherwise be unrecoverable.
+/// The coordinator and socket leases still prove that no coordinator is running,
+/// and no pending or running work may remain in either case. This operation
+/// preserves the entire old journal (including supersession and fence evidence),
+/// archives requests before releasing their roots, and publishes the new empty
+/// journal last. An interrupted handover blocks service startup and is completed
+/// only by repeating the exact configs and token. Historical status/retirement
+/// stays available, but old requests cannot execute or activate.
 pub fn rollover(
     previous: &Config,
     next: &Config,
     backend: &dyn Backend,
-    token: &str,
+    token: Option<&str>,
 ) -> Result<PathBuf, String> {
     if previous.state_dir != next.state_dir
         || previous.socket != next.socket
@@ -139,7 +144,9 @@ pub fn rollover(
                 .join("receipt.json");
             if let Ok(file) = File::open(&path) {
                 let receipt: Marker = serde_json::from_reader(file).map_err(|e| e.to_string())?;
-                if receipt.previous == *previous && receipt.next == *next && receipt.token == token
+                if receipt.previous == *previous
+                    && receipt.next == *next
+                    && receipt.token == token.unwrap_or("")
                 {
                     read_snapshot(&history, &receipt)?;
                     if path != history.join(&receipt.snapshot).join("receipt.json") {
@@ -154,7 +161,7 @@ pub fn rollover(
     let (marker, snapshot) = if let Some(marker) = marker {
         if marker.previous != *previous
             || marker.next != *next
-            || marker.token != token
+            || marker.token != token.unwrap_or("")
             || marker.snapshot.len() != 64
             || !marker.snapshot.bytes().all(|b| b.is_ascii_hexdigit())
         {
@@ -171,12 +178,23 @@ pub fn rollover(
         {
             return Err("old journal does not match the original coordinator contract".into());
         }
-        let fence = current
-            .fence
-            .as_ref()
-            .ok_or("rollover requires the retained activation fence")?;
-        if fence.token != token || current.running() != 0 {
-            return Err("rollover fence changed or builders have not drained".into());
+        match (current.fence.as_ref(), token) {
+            (Some(fence), Some(token)) if fence.token == token => {}
+            (Some(_), _) => {
+                return Err("rollover fence changed or builders have not drained".into());
+            }
+            (None, Some(_)) => {
+                return Err(
+                    "rollover has no retained drain fence; omit the token to adopt an idle journal"
+                        .into(),
+                );
+            }
+            (None, None) => {}
+        }
+        if current.running() != 0 {
+            return Err(
+                "builders have not drained; stop the coordinator and wait for workers".into(),
+            );
         }
         if active_requests(&current)? != 0 {
             return Err("cancel pending requests explicitly before policy rollover".into());
@@ -221,7 +239,7 @@ pub fn rollover(
         let marker = Marker {
             previous: previous.clone(),
             next: next.clone(),
-            token: token.into(),
+            token: token.unwrap_or("").into(),
             snapshot: digest,
         };
         crate::fsutil::atomic_write(&marker_path, &json(&marker)?).map_err(|e| e.to_string())?;
@@ -237,7 +255,7 @@ pub fn rollover(
             .train
             .fence
             .as_ref()
-            .is_none_or(|f| f.token != token)
+            .is_some_and(|f| f.token != token.unwrap_or(""))
         || active_requests(&snapshot.train)? != 0
         || (json(&current)? != json(&snapshot.train)? && json(&current)? != json(&replacement)?)
     {

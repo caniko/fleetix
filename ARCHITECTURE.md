@@ -55,9 +55,12 @@ under queued work. A changed-policy service rejects the old journal.
 
 `build_train::runtime::rollover` is the explicit offline handover API. The caller
 owns host activation coordination and stops the old service after draining its
-exact activation fence. Pending requests must be cancelled individually; this
-API never cancels other requests implicitly. Both configurations must keep the
-same state and socket locations and select different policies.
+exact activation fence. An idle journal which never took a fence (a fence needs a
+live request) may be adopted without a token once both leases prove that no
+coordinator is running and no pending or running work remains. Pending requests
+must be cancelled individually; this API never cancels other requests implicitly.
+Both configurations must keep the same state and socket locations and select
+different policies.
 
 Rollover takes both coordinator leases, saves a checksum-bound snapshot of the
 old train and archives, and writes a durable interruption marker before retiring

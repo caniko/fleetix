@@ -9,10 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add the optional `mcp-server` feature: a composable Rust MCP server built on
+  the official `rmcp` SDK (re-exported as `fleetix::mcp_server::rmcp`), and
+  `fleetix mcp-serve PATH`, which serves an operator-selected topology snapshot,
+  evaluated once at startup, over stdio. The packaged `fleetix` binary enables
+  the feature. Downstream applications register typed handlers with their own
+  authorization. See [MCP server](MCP_SERVER.md).
 - `fleetix mcp-serve`: `fleetix_show` accepts a `fields` filter, and three
   read-only tools report the serving host's live memory
   (`fleetix_host_metrics`), cgroup v2 accounting (`fleetix_host_cgroups`) and
   kernel OOM kills (`fleetix_host_events`).
+
+### Fixed
+
+- `build-train rollover` can adopt a stopped, idle journal which never took a
+  drain fence. A fence requires a live request, so a train which finished and
+  retired its work before the policy changed could not be handed over at all and
+  the coordinator crash-looped on the persisted policy mismatch. Without a fence
+  the handover still holds the coordinator and socket leases and rejects pending
+  or running work; an existing fence still requires its exact token. `--token` is
+  now optional and is rejected when no fence exists.
+
+### Security
+
+- Require tokio 1.53.3 for the AsyncFd I/O safety fix (RUSTSEC-2026-0386).
 
 ## [0.9.1] - 2026-11-07
 
