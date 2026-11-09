@@ -19,6 +19,7 @@ include = [
   "/tests/**",
   "/README.md",
   "/MCP.md",
+  "/MCP_SERVER.md",
   "/SERVICE_PROFILES.md",
   "/SERVICE_SURFACES.md",
   "/ARCHITECTURE.md",
@@ -47,7 +48,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+# AsyncFd I/O safety fix (RUSTSEC-2026-0386).
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "time"] }
 clap = { version = "4", features = ["derive"] }
 
 [[bin]]
@@ -82,6 +84,9 @@ nix-manager-core = { version = "0.4.2", optional = true }
 signal-hook = { version = "0.4", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 ureq = { version = "3", features = ["json"], optional = true }
+rmcp = { version = "3.9.0", default-features = false, features = ["server", "transport-io"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+tokio-util = { version = "0.7", features = ["codec", "io"], optional = true }
 
 [features]
 default = ["cli"]
@@ -90,6 +95,7 @@ pkl = ["dep:pklx", "dep:tokio", "dep:fleetix-sidecar"]
 health = ["pkl", "dep:reqwest"]
 forge = ["dep:ureq"]
 mcp = ["dep:toml_edit", "dep:fs2"]
+mcp-server = ["dep:rmcp", "dep:tokio", "dep:tokio-util", "dep:futures-util", "tokio/io-util", "tokio/io-std", "tokio/sync"]
 build-train-runtime = ["dep:fs2", "dep:libc"]
 build-train-native = ["build-train-runtime", "dep:nix-manager-core"]
 build-train-cli = ["build-train-native", "dep:clap", "dep:signal-hook"]
@@ -101,3 +107,6 @@ service-surfaces-cli = ["service-surfaces-runtime", "dep:clap"]
 [dependencies.clap]
 workspace = true
 optional = true
+
+[dev-dependencies]
+rmcp = { version = "3.9.0", default-features = false, features = ["client", "server", "transport-io"] }

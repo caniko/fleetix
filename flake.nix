@@ -126,7 +126,7 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
-            cargoExtraArgs = "--package fleetix --features cli,build-train-cli,deployment-cli,service-surfaces-cli";
+            cargoExtraArgs = "--package fleetix --features cli,build-train-cli,deployment-cli,mcp-server,service-surfaces-cli";
             meta.mainProgram = "fleetix";
           });
 
