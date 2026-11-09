@@ -85,6 +85,7 @@
     # sidecar (Home Manager mirrors the active NixOS module when both are loaded)
     nixosModules.topology = import ./modules/topology.nix {fleetixLib = self.lib;};
     nixosModules.local-access = import ./modules/local-access.nix;
+    nixosModules.boot-operations = import ./modules/boot-operations.nix;
     nixosModules.service-surface-guest = import ./modules/service-surface-guest.nix;
     nixosModules.service-surfaces = {
       lib,
@@ -235,6 +236,7 @@
             pkgs.writeText "fleetix-build-train-policy.json" (builtins.toJSON contract);
           build-train-module = import ./tests/build-train-module.nix {inherit pkgs;};
           service-surfaces-module = assert import ./tests/service-surfaces-module.nix {inherit pkgs;}; pkgs.writeText "fleetix-service-surfaces-module" "paired service stacks and isolation verified\n";
+          boot-operations-vm = import ./tests/boot-operations-vm.nix {inherit pkgs;};
           service-surfaces-vm = import ./tests/service-surfaces-vm.nix {
             inherit pkgs;
             fleetixPackage = self.packages.${system}.fleetixCrate;

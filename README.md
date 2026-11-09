@@ -242,6 +242,36 @@ The declared Rust MSRV is 1.88, required by the resolved `pklr` dependency.
 CI also checks the pinned current stable Rust 1.96.1 toolchain so the minimum
 compatibility promise and modern compiler behavior are tested separately.
 
+## Boot operations
+
+`nixosModules.boot-operations` runs one-shot host maintenance during boot,
+while no user session or user service holds the affected state: renaming a
+tree that live processes reference by path, retiring a compatibility symlink,
+rewriting state a user service keeps open. Each operation is a oneshot unit
+ordered before `systemd-user-sessions.service` and guarded by
+`ConditionPathExists=/run/nologin`, which systemd creates only at boot. A live
+`switch` therefore leaves a newly declared operation pending until the next
+reboot instead of running it under active sessions.
+
+```nix
+{ pkgs, ... }:
+{
+  imports = [ fleetix.nixosModules.boot-operations ];
+  fleetix.bootOperations.rename-data = {
+    user = "alice";
+    commands = [ [ "${pkgs.coreutils}/bin/mv" "-T" "/srv/old" "/srv/new" ] ];
+    requiresMountsFor = [ "/srv" ];
+  };
+}
+```
+
+An operation runs once per definition: success records a marker under
+`/var/lib/fleetix/boot-operations/` keyed by a hash of its user, commands,
+environment and path, so changing any of them schedules it again (`once =
+false` runs it on every boot). A failure leaves no marker and is retried on the
+next boot; it never delays logins beyond `timeoutSeconds`. Inspect an operation
+with `systemctl status fleetix-boot-op-<name>`.
+
 ## Supply facts
 
 `fleetix::supply` merges producer facts (`fleetix.supply-facts.v1`), such as
