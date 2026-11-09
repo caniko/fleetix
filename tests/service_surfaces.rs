@@ -554,7 +554,10 @@ fn admission_failure_is_durable_blocks_changes_and_requires_explicit_recovery() 
     let dev_activations = fake.activations(Surface::Dev);
     fake.set_admission_failure(Some("dev database backup is stale"));
     let refused = runtime::deploy_dev(&policy, &fake, &third).unwrap_err();
-    assert!(refused.contains("dev database backup is stale"), "{refused}");
+    assert!(
+        refused.contains("dev database backup is stale"),
+        "{refused}"
+    );
     fake.set_admission_failure(None);
     let aborted = runtime::recover(&policy, &fake, None).unwrap();
     assert_eq!(

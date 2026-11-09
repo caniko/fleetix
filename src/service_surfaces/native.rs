@@ -430,7 +430,10 @@ impl Native {
         let unit = format!(
             "fleetix-surfaces-health-{}-{}-{}.scope",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
             SCOPE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         let mut scoped = vec![
@@ -1646,7 +1649,10 @@ mod tests {
         let error = native
             .run_health_scoped(&argv, Duration::from_secs(2), "release health check")
             .unwrap_err();
-        assert!(error.contains("release health check timed out after"), "{error}");
+        assert!(
+            error.contains("release health check timed out after"),
+            "{error}"
+        );
         assert!(
             fs::read_to_string(&escaped_marker).is_ok(),
             "escape worker never completed setsid()"
@@ -1666,7 +1672,11 @@ mod tests {
         );
         assert!(killed.contains(unit.trim()), "{killed}");
 
-        let escaped: i32 = fs::read_to_string(&escaped_pid).unwrap().trim().parse().unwrap();
+        let escaped: i32 = fs::read_to_string(&escaped_pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         while unsafe { libc::kill(escaped, 0) } == 0 {
             assert!(
