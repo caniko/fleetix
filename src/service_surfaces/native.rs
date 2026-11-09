@@ -435,6 +435,10 @@ impl Native {
             // If this process dies before cleanup, systemd SIGKILLs the scope
             // 500 ms after the command timeout: after the live timeout path,
             // before the crash keeper releases the lease at one second.
+            // ponytail: the keeper's clock starts before the scope's, so slow
+            // scope startup can let an escaped hook outlive the lease after a
+            // CLI crash; have the keeper confirm the scope cgroup is empty if
+            // that overlap must be impossible.
             format!("--property=RuntimeMaxSec={}ms", timeout.as_millis() + 500),
             "--property=KillSignal=SIGKILL".into(),
             "--".into(),
