@@ -339,7 +339,7 @@ fn validate_service(service: &Service) -> Result<(), String> {
 }
 
 /// Caller holds the host activation lease and stops the old service first.
-pub fn rollover(previous: Service, next: Service, token: &str) -> Result<PathBuf, String> {
+pub fn rollover(previous: Service, next: Service, token: Option<&str>) -> Result<PathBuf, String> {
     validate_service(&previous)?;
     validate_service(&next)?;
     if previous.builder != next.builder || previous.native.gc_roots != next.native.gc_roots {

@@ -38,7 +38,7 @@ fn operator_bound_admission_keeps_version_two_parity_and_rejects_ownership_trans
     next.coordinator.policy = policy_identity(&next).unwrap();
     assert_ne!(next.coordinator.policy, service.coordinator.policy);
     assert_eq!(
-        rollover(service, next, "unused").unwrap_err(),
+        rollover(service, next, Some("unused")).unwrap_err(),
         "policy rollover cannot transfer operator ownership"
     );
 }
@@ -91,7 +91,7 @@ fn rollover_rejects_changed_ownership_and_invalid_contracts_before_touching_stat
         if field == "policy" {
             next.coordinator.policy = "unverified-policy".into();
         }
-        assert!(rollover(previous.clone(), next, "token").is_err());
+        assert!(rollover(previous.clone(), next, Some("token")).is_err());
         assert_eq!(
             std::fs::read_to_string(&journal).unwrap(),
             "original recovery evidence"
