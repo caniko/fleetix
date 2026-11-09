@@ -887,12 +887,34 @@ pub fn resume(
                     state.dev.artifact().unwrap_or("none")
                 ));
             }
-            let live_dev = backend.observe(Surface::Dev)?;
-            if live_dev != *expected_dev {
-                return Err(format!(
-                    "promote resume refused: live dev system {live_dev} does not match \
-                     expected dev {expected_dev}"
-                ));
+            match backend.observe(Surface::Dev) {
+                Ok(live_dev) => {
+                    if live_dev != *expected_dev {
+                        return Err(format!(
+                            "promote resume refused: live dev system {live_dev} does not match \
+                             expected dev {expected_dev}"
+                        ));
+                    }
+                }
+                Err(error) => {
+                    // A reboot stops both guests while the journal stays
+                    // pending. Only a provably inactive guest is restarted,
+                    // from its unchanged pinned release, and verified before
+                    // the promotion continues; nothing is evaluated or rebuilt.
+                    backend.idle(Surface::Dev)?;
+                    if !backend.inactive(Surface::Dev)? {
+                        return Err(format!(
+                            "promote resume refused: cannot verify live dev system before \
+                             resume: {error}; the guest is not confirmed inactive"
+                        ));
+                    }
+                    boot_surface(policy, backend, Surface::Dev, expected_dev).map_err(|boot| {
+                        format!(
+                            "promote resume refused: could not restart the committed dev \
+                             release after observation failed ({error}): {boot}"
+                        )
+                    })?;
+                }
             }
             health_bounded(policy, backend, Surface::Dev, expected_dev)?;
         }

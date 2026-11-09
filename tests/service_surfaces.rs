@@ -952,6 +952,41 @@ fn resume_completes_initial_prod_after_activation_failure() {
 }
 
 #[test]
+fn resume_restarts_committed_dev_after_reboot_during_initial_promotion() {
+    let root = TempDir::new().unwrap();
+    let policy = test_policy(root.path());
+    let first = artifact(1, "guest-system");
+    let fake = Fake::new(&[&first]);
+    runtime::deploy_dev(&policy, &fake, &first).unwrap();
+    fake.set_activate_failure(Some((Surface::Prod, &first)));
+    runtime::promote(&policy, &fake, &first).unwrap_err();
+    fake.set_activate_failure(None);
+    install_boot_artifacts(&policy, &first);
+
+    // A reboot stops both guests; unattended boot refuses the pending journal.
+    fake.stop(Surface::Prod).unwrap();
+    fake.stop(Surface::Dev).unwrap();
+    let refused = runtime::boot(&policy, &fake).unwrap_err();
+    assert!(refused.contains("refusing unattended boot"), "{refused}");
+    assert!(runtime::recover(&policy, &fake, None).is_err());
+    assert!(fake.starts.lock().unwrap().is_empty());
+
+    let report = runtime::resume(&policy, &fake, None).unwrap();
+    assert_eq!(report.surface, Surface::Prod);
+    assert_eq!(report.artifact, first);
+    assert_eq!(
+        fake.starts.lock().unwrap().clone(),
+        vec![(Surface::Dev, first.clone())],
+        "resume must restart only the unchanged committed dev release"
+    );
+    let status = state_of(&policy, &fake);
+    assert!(status.pending.is_none());
+    assert_eq!(status.state.dev.artifact.as_deref(), Some(first.as_str()));
+    assert_eq!(status.state.prod.artifact.as_deref(), Some(first.as_str()));
+    assert_eq!(fake.live_of(Surface::Prod).as_deref(), Some(first.as_str()));
+}
+
+#[test]
 fn resume_rejects_mutated_dev_and_admission_refusal_keeps_pending() {
     let root = TempDir::new().unwrap();
     let policy = test_policy(root.path());
