@@ -47,6 +47,7 @@ jobs:
           - ".#checks.x86_64-linux.deployment-runtime"
           - ".#checks.x86_64-linux.service-surfaces-module"
           - ".#checks.x86_64-linux.service-surfaces-vm"
+          - ".#checks.x86_64-linux.boot-operations-vm"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
