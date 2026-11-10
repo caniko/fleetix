@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
       XDG_CACHE_HOME: "/tmp/.cache"
@@ -152,8 +152,11 @@ jobs:
         run: nix develop -c cargo clippy --locked -p fleetix --all-targets --all-features -- -D warnings
       - name: Document fleetix
         run: nix develop -c cargo doc --locked -p fleetix --no-deps --all-features
-      - name: Package coordinated release set
-        run: nix develop -c cargo package --locked --allow-dirty --no-verify -p fleetix-sidecar -p fleetix --target-dir "$RUNNER_TEMP/simit-package-target"
+      - name: Verify and package coordinated release set
+        run: |
+          set -euo pipefail
+          nix develop -c cargo --version | awk '{split($2, v, "."); exit !(v[1] > 1 || v[2] >= 89)}' || { echo 'Verifying a coordinated release set needs cargo >= 1.89 (temporary local registry overlay); pin a newer toolchain' >&2; exit 1; }
+          nix develop -c cargo package --locked --allow-dirty -p fleetix-sidecar -p fleetix --target-dir "$RUNNER_TEMP/simit-package-target"
       - name: Build immutable archive fleetix-sidecar
         run: |
           set -euo pipefail
@@ -161,6 +164,8 @@ jobs:
           test "$(nix develop -c cargo pkgid --locked -p fleetix-sidecar | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)" = "$version"
           mkdir -p "$RUNNER_TEMP/simit-crates/fleetix-sidecar"
           cp "$RUNNER_TEMP/simit-package-target/package/fleetix-sidecar-$version.crate" "$RUNNER_TEMP/simit-crates/fleetix-sidecar/"
+          size="$(wc -c < "$RUNNER_TEMP/simit-crates/fleetix-sidecar/fleetix-sidecar-$version.crate")"
+          test "$size" -le 10485760 || { echo "crate fleetix-sidecar archive is $size bytes, over the crates.io upload limit of 10485760 bytes (10 MiB)" >&2; exit 1; }
       - name: Retain original-run archive fleetix-sidecar
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -176,6 +181,8 @@ jobs:
           test "$(nix develop -c cargo pkgid --locked -p fleetix | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)" = "$version"
           mkdir -p "$RUNNER_TEMP/simit-crates/fleetix"
           cp "$RUNNER_TEMP/simit-package-target/package/fleetix-$version.crate" "$RUNNER_TEMP/simit-crates/fleetix/"
+          size="$(wc -c < "$RUNNER_TEMP/simit-crates/fleetix/fleetix-$version.crate")"
+          test "$size" -le 10485760 || { echo "crate fleetix archive is $size bytes, over the crates.io upload limit of 10485760 bytes (10 MiB)" >&2; exit 1; }
       - name: Retain original-run archive fleetix
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
