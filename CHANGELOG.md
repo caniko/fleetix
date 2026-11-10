@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only tools report the serving host's live memory
   (`fleetix_host_metrics`), cgroup v2 accounting (`fleetix_host_cgroups`) and
   kernel OOM kills (`fleetix_host_events`).
+- `fleetix.homeModules.mcp`: `fleetix.mcp.topologyServer.{enable,file}` registers
+  `fleetix mcp-serve` as the `fleetix` server with `pkl` and `journalctl` on its
+  `PATH`, so consumers stop wiring the binary by hand.
 
 ### Fixed
 

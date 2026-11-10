@@ -93,6 +93,17 @@ The server registers six typed read tools:
 | `fleetix_host_cgroups` | Optional `depth`, `min_bytes`, `limit` | Live cgroup v2 memory accounting, largest first |
 | `fleetix_host_events` | Optional `since` (journalctl syntax) | Kernel OOM kills with cgroup, victim and killed-process counts |
 
+With `fleetix.homeModules.mcp`, register this server for every enabled harness
+by naming the snapshot; the module supplies the packaged binary, `pkl` and
+`journalctl`:
+
+```nix
+fleetix.mcp.topologyServer = {
+  enable = true;
+  file = "${inputs.self}/lib/topology/Topology.pkl";
+};
+```
+
 The `fleetix_host_*` tools read the host running the server, not the topology:
 `/proc`, `/sys/fs/cgroup`, DRM sysfs and the kernel journal, with the server
 process's permissions. Unreadable sources are omitted; `null` limits mean an

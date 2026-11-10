@@ -23,6 +23,10 @@
             codex.enable = true;
             zed.enable = true;
           };
+          topologyServer = {
+            enable = true;
+            file = "/etc/fleet/Topology.pkl";
+          };
           servers = {
             drawing = {
               command = "/bin/drawing";
@@ -49,6 +53,9 @@ in
   assert (cfg.fleetix.mcp.rendered.omp.mcpServers.secret.env or {}) == {};
   assert lib.hasPrefix "/nix/store/" cfg.fleetix.mcp.rendered.omp.mcpServers.secret.command;
   assert cfg.programs.zed-editor.userSettings.context_servers.graph.url == "http://localhost:8781/mcp";
+  assert cfg.fleetix.mcp.servers.fleetix.args == ["mcp-serve" "/etc/fleet/Topology.pkl"];
+  assert lib.hasSuffix "/bin/hello" cfg.fleetix.mcp.servers.fleetix.command;
+  assert lib.hasInfix "pkl" cfg.fleetix.mcp.servers.fleetix.env.PATH;
   assert builtins.length cfg.fleetix.mcp.manifest.targets == 1;
   assert (builtins.head cfg.fleetix.mcp.manifest.targets).name == "codex";
   assert builtins.hasAttr "fleetixMcp" cfg.home.activation;
