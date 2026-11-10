@@ -127,6 +127,8 @@
           // {
             inherit cargoArtifacts;
             doCheck = true;
+            # Supply observation tests commit throwaway repositories.
+            nativeCheckInputs = [pkgs.git];
             cargoExtraArgs = "--package fleetix --features cli,build-train-cli,deployment-cli,mcp-server,service-surfaces-cli";
             meta.mainProgram = "fleetix";
           });
@@ -255,6 +257,8 @@
             // {
               inherit cargoArtifacts;
               cargoExtraArgs = "--workspace --all-features";
+              # cargoTest runs the suite in its build phase; see fleetixCrate.
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.git];
             }
           );
 

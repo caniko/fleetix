@@ -3,16 +3,26 @@
 
 mod host;
 
-use std::{future::ready, path::Path, sync::Arc};
+use std::{future::ready, path::Path, path::PathBuf, sync::Arc};
 
 use crate::Topology;
 use crate::mcp_server::{Effect, Server, rmcp};
+use crate::supply;
 use rmcp::handler::server::{
     common::schema_for_input, router::tool::ToolRoute, wrapper::Parameters,
 };
 use rmcp::model::{CallToolResult, Tool, ToolAnnotations};
 use rmcp::{ErrorData, schemars};
 use serde::{Deserialize, Serialize};
+
+/// Startup-selected workspace for the supply tools. Tool arguments can never
+/// choose another root, inventory or facts set.
+#[derive(Debug, Clone)]
+pub(super) struct SupplyConfig {
+    pub root: PathBuf,
+    pub inventory: PathBuf,
+    pub facts: Vec<PathBuf>,
+}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -52,7 +62,19 @@ struct LinkSelection {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-pub(super) fn server(topology: Topology) -> Result<Server, ErrorData> {
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SupplyConsumersSelection {
+    /// Producer coordinate, renamed repository or mirror alias.
+    producer: String,
+    /// Target revision; consumers that do not pin it are reported `behind`.
+    target: Option<String>,
+}
+
+pub(super) fn server(
+    topology: Topology,
+    supply_config: Option<SupplyConfig>,
+) -> Result<Server, ErrorData> {
     let topology = Arc::new(topology);
     let mut server = Server::new("fleetix", env!("CARGO_PKG_VERSION"))
         .with_authorizer(|call| call.effect == Effect::Read);
@@ -150,7 +172,109 @@ pub(super) fn server(topology: Topology) -> Result<Server, ErrorData> {
             move |Parameters(_): Parameters<Empty>| ready(validation(&topology)),
         ),
     )?;
+
+    if let Some(config) = supply_config {
+        let config = Arc::new(config);
+        let consumers_config = Arc::clone(&config);
+        server.register(
+            Effect::Read,
+            ToolRoute::new(
+                tool::<SupplyConsumersSelection>(
+                    "fleetix_supply_consumers",
+                    "Repositories that pin a producer, optionally behind a target revision",
+                )?,
+                move |Parameters(args): Parameters<SupplyConsumersSelection>| {
+                    let config = Arc::clone(&consumers_config);
+                    async move {
+                        let producer = args.producer;
+                        let target = args.target;
+                        blocking(move || {
+                            let graph = load_graph(&config)?;
+                            serde_json::to_value(supply::consumers(
+                                &graph,
+                                &producer,
+                                target.as_deref(),
+                            ))
+                            .map_err(|error| miette::miette!("serialize consumers: {error}"))
+                        })
+                        .await
+                    }
+                },
+            ),
+        )?;
+        server.register(
+            Effect::Read,
+            ToolRoute::new(
+                tool::<Empty>(
+                    "fleetix_supply_refresh",
+                    "Observe the configured workspace, store the snapshot and return its diff",
+                )?,
+                move |Parameters(_): Parameters<Empty>| {
+                    let config = Arc::clone(&config);
+                    async move { blocking(move || refresh(&config)).await }
+                },
+            ),
+        )?;
+    }
     Ok(server)
+}
+
+/// Run blocking filesystem and git work off the async runtime and turn a
+/// domain failure into a structured tool error.
+async fn blocking(
+    work: impl FnOnce() -> miette::Result<serde_json::Value> + Send + 'static,
+) -> Result<CallToolResult, ErrorData> {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(Ok(value)) => encoded(&value),
+        Ok(Err(error)) => Ok(CallToolResult::structured_error(serde_json::json!({
+            "code": "supply_failed",
+            "message": error.to_string(),
+        }))),
+        Err(_) => Err(ErrorData::internal_error("supply observer failed", None)),
+    }
+}
+
+/// The stored snapshot, observing once when none exists yet.
+fn load_graph(config: &SupplyConfig) -> miette::Result<supply::Graph> {
+    match supply::load_snapshot(&config.root)? {
+        Some(graph) => Ok(graph),
+        None => store_refresh(config).map(|(graph, _)| graph),
+    }
+}
+
+fn observe_graph(config: &SupplyConfig) -> miette::Result<supply::Graph> {
+    let text = std::fs::read_to_string(&config.inventory)
+        .map_err(|error| miette::miette!("read {}: {error}", config.inventory.display()))?;
+    let repos: Vec<supply::ObservedRepo> = serde_json::from_str(&text)
+        .map_err(|error| miette::miette!("parse {}: {error}", config.inventory.display()))?;
+    let mut docs = vec![supply::observe(&config.root, &repos)];
+    for path in &config.facts {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| miette::miette!("read {}: {error}", path.display()))?;
+        docs.extend(supply::parse(&text)?);
+    }
+    Ok(supply::build(&docs, None))
+}
+
+fn store_refresh(config: &SupplyConfig) -> miette::Result<(supply::Graph, supply::DiffReport)> {
+    let graph = observe_graph(config)?;
+    let previous = supply::load_snapshot(&config.root)?;
+    supply::save_snapshot(&config.root, &graph)?;
+    let diff = supply::diff(
+        previous.as_ref().unwrap_or(&supply::Graph::default()),
+        &graph,
+    );
+    Ok((graph, diff))
+}
+
+fn refresh(config: &SupplyConfig) -> miette::Result<serde_json::Value> {
+    let (graph, diff) = store_refresh(config)?;
+    Ok(serde_json::json!({
+        "store": supply::store_path(&config.root),
+        "diff": diff,
+        "errors": &graph.errors,
+        "conflicts": &graph.conflicts,
+    }))
 }
 
 fn tool<T: schemars::JsonSchema + 'static>(
@@ -250,10 +374,13 @@ mod tests {
                 ..Default::default()
             };
             let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-            let serving =
-                tokio::spawn(
-                    async move { server(topology).unwrap().serve(server_io).await.unwrap() },
-                );
+            let serving = tokio::spawn(async move {
+                server(topology, None)
+                    .unwrap()
+                    .serve(server_io)
+                    .await
+                    .unwrap()
+            });
             let client = ().serve(client_io).await.unwrap();
             let running = serving.await.unwrap();
             let names: Vec<_> = client
@@ -303,6 +430,31 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn supply_tools_are_registered_only_with_startup_flags() {
+        use rmcp::ServerHandler;
+
+        let topology = || crate::Topology {
+            schema_version: 2,
+            ..Default::default()
+        };
+        let plain = server(topology(), None).unwrap();
+        assert!(plain.get_tool("fleetix_supply_refresh").is_none());
+
+        let configured = server(
+            topology(),
+            Some(SupplyConfig {
+                root: std::path::PathBuf::from("/workspace"),
+                inventory: std::path::PathBuf::from("/workspace/inventory.json"),
+                facts: Vec::new(),
+            }),
+        )
+        .unwrap();
+        assert!(configured.get_tool("fleetix_supply_consumers").is_some());
+        assert!(configured.get_tool("fleetix_supply_refresh").is_some());
+        assert!(configured.get_tool("fleetix_show").is_some());
     }
 
     #[test]
