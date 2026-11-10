@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `fleetix::status`: the serialized fleet operations snapshot (per-host
+  health and running revision, service alerts read from Gatus endpoint
+  statuses, pending privileged operations and the last nightly update run)
+  with the judgements derived from it. The module performs no I/O.
 - Add paired full-stack dev/prod service surfaces: optional host topology
   declarations, NixOS host/guest modules, immutable-output promotion and guarded
   recovery through the standalone `fleetix-surfaces` frontend. Persistent data

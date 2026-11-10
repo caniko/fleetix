@@ -19,6 +19,7 @@ pub mod pkl_to_nix;
 pub mod publication;
 pub mod review_pin;
 pub mod service_surfaces;
+pub mod status;
 pub mod supply;
 pub mod topology;
 pub mod trust;
