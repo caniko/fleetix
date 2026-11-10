@@ -24,6 +24,7 @@ so a reader never misreads a newer contract.
   "vocabulary": "simit.usage-facts.v1",
   "producer": {"name": "simit", "version": "0.21.0"},
   "observedAt": "2026-10-26T06:00:00Z",
+  "usageKinds": ["flake-input", "ci.primary"],
   "nodes": [],
   "edges": [],
   "capabilities": [],
@@ -38,20 +39,31 @@ so a reader never misreads a newer contract.
 | capability | `usageKind`, `match` (string map), `path`, `via`, `lands`, `orchestrator?`, `status` (`implemented`, `planned` or `unsupported`), `blocker?`, `reason`, `fallback?` |
 | error | `subject` (a node id or input path), `code`, `message` |
 
-`observedAt` is RFC 3339 UTC. `nodes`, `edges`, `capabilities` and `errors`
-default to empty, and `attrs`, `expects` and `blockers` too.
+`observedAt` is RFC 3339 UTC. `nodes`, `edges`, `capabilities`, `errors` and
+`usageKinds` default to empty, and `attrs`, `expects` and `blockers` too.
+
+`usageKinds` scopes the document's vocabulary: when it is non-empty, every
+capability row must name one of its kinds, and `parse` rejects the document
+otherwise. An empty (or omitted) `usageKinds` keeps the legacy behaviour where
+a row applies to every usage of its kind. This closes the cross-producer hole
+where one producer's `flake-input` row silently covered another producer's
+usage.
 
 ### Node ids
 
 | Id | Kind |
 | --- | --- |
 | `repo:<coordinate>` | `repo`; a coordinate is `host/owner/name` and never contains `#` |
+| `producer:<coordinate>` | `producer`; a repository that publishes a tool or flake |
 | `usage:<coordinate>#<usageKind>[:<locator>]` | `usage`; the repository is everything before `#` |
 | `rev:<source>@<revision>` | `rev` |
 | `runner:<forgeHost>/<label>` | `runner` |
 | `cache:<name>` | `cache` |
 | `orchestrator:<kind>/<name>` | `orchestrator` |
 | `workflow:<coordinate>#<path>` | `workflow`; one CI workflow file |
+
+The host part of a coordinate is case-insensitive and is stored lowercase;
+owner and name keep their spelling.
 
 Fleetix reads only these attributes and edges:
 
@@ -64,6 +76,68 @@ Fleetix reads only these attributes and edges:
   and optional `attrs.reason` and `attrs.blocker`. Other edge kinds, such as
   `uses`, `contains`, `pins`, `runsOn` and `via`, can be walked but carry no
   rule.
+
+### Producers and aliases
+
+A producer declares itself with `producer:<coordinate>` and these attributes:
+
+| Attribute | Meaning |
+| --- | --- |
+| `aliases` | Other coordinates that name the same producer: renamed repositories and mirrors |
+| `defaultBranch` | The branch observations and landing should follow |
+| `tip` | The current producer revision, when known |
+
+`build` folds aliases into the producer's canonical coordinate before merging.
+Every node id and edge endpoint that embeds an aliased coordinate (`repo:`,
+`producer:`, `usage:<coordinate>#…`, `workflow:<coordinate>#…`,
+`rev:<coordinate>@…`) is rewritten, so `codeberg.org/caniko/rs-harbor` and
+`github.com/caniko/rs-harbor` join `github.com/caniko/harbor-rs`. Alias chains
+resolve transitively; one alias declared by two producers is a
+`contract-conflict` and resolves to the lexicographically first canonical
+coordinate.
+
+## Observation
+
+`supply::observe(root, repos)` reads each repository's committed
+`flake.lock` and `Cargo.lock` with `git show` against `origin/HEAD` (falling
+back to the declared default branch, then `HEAD`). There is no network access
+and no Nix evaluation, so an uncommitted or stashed lock file never enters the
+facts. A missing lock file means no usages; a git or parse failure becomes a
+`FactError` for that repository and the other repositories are still observed.
+
+`repos` is a list of `{coordinate, relativePath, defaultBranch?}`; the CLI and
+MCP server read the same shape from an inventory document. Observation emits:
+
+- one `repo:<coordinate>` node with `attrs.relativePath`;
+- one usage per git or github input, `usage:<repo>#flake-input:<input>` with
+  `usageKind: "flake-input"`, `path`, `input`, `direct`, `lockedRev` and
+  `state: "unknown"`. `input` is the root input name for a direct input and the
+  lock node key otherwise; array-valued root inputs are `follows` and are not
+  producers. `path` inputs are never producers;
+- one usage per Cargo git dependency, `usage:<repo>#cargo-git:<package>`, with
+  `path: "Cargo.lock"` and the same revision attribute;
+- `uses` (repository to usage) and `pins` (usage to
+  `rev:<producer>@<revision>`) edges.
+
+Coordinates come from the lock's `original` spec, falling back to `locked`.
+`git+`, `ssh://git@`, scp-style `git@host:owner/name`, query strings and a
+`.git` suffix are stripped. Observation does not apply aliases: that is
+`build`'s job, so producer facts decide how names join.
+
+## Snapshots and consumers
+
+`store_path(root)` is
+`$XDG_STATE_HOME/fleetix/supply/<sha256(root) first 16 hex>/graph.json`
+(`~/.local/state` when `XDG_STATE_HOME` is unset). `save_snapshot` writes it
+atomically; `load_snapshot` reads it back. `diff(previous, next)` returns
+`fleetix.supply-diff.v1`: per producer, `added`, `removed` and
+`revisionChanged` maps keyed by usage id, with the revisions each side pinned.
+
+`consumers(graph, producer, target)` returns `fleetix.supply-consumers.v1`.
+Each item is `{coordinate, relativePath, usage, input, direct, lockedRevs,
+target, behind}`. The producer may be an alias; it resolves to the canonical
+coordinate. `behind` is true when a target revision is given and the usage does
+not pin it. `fleetix_supply_consumers` exposes the same query over MCP.
 
 ## Topology supply
 
@@ -192,19 +266,33 @@ fleetix supply gaps --facts F... [--topology P] [--by blocker|repo] [--format hu
 fleetix supply path <node|coordinate> --facts F... [--reverse] [--depth N] [--format human|json]
 fleetix supply graph --facts F...
 fleetix supply budget --facts F... --topology P [--updates-per-month N] [--orchestrator KIND] [--format human|json]
+fleetix supply observe --root DIR --inventory FILE [--facts F...] [--store] [--format human|json]
+fleetix supply consumers PRODUCER [--target REV] (--root DIR | --facts F...) [--format human|json]
+fleetix supply diff --from GRAPH --to GRAPH [--format human|json]
 ```
 
 Each `--facts` file holds one document or a JSON array of documents.
 `--topology` loads and validates a Pkl topology for R6 and budgets.
 `--max-age-days` warns on stderr about documents observed longer ago than that.
-Human output is Markdown tables. `--format json` prints the
-`fleetix.supply-gaps.v1`, `fleetix.supply-path.v1` or
-`fleetix.supply-budget.v1` report. `graph` prints the merged graph, including
-merge conflicts, as `fleetix.supply-graph.v1` JSON.
+The `observe` inventory is
+`[{"coordinate": "...", "relativePath": "...", "defaultBranch": "..."}]`
+(`defaultBranch` optional); `--facts` merges producer documents with the
+observation. With `--store`, the snapshot is written and the diff against the
+previous snapshot is printed (an empty previous graph on the first run).
+`consumers --root DIR` reads the snapshot that `observe --root DIR --store`
+saved, so no facts file is needed after a refresh.
+`diff` reads two stored `fleetix.supply-graph.v1` documents.
 
-Exit codes: 2 for a document that is not valid facts or a budget without a
-topology, 3 for an unreadable file, 4 for an unknown `path` node, and 1 for a
-topology that fails to evaluate.
+Human output is Markdown tables. `--format json` prints the
+`fleetix.supply-gaps.v1`, `fleetix.supply-path.v1`,
+`fleetix.supply-budget.v1`, `fleetix.supply-diff.v1` or
+`fleetix.supply-consumers.v1` report. `graph` prints the merged graph,
+including merge conflicts and its contract, as `fleetix.supply-graph.v1` JSON;
+`observe --store --format json` prints `{"graph": ..., "diff": ...}`.
+
+Exit codes: 2 for a document that is not valid facts, an unreadable inventory
+or graph, or a budget without a topology; 3 for an unreadable file; 4 for an
+unknown `path` node; and 1 for a topology that fails to evaluate.
 
 ## Recommended blocker vocabulary
 
