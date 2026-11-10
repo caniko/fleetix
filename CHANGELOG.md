@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [--supply-facts F...]` registers the read-only `fleetix_supply_consumers`
   and `fleetix_supply_refresh` tools. Without the flags the catalog is
   unchanged. See [MCP server](MCP_SERVER.md).
+- `fleetix.homeModules.mcp`: `fleetix.mcp.topologyServer.{enable,file}` registers
+  `fleetix mcp-serve` as the `fleetix` server with `pkl` and `journalctl` on its
+  `PATH`, so consumers stop wiring the binary by hand.
 
 ### Fixed
 

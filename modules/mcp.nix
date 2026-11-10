@@ -190,6 +190,13 @@ in {
       type = types.attrsOf serverType;
       default = {};
     };
+    topologyServer = {
+      enable = lib.mkEnableOption "the read-only `fleetix mcp-serve` topology and host server, registered as `fleetix`";
+      file = mkOption {
+        type = types.str;
+        description = "Pkl topology module the server evaluates once at startup.";
+      };
+    };
     harnesses = mkOption {
       type = types.attrsOf harnessType;
       default = {};
@@ -238,6 +245,14 @@ in {
         export PATH=${lib.escapeShellArg "${config.home.profileDirectory}/bin"}:$PATH
         run ${lib.getExe cfg.package} mcp --manifest ${json.generate "fleetix-mcp.json" manifest} --state ${lib.escapeShellArg cfg.stateFile}
       '';
+    })
+    (mkIf (cfg.topologyServer.enable && cfg.package != null) {
+      fleetix.mcp.servers.fleetix = {
+        command = lib.getExe cfg.package;
+        args = ["mcp-serve" cfg.topologyServer.file];
+        # pkl evaluates the snapshot; journalctl backs fleetix_host_events.
+        env.PATH = lib.mkDefault (lib.makeBinPath ([pkgs.pkl] ++ lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.systemd));
+      };
     })
     (mkIf (native "opencode") {programs.opencode.settings.mcp = rendered.opencode.mcp;})
     (mkIf (native "zed") {programs.zed-editor.userSettings.context_servers = rendered.zed.context_servers;})
