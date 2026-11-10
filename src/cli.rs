@@ -237,8 +237,12 @@ pub enum SupplyCommand {
         /// Target revision; consumers that do not pin it are `behind`.
         #[arg(long)]
         target: Option<String>,
-        #[command(flatten)]
-        input: SupplyInput,
+        /// Read the snapshot `supply observe --store` saved for this root.
+        #[arg(long, conflicts_with = "facts")]
+        root: Option<PathBuf>,
+        /// Facts document, or a JSON array of documents (repeatable).
+        #[arg(long, required_unless_present = "root")]
+        facts: Vec<PathBuf>,
         #[arg(long, value_enum, default_value = "human")]
         format: OutputFormat,
     },
@@ -1183,10 +1187,32 @@ async fn run_supply(subcommand: SupplyCommand) -> Result<(), CliError> {
         SupplyCommand::Consumers {
             producer,
             target,
-            input,
+            root,
+            facts,
             format,
         } => {
-            let report = supply::consumers(&load(&input).await?, &producer, target.as_deref());
+            let graph = match root {
+                Some(root) => supply::load_snapshot(&root)
+                    .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?
+                    .ok_or_else(|| {
+                        CliError::new(
+                            EXIT_NOT_FOUND,
+                            format!(
+                                "no supply snapshot for {}; run `fleetix supply observe --store`",
+                                root.display()
+                            ),
+                        )
+                    })?,
+                None => {
+                    load(&SupplyInput {
+                        facts,
+                        topology: None,
+                        max_age_days: None,
+                    })
+                    .await?
+                }
+            };
+            let report = supply::consumers(&graph, &producer, target.as_deref());
             if format == OutputFormat::Json {
                 return json_out(&report);
             }

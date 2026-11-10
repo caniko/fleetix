@@ -267,7 +267,7 @@ fleetix supply path <node|coordinate> --facts F... [--reverse] [--depth N] [--fo
 fleetix supply graph --facts F...
 fleetix supply budget --facts F... --topology P [--updates-per-month N] [--orchestrator KIND] [--format human|json]
 fleetix supply observe --root DIR --inventory FILE [--facts F...] [--store] [--format human|json]
-fleetix supply consumers PRODUCER [--target REV] --facts F... [--format human|json]
+fleetix supply consumers PRODUCER [--target REV] (--root DIR | --facts F...) [--format human|json]
 fleetix supply diff --from GRAPH --to GRAPH [--format human|json]
 ```
 
@@ -279,6 +279,8 @@ The `observe` inventory is
 (`defaultBranch` optional); `--facts` merges producer documents with the
 observation. With `--store`, the snapshot is written and the diff against the
 previous snapshot is printed (an empty previous graph on the first run).
+`consumers --root DIR` reads the snapshot that `observe --root DIR --store`
+saved, so no facts file is needed after a refresh.
 `diff` reads two stored `fleetix.supply-graph.v1` documents.
 
 Human output is Markdown tables. `--format json` prints the
