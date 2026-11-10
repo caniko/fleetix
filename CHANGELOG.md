@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only tools report the serving host's live memory
   (`fleetix_host_metrics`), cgroup v2 accounting (`fleetix_host_cgroups`) and
   kernel OOM kills (`fleetix_host_events`).
+- Supply observation and history: `supply::observe` reads committed
+  `flake.lock` and `Cargo.lock` pins through git with no network or Nix
+  evaluation; producer nodes and aliases fold renamed repositories and mirrors
+  into one canonical coordinate; capability documents gain optional
+  `usageKinds` scoping; `Graph` deserializes so snapshots can be read back.
+- Add `supply::diff`, the per-root snapshot store, and `supply::consumers`,
+  with `fleetix supply observe`, `supply consumers` and `supply diff`. See
+  [Supply facts](SUPPLY.md).
+- `fleetix mcp-serve --supply-root DIR --supply-inventory FILE
+  [--supply-facts F...]` registers the read-only `fleetix_supply_consumers`
+  and `fleetix_supply_refresh` tools. Without the flags the catalog is
+  unchanged. See [MCP server](MCP_SERVER.md).
 
 ### Fixed
 

@@ -4,6 +4,15 @@
 //! Producers own their vocabularies (usage kinds, attributes, blocker codes).
 //! Fleetix only merges their documents and applies the generic gap rules.
 
+mod observe;
+mod report;
+
+pub use observe::{ObservedRepo, observe};
+pub use report::{
+    ConsumerItem, ConsumersReport, DiffReport, ProducerDiff, RevisionChange, consumers, diff,
+    load_snapshot, save_snapshot, store_path,
+};
+
 use crate::topology::{RunnerPool, Supply, Topology};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,6 +24,8 @@ pub const GAPS_CONTRACT: &str = "fleetix.supply-gaps.v1";
 pub const PATH_CONTRACT: &str = "fleetix.supply-path.v1";
 pub const GRAPH_CONTRACT: &str = "fleetix.supply-graph.v1";
 pub const BUDGET_CONTRACT: &str = "fleetix.supply-budget.v1";
+pub const DIFF_CONTRACT: &str = "fleetix.supply-diff.v1";
+pub const CONSUMERS_CONTRACT: &str = "fleetix.supply-consumers.v1";
 
 pub type Attrs = BTreeMap<String, Value>;
 
@@ -25,6 +36,10 @@ pub struct FactsDocument {
     pub vocabulary: String,
     pub producer: Producer,
     pub observed_at: String,
+    /// Usage kinds this vocabulary declares. Empty means legacy: capability
+    /// rows apply as written.
+    #[serde(default)]
+    pub usage_kinds: Vec<String>,
     #[serde(default)]
     pub nodes: Vec<Node>,
     #[serde(default)]
@@ -137,39 +152,68 @@ pub fn parse(json: &str) -> miette::Result<Vec<FactsDocument>> {
             doc.contract
         ));
     }
+    for doc in &docs {
+        validate_vocabulary(doc)?;
+    }
     Ok(docs)
 }
 
+/// A capability row is only valid for a usage kind its own vocabulary declares.
+fn validate_vocabulary(doc: &FactsDocument) -> miette::Result<()> {
+    if doc.usage_kinds.is_empty() {
+        return Ok(());
+    }
+    for row in &doc.capabilities {
+        if !doc.usage_kinds.contains(&row.usage_kind) {
+            return Err(miette::miette!(
+                "{} facts ({}) declare capability usageKind '{}' outside usageKinds [{}]",
+                doc.producer.name,
+                doc.vocabulary,
+                row.usage_kind,
+                doc.usage_kinds.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A value together with the producer that declared it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sourced<T> {
     pub producer: String,
     #[serde(flatten)]
     pub value: T,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
     pub id: String,
     pub kind: String,
+    #[serde(default)]
     pub attrs: Attrs,
+    #[serde(default)]
     pub expects: Vec<Sourced<Expect>>,
+    #[serde(default)]
     pub blockers: Vec<Sourced<Blocker>>,
+    #[serde(default)]
     pub producers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub from: String,
     pub to: String,
     pub kind: String,
+    #[serde(default)]
     pub attrs: Attrs,
+    #[serde(default)]
     pub producers: Vec<String>,
 }
 
 /// Merged facts with adjacency by node id.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Graph {
+    pub contract: String,
     pub nodes: BTreeMap<String, GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub capabilities: Vec<Sourced<Capability>>,
@@ -185,9 +229,69 @@ pub struct Graph {
     supply: Option<Supply>,
 }
 
+impl Default for Graph {
+    fn default() -> Self {
+        Self {
+            contract: GRAPH_CONTRACT.to_string(),
+            nodes: BTreeMap::new(),
+            edges: Vec::new(),
+            capabilities: Vec::new(),
+            errors: Vec::new(),
+            conflicts: Vec::new(),
+            outgoing: BTreeMap::new(),
+            incoming: BTreeMap::new(),
+            supply: None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Graph {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawGraph {
+            #[serde(default = "graph_contract")]
+            contract: String,
+            #[serde(default)]
+            nodes: BTreeMap<String, GraphNode>,
+            #[serde(default)]
+            edges: Vec<GraphEdge>,
+            #[serde(default)]
+            capabilities: Vec<Sourced<Capability>>,
+            #[serde(default)]
+            errors: Vec<Sourced<FactError>>,
+            #[serde(default)]
+            conflicts: Vec<Gap>,
+        }
+        let raw = RawGraph::deserialize(deserializer)?;
+        let mut graph = Graph {
+            contract: raw.contract,
+            nodes: raw.nodes,
+            edges: raw.edges,
+            capabilities: raw.capabilities,
+            errors: raw.errors,
+            conflicts: raw.conflicts,
+            ..Graph::default()
+        };
+        graph.reindex();
+        Ok(graph)
+    }
+}
+
+fn graph_contract() -> String {
+    GRAPH_CONTRACT.to_string()
+}
+
 /// Merge documents by node id and edge `(from, to, kind)` (R1). Without a
 /// topology, runner and cache nodes are not joined (R6).
+///
+/// Producer aliases are folded into their canonical coordinate before
+/// merging, so a renamed repository or a mirror joins the same producer.
 pub fn build(docs: &[FactsDocument], topology: Option<&Topology>) -> Graph {
+    let (aliases, alias_conflicts) = alias_map(docs);
     let mut graph = Graph {
         supply: topology.map(|topology| topology.supply.clone()),
         ..Graph::default()
@@ -196,37 +300,35 @@ pub fn build(docs: &[FactsDocument], topology: Option<&Topology>) -> Graph {
     for doc in docs {
         let producer = &doc.producer.name;
         for node in &doc.nodes {
-            graph.merge_node(producer, node);
+            let mut node = node.clone();
+            node.id = canonicalize_id(&node.id, &aliases);
+            graph.merge_node(producer, &node);
         }
         for edge in &doc.edges {
-            let key = (edge.from.clone(), edge.to.clone(), edge.kind.clone());
+            let (from, to) = (
+                canonicalize_id(&edge.from, &aliases),
+                canonicalize_id(&edge.to, &aliases),
+            );
+            let key = (from.clone(), to.clone(), edge.kind.clone());
             if let Some(&index) = edge_index.get(&key) {
                 let merged = &mut graph.edges[index];
                 let conflicts = merge_attrs(&mut merged.attrs, &edge.attrs, &merged.producers);
                 add_producer(&mut merged.producers, producer);
-                let subject = format!("{} edge {} -> {}", edge.kind, edge.from, edge.to);
-                graph.record_conflicts(&edge.from, &subject, producer, conflicts);
+                let subject = format!("{} edge {from} -> {to}", edge.kind);
+                graph.record_conflicts(&from, &subject, producer, conflicts);
                 continue;
             }
             let index = graph.edges.len();
             edge_index.insert(key, index);
             graph.edges.push(GraphEdge {
-                from: edge.from.clone(),
-                to: edge.to.clone(),
+                from: from.clone(),
+                to: to.clone(),
                 kind: edge.kind.clone(),
                 attrs: without_nulls(&edge.attrs),
                 producers: vec![producer.clone()],
             });
-            graph
-                .outgoing
-                .entry(edge.from.clone())
-                .or_default()
-                .push(index);
-            graph
-                .incoming
-                .entry(edge.to.clone())
-                .or_default()
-                .push(index);
+            graph.outgoing.entry(from).or_default().push(index);
+            graph.incoming.entry(to).or_default().push(index);
         }
         for capability in &doc.capabilities {
             push_unique(&mut graph.capabilities, producer, capability);
@@ -235,10 +337,125 @@ pub fn build(docs: &[FactsDocument], topology: Option<&Topology>) -> Graph {
             push_unique(&mut graph.errors, producer, error);
         }
     }
+    for (alias, canonical, other) in alias_conflicts {
+        graph.conflicts.push(Gap {
+            repository: None,
+            node: format!("producer:{canonical}"),
+            usage_kind: None,
+            blocker: "contract-conflict".into(),
+            subcode: None,
+            reason: format!(
+                "alias '{alias}' declared by 'producer:{canonical}' and 'producer:{other}'"
+            ),
+            owner: None,
+            source: "merge",
+        });
+    }
     graph
 }
 
+/// `(alias, canonical, other canonical)` for one alias declared twice.
+type AliasConflict = (String, String, String);
+
+/// `alias -> canonical` from every `producer:<coordinate>` node's `aliases`
+/// attribute. One alias declared by two producers is a merge conflict and
+/// resolves to the lexicographically first canonical coordinate.
+fn alias_map(docs: &[FactsDocument]) -> (BTreeMap<String, String>, Vec<AliasConflict>) {
+    let mut declared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for doc in docs {
+        for node in &doc.nodes {
+            let Some(canonical) = node.id.strip_prefix("producer:") else {
+                continue;
+            };
+            let canonical = normalize_coordinate(canonical);
+            let Some(aliases) = node.attrs.get("aliases").and_then(Value::as_array) else {
+                continue;
+            };
+            for alias in aliases.iter().filter_map(Value::as_str) {
+                declared
+                    .entry(normalize_coordinate(alias))
+                    .or_default()
+                    .insert(canonical.clone());
+            }
+        }
+    }
+    let mut aliases = BTreeMap::new();
+    let mut conflicts = Vec::new();
+    for (alias, candidates) in declared {
+        let Some(canonical) = candidates.iter().next().cloned() else {
+            continue;
+        };
+        for other in candidates.iter().skip(1) {
+            conflicts.push((alias.clone(), canonical.clone(), other.clone()));
+        }
+        aliases.insert(alias, canonical);
+    }
+    (aliases, conflicts)
+}
+
+/// Rewrite any coordinate embedded in a node id, following alias chains.
+fn canonicalize_id(id: &str, aliases: &BTreeMap<String, String>) -> String {
+    let Some((prefix, rest)) = id.split_once(':') else {
+        return id.to_string();
+    };
+    let rebuilt = |coordinate: &str, suffix: &str| {
+        format!(
+            "{prefix}:{}{suffix}",
+            canonical_coordinate(coordinate, aliases)
+        )
+    };
+    match prefix {
+        "repo" | "producer" => rebuilt(rest, ""),
+        "usage" | "workflow" => match rest.split_once('#') {
+            Some((coordinate, rest)) => rebuilt(coordinate, &format!("#{rest}")),
+            None => rebuilt(rest, ""),
+        },
+        "rev" => match rest.rsplit_once('@') {
+            Some((coordinate, revision)) => rebuilt(coordinate, &format!("@{revision}")),
+            None => rebuilt(rest, ""),
+        },
+        _ => id.to_string(),
+    }
+}
+
+/// Resolve an alias chain; a cycle keeps the last coordinate it reached.
+fn canonical_coordinate(coordinate: &str, aliases: &BTreeMap<String, String>) -> String {
+    let mut current = normalize_coordinate(coordinate);
+    let mut seen = BTreeSet::new();
+    while let Some(next) = aliases.get(&current) {
+        if !seen.insert(current.clone()) {
+            break;
+        }
+        current.clone_from(next);
+    }
+    current
+}
+
+/// A coordinate is `host/owner/name`; the host is case-insensitive.
+fn normalize_coordinate(coordinate: &str) -> String {
+    match coordinate.split_once('/') {
+        Some((host, rest)) => format!("{}/{rest}", host.to_ascii_lowercase()),
+        None => coordinate.to_ascii_lowercase(),
+    }
+}
+
 impl Graph {
+    /// Rebuild adjacency after deserializing a snapshot.
+    fn reindex(&mut self) {
+        self.outgoing.clear();
+        self.incoming.clear();
+        for (index, edge) in self.edges.iter().enumerate() {
+            self.outgoing
+                .entry(edge.from.clone())
+                .or_default()
+                .push(index);
+            self.incoming
+                .entry(edge.to.clone())
+                .or_default()
+                .push(index);
+        }
+    }
+
     fn merge_node(&mut self, producer: &str, node: &Node) {
         let Some(merged) = self.nodes.get_mut(&node.id) else {
             self.nodes.insert(
@@ -526,6 +743,56 @@ pub struct Gap {
     /// The rule family: merge, capability, enrollment, expectation, topology
     /// or producer.
     pub source: &'static str,
+}
+
+impl<'de> Deserialize<'de> for Gap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RawGap {
+            #[serde(default)]
+            repository: Option<String>,
+            node: String,
+            #[serde(default)]
+            usage_kind: Option<String>,
+            blocker: String,
+            #[serde(default)]
+            subcode: Option<String>,
+            reason: String,
+            #[serde(default)]
+            owner: Option<String>,
+            source: String,
+        }
+        let raw = RawGap::deserialize(deserializer)?;
+        // `source` only ever holds one of the rule-family names; a snapshot
+        // with an unknown one is not a graph this version can reason about.
+        let source = match raw.source.as_str() {
+            "merge" => "merge",
+            "capability" => "capability",
+            "enrollment" => "enrollment",
+            "expectation" => "expectation",
+            "topology" => "topology",
+            "producer" => "producer",
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown gap source '{other}'"
+                )));
+            }
+        };
+        Ok(Self {
+            repository: raw.repository,
+            node: raw.node,
+            usage_kind: raw.usage_kind,
+            blocker: raw.blocker,
+            subcode: raw.subcode,
+            reason: raw.reason,
+            owner: raw.owner,
+            source,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

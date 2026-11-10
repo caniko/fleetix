@@ -87,6 +87,15 @@ pub enum Command {
     #[cfg(feature = "mcp-server")]
     McpServe {
         path: PathBuf,
+        /// Workspace root observed by the supply tools (with --supply-inventory).
+        #[arg(long)]
+        supply_root: Option<PathBuf>,
+        /// Inventory JSON observed by the supply tools (with --supply-root).
+        #[arg(long)]
+        supply_inventory: Option<PathBuf>,
+        /// Producer facts merged into every supply observation (repeatable).
+        #[arg(long)]
+        supply_facts: Vec<PathBuf>,
         #[command(flatten)]
         evaluator: EvaluatorArgs,
     },
@@ -204,6 +213,44 @@ pub enum SupplyCommand {
         #[arg(long, value_enum, default_value = "human")]
         format: OutputFormat,
     },
+    /// Observe committed flake.lock and Cargo.lock pins from repositories.
+    Observe {
+        /// Workspace root holding the inventory's relative paths.
+        #[arg(long)]
+        root: PathBuf,
+        /// Inventory JSON: [{"coordinate": "...", "relativePath": "..."}].
+        #[arg(long)]
+        inventory: PathBuf,
+        /// Producer facts to merge with the observation (repeatable).
+        #[arg(long)]
+        facts: Vec<PathBuf>,
+        /// Store the snapshot and print the diff against the previous one.
+        #[arg(long)]
+        store: bool,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// List repositories that pin a producer, optionally behind a target rev.
+    Consumers {
+        /// Producer coordinate, renamed repository or mirror alias.
+        producer: String,
+        /// Target revision; consumers that do not pin it are `behind`.
+        #[arg(long)]
+        target: Option<String>,
+        #[command(flatten)]
+        input: SupplyInput,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Compare two stored graph documents.
+    Diff {
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        to: PathBuf,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -313,10 +360,30 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             );
         }
         #[cfg(feature = "mcp-server")]
-        Command::McpServe { path, evaluator } => {
+        Command::McpServe {
+            path,
+            supply_root,
+            supply_inventory,
+            supply_facts,
+            evaluator,
+        } => {
+            let supply = match (supply_root, supply_inventory) {
+                (Some(root), Some(inventory)) => Some(mcp_serve::SupplyConfig {
+                    root,
+                    inventory,
+                    facts: supply_facts,
+                }),
+                (None, None) => None,
+                _ => {
+                    return Err(CliError::new(
+                        EXIT_VALIDATION,
+                        "--supply-root and --supply-inventory must be given together",
+                    ));
+                }
+            };
             let topology =
                 topology::evaluate_topology_with_options(&path, build_options(&evaluator)?).await?;
-            mcp_serve::server(topology)
+            mcp_serve::server(topology, supply)
                 .map_err(|error| CliError::new(EXIT_VALIDATION, error.to_string()))?
                 .serve_stdio()
                 .await
@@ -752,6 +819,134 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
     }
 }
 
+fn read_inventory(path: &Path) -> Result<Vec<crate::supply::ObservedRepo>, CliError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| CliError::new(EXIT_IO, format!("read {}: {error}", path.display())))?;
+    serde_json::from_str(&text).map_err(|error| {
+        CliError::new(
+            EXIT_VALIDATION,
+            format!("parse inventory {}: {error}", path.display()),
+        )
+    })
+}
+
+fn read_facts_files(paths: &[PathBuf]) -> Result<Vec<crate::supply::FactsDocument>, CliError> {
+    let mut docs = Vec::new();
+    for path in paths {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| CliError::new(EXIT_IO, format!("read {}: {error}", path.display())))?;
+        docs.extend(crate::supply::parse(&text).map_err(|error| {
+            CliError::new(EXIT_VALIDATION, format!("{}: {error}", path.display()))
+        })?);
+    }
+    Ok(docs)
+}
+
+fn read_graph_file(path: &Path) -> Result<crate::supply::Graph, CliError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| CliError::new(EXIT_IO, format!("read {}: {error}", path.display())))?;
+    serde_json::from_str(&text).map_err(|error| {
+        CliError::new(
+            EXIT_VALIDATION,
+            format!("parse graph {}: {error}", path.display()),
+        )
+    })
+}
+
+fn print_graph_summary(graph: &crate::supply::Graph) {
+    let count = |kind: &str| {
+        graph
+            .nodes
+            .values()
+            .filter(|node| node.kind == kind)
+            .count()
+    };
+    println!(
+        "{} repositories, {} usages, {} producers, {} errors, {} conflicts.\n",
+        count("repo"),
+        count("usage"),
+        count("producer"),
+        graph.errors.len(),
+        graph.conflicts.len()
+    );
+    let mut usages: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for node in graph.nodes.values().filter(|node| node.kind == "usage") {
+        if let Some(repository) = crate::supply::repository_of(&node.id) {
+            *usages.entry(repository).or_default() += 1;
+        }
+    }
+    markdown_table(
+        &["Repository", "Path", "Usages"],
+        graph
+            .nodes
+            .values()
+            .filter(|node| node.kind == "repo")
+            .map(|node| {
+                vec![
+                    node.id
+                        .strip_prefix("repo:")
+                        .unwrap_or(&node.id)
+                        .to_string(),
+                    node.attrs
+                        .get("relativePath")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    usages
+                        .get(node.id.strip_prefix("repo:").unwrap_or(&node.id))
+                        .copied()
+                        .unwrap_or_default()
+                        .to_string(),
+                ]
+            }),
+    );
+    if !graph.errors.is_empty() {
+        println!();
+        markdown_table(
+            &["Producer", "Subject", "Code", "Message"],
+            graph.errors.iter().map(|error| {
+                vec![
+                    error.producer.clone(),
+                    error.value.subject.clone(),
+                    error.value.code.clone(),
+                    error.value.message.clone(),
+                ]
+            }),
+        );
+    }
+}
+
+fn print_diff(report: &crate::supply::DiffReport) {
+    if report.producers.is_empty() {
+        println!("No supply changes.");
+        return;
+    }
+    for producer in &report.producers {
+        println!("\n{}:", producer.coordinate);
+        for (label, changes) in [("added", &producer.added), ("removed", &producer.removed)] {
+            if changes.is_empty() {
+                continue;
+            }
+            println!("\n{label}:");
+            markdown_table(
+                &["Usage", "Revisions"],
+                changes
+                    .iter()
+                    .map(|(usage, revisions)| vec![usage.clone(), revisions.join(", ")]),
+            );
+        }
+        if !producer.revision_changed.is_empty() {
+            println!("\nrevision changed:");
+            markdown_table(
+                &["Usage", "From", "To"],
+                producer.revision_changed.iter().map(|(usage, change)| {
+                    vec![usage.clone(), change.from.join(", "), change.to.join(", ")]
+                }),
+            );
+        }
+    }
+}
+
 fn json_out<T: Serialize>(value: &T) -> Result<(), CliError> {
     println!(
         "{}",
@@ -778,15 +973,7 @@ async fn run_supply(subcommand: SupplyCommand) -> Result<(), CliError> {
     use crate::supply;
 
     async fn load(input: &SupplyInput) -> Result<supply::Graph, CliError> {
-        let mut docs = Vec::new();
-        for path in &input.facts {
-            let text = std::fs::read_to_string(path).map_err(|error| {
-                CliError::new(EXIT_IO, format!("read {}: {error}", path.display()))
-            })?;
-            docs.extend(supply::parse(&text).map_err(|error| {
-                CliError::new(EXIT_VALIDATION, format!("{}: {error}", path.display()))
-            })?);
-        }
+        let docs = read_facts_files(&input.facts)?;
         if let Some(limit) = input.max_age_days {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -918,12 +1105,7 @@ async fn run_supply(subcommand: SupplyCommand) -> Result<(), CliError> {
             );
             Ok(())
         }
-        SupplyCommand::Graph { input } => {
-            let mut graph = serde_json::to_value(load(&input).await?)
-                .map_err(|error| CliError::new(EXIT_EVALUATION, format!("serialize: {error}")))?;
-            graph["contract"] = supply::GRAPH_CONTRACT.into();
-            json_out(&graph)
-        }
+        SupplyCommand::Graph { input } => json_out(&load(&input).await?),
         SupplyCommand::Budget {
             input,
             updates_per_month,
@@ -963,6 +1145,95 @@ async fn run_supply(subcommand: SupplyCommand) -> Result<(), CliError> {
                 );
                 println!();
             }
+            Ok(())
+        }
+        SupplyCommand::Observe {
+            root,
+            inventory,
+            facts,
+            store,
+            format,
+        } => {
+            let repos = read_inventory(&inventory)?;
+            let mut docs = vec![supply::observe(&root, &repos)];
+            docs.extend(read_facts_files(&facts)?);
+            let graph = supply::build(&docs, None);
+            if !store {
+                if format == OutputFormat::Json {
+                    return json_out(&graph);
+                }
+                print_graph_summary(&graph);
+                return Ok(());
+            }
+            let previous = supply::load_snapshot(&root)
+                .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?;
+            supply::save_snapshot(&root, &graph)
+                .map_err(|error| CliError::new(EXIT_IO, error.to_string()))?;
+            let diff = supply::diff(
+                previous.as_ref().unwrap_or(&supply::Graph::default()),
+                &graph,
+            );
+            if format == OutputFormat::Json {
+                return json_out(&serde_json::json!({"graph": graph, "diff": diff}));
+            }
+            print_graph_summary(&graph);
+            print_diff(&diff);
+            Ok(())
+        }
+        SupplyCommand::Consumers {
+            producer,
+            target,
+            input,
+            format,
+        } => {
+            let report = supply::consumers(&load(&input).await?, &producer, target.as_deref());
+            if format == OutputFormat::Json {
+                return json_out(&report);
+            }
+            println!(
+                "{} consumer(s) of {} (target {}).",
+                report.items.len(),
+                report.producer,
+                report.target.as_deref().unwrap_or("none")
+            );
+            markdown_table(
+                &[
+                    "Repository",
+                    "Path",
+                    "Usage",
+                    "Input",
+                    "Direct",
+                    "Locked",
+                    "Behind",
+                ],
+                report.items.iter().map(|item| {
+                    vec![
+                        item.coordinate.clone(),
+                        item.relative_path.clone().unwrap_or_default(),
+                        item.usage.clone(),
+                        item.input.clone().unwrap_or_default(),
+                        match item.direct {
+                            Some(true) => "yes".into(),
+                            Some(false) => "no".into(),
+                            None => String::new(),
+                        },
+                        item.locked_revs.join(", "),
+                        if item.behind {
+                            "yes".into()
+                        } else {
+                            String::new()
+                        },
+                    ]
+                }),
+            );
+            Ok(())
+        }
+        SupplyCommand::Diff { from, to, format } => {
+            let report = supply::diff(&read_graph_file(&from)?, &read_graph_file(&to)?);
+            if format == OutputFormat::Json {
+                return json_out(&report);
+            }
+            print_diff(&report);
             Ok(())
         }
     }

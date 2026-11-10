@@ -74,6 +74,9 @@ Build or run the opt-in CLI surface:
 
 ```sh
 cargo run --features mcp-server -- mcp-serve examples/Topology.pkl
+cargo run --features mcp-server -- mcp-serve examples/Topology.pkl \
+  --supply-root /workspace --supply-inventory /workspace/inventory.json \
+  --supply-facts harbor-facts.json
 ```
 
 The operator supplies the topology path at startup. It is evaluated once; tool
@@ -82,7 +85,7 @@ the server to load a new snapshot. This grants connected clients read access to
 the selected topology, including private network metadata. Do not supply
 credential-bearing material.
 
-The server registers six typed read tools:
+The server registers six typed read tools by default:
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
@@ -92,6 +95,25 @@ The server registers six typed read tools:
 | `fleetix_host_metrics` | Empty object | Live memory, swap, PSI, load, uptime and VRAM of the serving host |
 | `fleetix_host_cgroups` | Optional `depth`, `min_bytes`, `limit` | Live cgroup v2 memory accounting, largest first |
 | `fleetix_host_events` | Optional `since` (journalctl syntax) | Kernel OOM kills with cgroup, victim and killed-process counts |
+
+`--supply-root` and `--supply-inventory` register two more read tools. Both
+flags are required together; `--supply-facts` is repeatable and merges producer
+documents. These paths are startup-only: tool arguments cannot choose a root,
+inventory or facts document. Without the flags the tools are absent from the
+catalog.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `fleetix_supply_consumers` | `producer`, optional `target` revision | `fleetix.supply-consumers.v1`: repositories that pin the producer, their relative paths, locked revisions and whether each is behind the target |
+| `fleetix_supply_refresh` | Empty object | Observes the configured workspace, stores the snapshot, and returns its `fleetix.supply-diff.v1` change set |
+
+`fleetix_supply_consumers` reads the stored snapshot and performs one
+observation first when none exists. `fleetix_supply_refresh` always observes
+and replaces the snapshot under
+`$XDG_STATE_HOME/fleetix/supply/<root-digest>/graph.json`. Observation reads
+committed lock files through `git`, never the network or a Nix evaluation. A
+repository's git or parse failure is returned in `errors` and does not fail the
+refresh.
 
 The `fleetix_host_*` tools read the host running the server, not the topology:
 `/proc`, `/sys/fs/cgroup`, DRM sysfs and the kernel journal, with the server
