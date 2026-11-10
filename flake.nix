@@ -9,12 +9,16 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     harbor-rs = {
-      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=ed89d0b13fc61dd1b2217bf4bba97f32cec27ba7";
+      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=0d53ee174d64cdebf22666691a7e8a99b2eb8cc6";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.crane.follows = "crane";
       inputs.rust-overlay.follows = "rust-overlay";
     };
-    treefmt-nix.follows = "harbor-rs/treefmt-nix";
+    # harbor-rs no longer re-exports treefmt-nix, so it is a direct input.
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -76,6 +80,27 @@
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
       libraryArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--workspace --no-default-features";});
     });
+
+    # cargo-binstall archives for the crates.io binary crates. Static musl
+    # archives serve both glibc and musl hosts. Windows is dropped because
+    # rustls' aws-lc-sys does not build under MinGW; macOS is dropped because
+    # this flake only defines Linux systems (the NixOS module checks need them).
+    releaseBuilds = forSystems (system: let
+      pkgs = pkgsFor system;
+      inherit (rustBuilds.${system}) commonArgs;
+    in
+      harbor-rs.lib.mkBinstallRelease {
+        inherit pkgs system;
+        pname = "fleetix";
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+        commonArgs = commonArgs // {cargoExtraArgs = "--workspace";};
+        toolchainArgs = {toolchainProfile = "nightly";};
+        crates = {
+          fleetix.cargoToml = ./Cargo.toml;
+          fleetix-sidecar.cargoToml = ./crates/fleetix-sidecar/Cargo.toml;
+        };
+        targets.x86_64-linux = ["x86_64-linux-musl" "aarch64-linux-musl"];
+      });
   in {
     lib = fleetixLib;
 
@@ -175,10 +200,14 @@
             echo "Wrote $output"
           '';
         };
-      in {
-        default = fleetixCrate;
-        inherit fleetixCrate fleetix-sidecar fleetix-deploy exportNix pklToNix;
-      }
+      in
+        {
+          default = fleetixCrate;
+          inherit fleetixCrate fleetix-sidecar fleetix-deploy exportNix pklToNix;
+        }
+        // nixpkgs.lib.optionalAttrs (releaseBuilds.${system}.releaseBundle != null) {
+          release-bundle = releaseBuilds.${system}.releaseBundle;
+        }
     );
 
     apps = forSystems (system: {
@@ -805,6 +834,7 @@
             worker = self.packages.${system}.fleetix-deploy;
           };
         }
+        // releaseBuilds.${system}.checks
     );
 
     devShells = forSystems (

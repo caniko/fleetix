@@ -53,6 +53,11 @@ jobs:
         run: cargo build --release --locked --manifest-path "$GITHUB_WORKSPACE/.simit-publisher-engine/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/.simit-publisher-engine/target"
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://attic.candee.baby/canix https://cache.nixos.org
+            trusted-public-keys = canix:lPzPzKrmYqW5Rxa5r0uQWvCqD3S5nx0h2eCy7XD5JM8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
 
       - name: Configure GitHub input transport
         run: |
@@ -124,7 +129,7 @@ jobs:
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
           RUST_TEST_THREADS: "2"
-        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4c6841cce19327927ea8a8f6e856276dd5c878f0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
+        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/b7657ee584edeab792ca34e28eb2fcde63673433 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
   publish-fleetix-sidecar:
     needs: [verify-fleetix-sidecar]
     runs-on: ubuntu-24.04
@@ -199,6 +204,11 @@ jobs:
         run: cargo build --release --locked --manifest-path "$GITHUB_WORKSPACE/.simit-publisher-engine/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/.simit-publisher-engine/target"
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://attic.candee.baby/canix https://cache.nixos.org
+            trusted-public-keys = canix:lPzPzKrmYqW5Rxa5r0uQWvCqD3S5nx0h2eCy7XD5JM8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
 
       - name: Configure GitHub input transport
         run: |
@@ -270,7 +280,7 @@ jobs:
           CARGO_BUILD_JOBS: "2"
           RUSTDOCFLAGS: "-D warnings"
           RUST_TEST_THREADS: "2"
-        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4c6841cce19327927ea8a8f6e856276dd5c878f0 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
+        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/b7657ee584edeab792ca34e28eb2fcde63673433 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
   publish-fleetix:
     needs: [verify-fleetix]
     runs-on: ubuntu-24.04

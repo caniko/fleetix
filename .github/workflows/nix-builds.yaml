@@ -32,6 +32,8 @@ jobs:
           - ".#checks.x86_64-linux.fleetix-no-default-features"
           - ".#checks.x86_64-linux.fleetix-publication-policy"
           - ".#checks.x86_64-linux.fleetix-fmt"
+          - ".#checks.x86_64-linux.binstall-metadata-fleetix"
+          - ".#checks.x86_64-linux.binstall-metadata-fleetix-sidecar"
           - ".#checks.x86_64-linux.build-train-policy"
           - ".#checks.x86_64-linux.build-train-module"
           - ".#checks.x86_64-linux.gpu-contract"
@@ -66,6 +68,11 @@ jobs:
           printf '%s\n' "$INSTALLABLE" > "$SIMIT_NIX_BUILD_RESULTS/installable"
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://attic.candee.baby/canix https://cache.nixos.org
+            trusted-public-keys = canix:lPzPzKrmYqW5Rxa5r0uQWvCqD3S5nx0h2eCy7XD5JM8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
 
       - name: Configure GitHub input transport
         run: |

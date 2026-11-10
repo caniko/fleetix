@@ -1,8 +1,12 @@
+#[cfg(feature = "cli")]
 use clap::{Args, Parser, Subcommand};
+#[cfg(feature = "cli")]
 use fleetix_sidecar::{CacheOptions, check, options_with_http, write_with_cache};
+#[cfg(feature = "cli")]
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[cfg(feature = "cli")]
 #[derive(Parser)]
 #[command(
     version,
@@ -13,6 +17,7 @@ struct Cli {
     command: Command,
 }
 
+#[cfg(feature = "cli")]
 #[derive(Subcommand)]
 enum Command {
     /// Evaluate Pkl and atomically write an importable Nix sidecar
@@ -21,6 +26,7 @@ enum Command {
     Check(InputOutput),
 }
 
+#[cfg(feature = "cli")]
 #[derive(Args)]
 struct InputOutput {
     input: PathBuf,
@@ -36,6 +42,7 @@ struct InputOutput {
     http_proxy: Option<String>,
 }
 
+#[cfg(feature = "cli")]
 async fn run(cli: Cli) -> miette::Result<ExitCode> {
     let (args, checking) = match cli.command {
         Command::Generate(args) => (args, false),
@@ -71,6 +78,7 @@ async fn run(cli: Cli) -> miette::Result<ExitCode> {
     }
 }
 
+#[cfg(feature = "cli")]
 #[tokio::main]
 async fn main() -> ExitCode {
     match run(Cli::parse()).await {
@@ -80,4 +88,12 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `cli` is a default feature but this binary is not feature-gated, so a
+/// `--no-default-features` build must still compile and fail clearly.
+#[cfg(not(feature = "cli"))]
+fn main() -> ExitCode {
+    eprintln!("fleetix-sidecar was built without the `cli` feature and has no interface");
+    ExitCode::FAILURE
 }
