@@ -52,10 +52,11 @@ sha2 = "0.10"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "time"] }
 clap = { version = "4", features = ["derive"] }
 
+# The default build ships this binary (`cli` is a default feature); it is not
+# gated with `required-features` so release archives and cargo-binstall see it.
 [[bin]]
 name = "fleetix"
 path = "src/main.rs"
-required-features = ["cli"]
 
 [[bin]]
 name = "fleetix-deploy"
@@ -110,3 +111,20 @@ optional = true
 
 [dev-dependencies]
 rmcp = { version = "3.9.0", default-features = false, features = ["client", "server", "transport-io"] }
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/{ version }/fleetix-{ version }-aarch64-unknown-linux-musl.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "bin/{ bin }{ binary-ext }"
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/{ version }/fleetix-{ version }-aarch64-unknown-linux-musl.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "bin/{ bin }{ binary-ext }"
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/{ version }/fleetix-{ version }-x86_64-unknown-linux-musl.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "bin/{ bin }{ binary-ext }"
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/{ version }/fleetix-{ version }-x86_64-unknown-linux-musl.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "bin/{ bin }{ binary-ext }"

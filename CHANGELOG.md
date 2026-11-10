@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fleetix.homeModules.mcp`: `fleetix.mcp.topologyServer.{enable,file}` registers
   `fleetix mcp-serve` as the `fleetix` server with `pkl` and `journalctl` on its
   `PATH`, so consumers stop wiring the binary by hand.
+- Publish prebuilt `cargo-binstall` archives from release tags: static musl
+  binaries for `x86_64` and `aarch64` Linux, so `cargo binstall fleetix` and
+  `cargo binstall fleetix-sidecar` install without a Rust toolchain.
 
 ### Fixed
 
