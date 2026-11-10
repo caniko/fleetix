@@ -255,6 +255,8 @@
             // {
               inherit cargoArtifacts;
               cargoExtraArgs = "--workspace --all-features";
+              # cargoTest runs the suite in its build phase; see fleetixCrate.
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.git];
             }
           );
 
