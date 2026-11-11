@@ -78,8 +78,10 @@ runner = "ubuntu-24.04"
 prebuild_binaries = true
 binstall = true
 system_runners = { x86_64-linux = "ubuntu-24.04" }
-# No keys/minisign.pub trust root in this repository.
-sign = false
+# Release checksum manifests are minisign-signed with the pinned
+# keys/minisign.pub trust root; MINISIGN_SECRET_KEY/MINISIGN_PASSWORD are
+# repository secrets.
+sign = true
 substituters = [
   "https://attic.candee.baby/canix",
   "https://cache.nixos.org",
