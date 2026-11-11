@@ -2380,31 +2380,40 @@ fn preparation_is_process_shared_exact_keyed_and_caches_only_passes() {
 }
 
 #[test]
-fn restart_reserves_outputs_of_interrupted_dispatches() {
+fn restart_reserves_every_output_an_interrupted_build_may_produce() {
     let mut server = Server::start();
     let client = server.client();
-    client.call(Command::Submit(request("m", "murph"))).unwrap();
+    let mut req = request("multi", "multi");
+    req.roots = BTreeSet::from([goal("multi")]);
+    client.call(Command::Submit(req)).unwrap();
     eventually(|| {
-        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+        client
+            .call(Command::Status("multi".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
     });
     server.shutdown();
-    // Simulate a coordinator that stopped while its Nix worker was running.
+    // A coordinator that stopped while the Nix worker for multi^out was
+    // running; its dev sibling was still pending.
     let path = server.config.state_dir.join("train.json");
     let mut journal: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for node in journal["nodes"].as_object_mut().unwrap().values_mut() {
-        node["state"] = serde_json::json!({"Running": {"serial": 1}});
+    let nodes = journal["nodes"].as_object_mut().unwrap();
+    for (key, node) in nodes.iter_mut() {
+        node["state"] = if key.ends_with("^out") {
+            serde_json::json!({"Running": {"serial": 1}})
+        } else {
+            serde_json::json!("Pending")
+        };
     }
     std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
     server.backend.reserved.lock().unwrap().clear();
     server.restart();
-    assert!(
-        server
-            .backend
-            .reserved
-            .lock()
-            .unwrap()
-            .first()
-            .is_some_and(|reserved| reserved.contains(&goal("murph")))
+    let mut dev = goal("multi");
+    dev.output = "dev".into();
+    assert_eq!(
+        server.backend.reserved.lock().unwrap().first(),
+        Some(&BTreeSet::from([goal("multi"), dev]))
     );
 }

@@ -474,6 +474,20 @@ fn retire(
     Ok(archive_reply(config, train, &archive))
 }
 
+/// Outputs a dispatch may produce: substitution fetches only the requested
+/// output; a build makes every named output of its derivation.
+fn reservation(train: &Train, goal: &Goal, definition: &Definition) -> Graph {
+    if definition.operation == Operation::Restore {
+        return Graph::from([(goal.clone(), definition.clone())]);
+    }
+    train
+        .nodes
+        .iter()
+        .filter(|(sibling, _)| sibling.derivation == goal.derivation)
+        .map(|(sibling, node)| (sibling.clone(), node.definition.clone()))
+        .collect()
+}
+
 fn archive_reply(config: &Config, train: &Train, archive: &Archive) -> Reply {
     let mut result = reply(config, train, Some(archive.outcome.clone()), None);
     result.outputs = archive
@@ -608,7 +622,7 @@ pub fn serve(
         .nodes
         .iter()
         .filter(|(_, node)| matches!(node.state, NodeState::Running { .. }))
-        .map(|(goal, node)| (goal.clone(), node.definition.clone()))
+        .flat_map(|(goal, node)| reservation(&train, goal, &node.definition))
         .collect();
     if !interrupted.is_empty() {
         backend.reserve(&interrupted)?;
@@ -885,13 +899,7 @@ pub fn serve(
                     .filter(|(goal, _)| goal.derivation == dispatch.goal.derivation)
                     .map(|(goal, node)| (goal.clone(), node.definition.clone()))
                     .collect();
-                // Substitution fetches only the requested output; a build makes
-                // every named output of its derivation.
-                let reserved = if dispatch.definition.operation == Operation::Restore {
-                    Graph::from([(dispatch.goal.clone(), dispatch.definition.clone())])
-                } else {
-                    siblings.clone()
-                };
+                let reserved = reservation(&train, &dispatch.goal, &dispatch.definition);
                 workers.push(thread::spawn(move || {
                     let (result, valid) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
