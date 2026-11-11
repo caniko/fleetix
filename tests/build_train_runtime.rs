@@ -56,7 +56,12 @@ impl Backend for TestBackend {
                 released = self.plan_gate.wait(released).unwrap();
             }
         }
-        if request.target == "multi" {
+        if request.target.starts_with("multi") {
+            let operation = if request.target == "multi-restore" {
+                Operation::Restore
+            } else {
+                Operation::Build
+            };
             let mut dev = goal("multi");
             dev.output = "dev".into();
             return Ok([goal("multi"), dev]
@@ -68,7 +73,7 @@ impl Backend for TestBackend {
                         Definition {
                             output_path: path,
                             dependencies: BTreeSet::new(),
-                            operation: Operation::Build,
+                            operation,
                         },
                     )
                 })
@@ -1508,6 +1513,26 @@ fn one_builder_result_reconciles_all_valid_named_outputs() {
     assert_eq!(
         *server.backend.reserved.lock().unwrap(),
         [BTreeSet::from([goal("multi"), dev])]
+    );
+}
+
+#[test]
+fn restoring_one_named_output_reserves_only_that_output() {
+    let server = Server::start();
+    let mut req = request("multi-restore", "multi-restore");
+    req.roots = BTreeSet::from([goal("multi")]);
+    server.client().call(Command::Submit(req)).unwrap();
+    eventually(|| {
+        server
+            .client()
+            .call(Command::Status("multi-restore".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        *server.backend.reserved.lock().unwrap(),
+        [BTreeSet::from([goal("multi")])]
     );
 }
 

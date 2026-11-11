@@ -868,11 +868,18 @@ pub fn serve(
                     .filter(|(goal, _)| goal.derivation == dispatch.goal.derivation)
                     .map(|(goal, node)| (goal.clone(), node.definition.clone()))
                     .collect();
+                // Substitution fetches only the requested output; a build makes
+                // every named output of its derivation.
+                let reserved = if dispatch.definition.operation == Operation::Restore {
+                    Graph::from([(dispatch.goal.clone(), dispatch.definition.clone())])
+                } else {
+                    siblings.clone()
+                };
                 workers.push(thread::spawn(move || {
                     let (result, valid) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             let mut result = backend
-                                .reserve(&siblings)
+                                .reserve(&reserved)
                                 .and_then(|()| backend.realise(&dispatch));
                             let mut valid = BTreeSet::new();
                             for (goal, definition) in siblings {

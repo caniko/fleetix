@@ -383,15 +383,14 @@ impl Backend for NixBackend {
             .map_err(|e| e.to_string())
     }
     fn valid(&self, _: &Goal, definition: &Definition) -> Result<bool, String> {
-        let valid = self
-            .0
-            .valid(&definition.output_path)
-            .map_err(|e| e.to_string())?;
-        if valid {
-            // Re-asserts a reserved root a cleaner removed mid-build.
+        // Root before validating, never after: a reservation a cleaner removed
+        // mid-build must be back before the train relies on the output.
+        if std::fs::symlink_metadata(&definition.output_path).is_ok() {
             self.root_outputs([definition.output_path.clone()].into())?;
         }
-        Ok(valid)
+        self.0
+            .valid(&definition.output_path)
+            .map_err(|e| e.to_string())
     }
     fn reserve(&self, outputs: &Graph) -> Result<(), String> {
         // Dangling only while the build runs, so every output it produces,
