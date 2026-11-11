@@ -44,6 +44,7 @@ struct TestBackend {
     retain_gate: Condvar,
     initial_retains: Mutex<Vec<String>>,
     initial_retain_fails: AtomicBool,
+    pruned: Mutex<Vec<BTreeSet<String>>>,
 }
 impl Backend for TestBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
@@ -213,6 +214,13 @@ impl Backend for TestBackend {
         owned.remove(&request.attempt);
         Ok(())
     }
+    fn prune(&self, train: &Train) -> Result<(), String> {
+        self.pruned
+            .lock()
+            .unwrap()
+            .push(train.requests.keys().cloned().collect());
+        Ok(())
+    }
 }
 
 fn eventually(mut predicate: impl FnMut() -> bool) {
@@ -352,8 +360,12 @@ fn partial_initial_retention_failure_keeps_retirable_intake_after_restart() {
         .initial_retain_fails
         .store(false, Ordering::Relaxed);
     server.restart();
+    // Startup prunes against the journal, and so does every retirement.
+    let last_pruned = || server.backend.pruned.lock().unwrap().last().cloned();
+    assert_eq!(last_pruned(), Some(BTreeSet::from(["m".into()])));
     client.call(Command::Retire("m".into())).unwrap();
     assert_eq!(*server.backend.released_requests.lock().unwrap(), ["m"]);
+    assert_eq!(last_pruned(), Some(BTreeSet::new()));
     assert!(server.backend.started.lock().unwrap().is_empty());
 }
 

@@ -119,17 +119,13 @@ pub fn policy_identity(service: &Service) -> Result<String, String> {
 struct NixBackend(Native);
 
 impl NixBackend {
-    fn request_native(&self, request: &Request, create: bool) -> Result<Native, String> {
+    fn private_namespace(&self, paths: &[&Path], create: bool) -> Result<(), String> {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let base = std::fs::symlink_metadata(&self.0.gc_roots).map_err(|e| e.to_string())?;
         if !base.is_dir() || base.mode() & 0o077 != 0 {
             return Err("train GC root base must be a private directory".into());
         }
-        let mut native = self.0.clone();
-        let namespace = self.0.gc_roots.join("requests");
-        let digest = format!("{:x}", Sha256::digest(request.attempt.as_bytes()));
-        native.gc_roots = namespace.join(digest);
-        for path in [&namespace, &native.gc_roots] {
+        for path in paths {
             if create {
                 match std::fs::DirBuilder::new().mode(0o700).create(path) {
                     Ok(()) => {}
@@ -144,8 +140,68 @@ impl NixBackend {
                 _ => return Err("unsafe request GC root namespace".into()),
             }
         }
+        Ok(())
+    }
+
+    fn request_native(&self, request: &Request, create: bool) -> Result<Native, String> {
+        let mut native = self.0.clone();
+        let namespace = self.0.gc_roots.join("requests");
+        native.gc_roots = namespace.join(digest(&request.attempt));
+        self.private_namespace(&[&namespace, &native.gc_roots], create)?;
         Ok(native)
     }
+
+    /// Output roots are shared by every request whose graph holds the output
+    /// and live exactly as long as the train keeps that node.
+    fn outputs(&self) -> Result<PathBuf, String> {
+        let outputs = self.0.gc_roots.join("outputs");
+        self.private_namespace(&[&outputs], true)?;
+        Ok(outputs)
+    }
+
+    fn root_outputs(&self, mut paths: std::collections::BTreeSet<String>) -> Result<(), String> {
+        let outputs = self.outputs()?;
+        // Skip the directory sync when every root is already in place, as on
+        // restart, where each journaled node is checked once.
+        paths.retain(|path| {
+            Path::new(path).file_name().is_none_or(|name| {
+                std::fs::read_link(outputs.join(name)).ok().as_deref() != Some(Path::new(path))
+            })
+        });
+        if paths.is_empty() {
+            return Ok(());
+        }
+        nix_manager_core::build::frontier::retain_paths(&outputs, &paths).map_err(|e| e.to_string())
+    }
+}
+
+fn digest(attempt: &str) -> String {
+    format!("{:x}", Sha256::digest(attempt.as_bytes()))
+}
+
+/// Remove direct store roots selected by `drop`. Anything that is not such a
+/// root is left in place for inspection rather than deleted.
+fn remove_roots(directory: &Path, drop: impl Fn(&str) -> bool) -> Result<(), String> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let Ok(target) = std::fs::read_link(&path) else {
+            continue;
+        };
+        if target.parent() == Some(Path::new("/nix/store"))
+            && path.file_name() == target.file_name()
+            && target.to_str().is_some_and(&drop)
+        {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 fn output(goal: &Goal) -> Output {
@@ -263,10 +319,24 @@ impl Backend for NixBackend {
             .map_err(|e| e.to_string())
     }
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String> {
-        let paths = validated_request_paths(request, graph)?;
+        validated_request_paths(request, graph)?;
+        // The source and the requested derivations suffice for the request
+        // itself: every graph derivation is in a requested derivation's
+        // closure. Outputs are rooted only once they exist; a root to a
+        // missing path is what generic cleaners (nh clean) delete as orphaned.
         let native = self.request_native(request, true)?;
-        nix_manager_core::build::frontier::retain_paths(&native.gc_roots, &paths)
-            .map_err(|e| e.to_string())
+        nix_manager_core::build::frontier::retain_paths(
+            &native.gc_roots,
+            &request_paths(request, &Graph::new()),
+        )
+        .map_err(|e| e.to_string())?;
+        self.root_outputs(
+            graph
+                .values()
+                .map(|definition| definition.output_path.clone())
+                .filter(|path| std::fs::symlink_metadata(path).is_ok())
+                .collect(),
+        )
     }
     fn release(&self, request: &Request, graph: &Graph) -> Result<(), String> {
         let native = self.request_native(request, false)?;
@@ -298,14 +368,64 @@ impl Backend for NixBackend {
             .map_err(|e| e.to_string())
     }
     fn valid(&self, _: &Goal, definition: &Definition) -> Result<bool, String> {
-        self.0
+        let valid = self
+            .0
             .valid(&definition.output_path)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if valid {
+            // Covers sibling outputs of one build, restart, and a pre-root a
+            // cleaner removed while the build was running.
+            self.root_outputs([definition.output_path.clone()].into())?;
+        }
+        Ok(valid)
     }
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String> {
+        // Dangling only while this build runs; the worker's validity check
+        // re-roots the output once it exists.
+        self.root_outputs([dispatch.definition.output_path.clone()].into())?;
         self.0
             .realise(&native_node(&dispatch.goal, &dispatch.definition))
             .map_err(|e| e.to_string())
+    }
+    fn prune(&self, train: &Train) -> Result<(), String> {
+        let live: std::collections::BTreeMap<_, _> = train
+            .requests
+            .values()
+            .map(|record| (digest(&record.request.attempt), &record.request))
+            .collect();
+        let requests = self.0.gc_roots.join("requests");
+        let entries = match std::fs::read_dir(&requests) {
+            Ok(entries) => entries.collect::<Result<Vec<_>, _>>(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+        .map_err(|e| e.to_string())?;
+        for entry in entries {
+            let directory = entry.path();
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                continue;
+            }
+            match entry.file_name().to_str().and_then(|name| live.get(name)) {
+                // Also compacts per-path request roots written by older trains.
+                Some(request) => {
+                    let keep = request_paths(request, &Graph::new());
+                    remove_roots(&directory, |target| !keep.contains(target))?;
+                }
+                // Abandoned: its request left the journal without release.
+                None => {
+                    remove_roots(&directory, |_| true)?;
+                    let _ = std::fs::remove_dir(&directory);
+                }
+            }
+        }
+        let outputs: std::collections::BTreeSet<_> = train
+            .nodes
+            .values()
+            .map(|node| node.definition.output_path.as_str())
+            .collect();
+        remove_roots(&self.0.gc_roots.join("outputs"), |target| {
+            !outputs.contains(target)
+        })
     }
 }
 

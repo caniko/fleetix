@@ -49,6 +49,12 @@ pub trait Backend: Send + Sync + 'static {
     fn release(&self, _request: &Request, _graph: &Graph) -> Result<(), String> {
         Ok(())
     }
+    /// Drop roots no journaled request or node still owns. Runs at startup and
+    /// after every retirement, so abandoned and shared roots never outlive
+    /// their owners.
+    fn prune(&self, _train: &Train) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Configuration is deployment-owned and immutable for this coordinator lifetime.
@@ -460,6 +466,7 @@ fn retire(
         archive.roots_released = true;
         save_archive(config, &archive)?;
     }
+    backend.prune(train)?;
     Ok(archive_reply(config, train, &archive))
 }
 
@@ -598,6 +605,7 @@ pub fn serve(
     }
     train.reconcile(&valid);
     save(&config, &train)?;
+    backend.prune(&train)?;
     if config.socket.exists() {
         if UnixStream::connect(&config.socket).is_ok() {
             return Err("a live coordinator already owns this socket".into());

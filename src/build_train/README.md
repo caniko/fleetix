@@ -59,9 +59,10 @@ backend; consumers retain fleet policy and deployment stages.
 - Worker receipts are journaled before dispatch and use monotonically increasing
   generations. Restart reconciles store validity and retained GC roots before
   redispatch. Old acknowledgements cannot complete a new generation.
-- Source/derivation/output roots are retained before journal admission. There is
-  currently no automatic root or history pruning; operators retain recovery
-  evidence and clean it only after request owners release it.
+- Source and requested-derivation roots are retained before journal admission;
+  outputs are rooted in a shared namespace only once they exist. Startup and
+  retirement prune roots no journaled request or node owns. History is not
+  pruned; operators retain archives until request owners release them.
 - The newest submitted activating request supersedes older requests for the same
   target. Build-only requests do not supersede. Frontends authorize immediately
   before mutation under their shared target activation lease.
