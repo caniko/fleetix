@@ -186,7 +186,10 @@ impl NixBackend {
                                 continue;
                             }
                             _ => {
-                                return Err(format!("output GC root collision: {}", root.display()));
+                                return Err(format!(
+                                    "output GC root collision: {}",
+                                    root.display()
+                                ));
                             }
                         }
                     }
