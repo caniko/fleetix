@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fleetix.homeModules.mcp`: `fleetix.mcp.topologyServer.{enable,file}` registers
   `fleetix mcp-serve` as the `fleetix` server with `pkl` and `journalctl` on its
   `PATH`, so consumers stop wiring the binary by hand.
+- `fleetix.services.buildTrain.serviceScope = "user"` runs the build-train
+  coordinator under the operator's user manager (lingering enabled, controlled
+  with `systemctl --user`, no sudo). The default stays `"system"`. User mode
+  requires `security.allowUserNamespaces`, and changing scope needs the guarded
+  rollover handover with `retainedDeployment.serviceScope`; see
+  [BUILD_TRAIN.md](BUILD_TRAIN.md#operator-user-service).
 - Publish prebuilt `cargo-binstall` archives from release tags: static musl
   binaries for `x86_64` and `aarch64` Linux, so `cargo binstall fleetix` and
   `cargo binstall fleetix-sidecar` install without a Rust toolchain.
