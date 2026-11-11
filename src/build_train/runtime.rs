@@ -42,6 +42,10 @@ pub trait Backend: Send + Sync + 'static {
     /// Bounded graph inspection. The coordinator runs this on dedicated planners.
     fn plan(&self, request: &Request) -> Result<Graph, String>;
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String>;
+    /// Protect every live named output a dispatch may produce, before it runs.
+    fn reserve(&self, _outputs: &Graph) -> Result<(), String> {
+        Ok(())
+    }
     fn valid(&self, goal: &Goal, definition: &Definition) -> Result<bool, String>;
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String>;
     /// Release only this request's roots; other owners must retain their own pins.
@@ -867,7 +871,9 @@ pub fn serve(
                 workers.push(thread::spawn(move || {
                     let (result, valid) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut result = backend.realise(&dispatch);
+                            let mut result = backend
+                                .reserve(&siblings)
+                                .and_then(|()| backend.realise(&dispatch));
                             let mut valid = BTreeSet::new();
                             for (goal, definition) in siblings {
                                 match backend.valid(&goal, &definition) {

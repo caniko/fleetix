@@ -388,16 +388,22 @@ impl Backend for NixBackend {
             .valid(&definition.output_path)
             .map_err(|e| e.to_string())?;
         if valid {
-            // Covers sibling outputs of one build, restart, and a pre-root a
-            // cleaner removed while the build was running.
+            // Re-asserts a reserved root a cleaner removed mid-build.
             self.root_outputs([definition.output_path.clone()].into())?;
         }
         Ok(valid)
     }
+    fn reserve(&self, outputs: &Graph) -> Result<(), String> {
+        // Dangling only while the build runs, so every output it produces,
+        // siblings included, is rooted from the moment it exists.
+        self.root_outputs(
+            outputs
+                .values()
+                .map(|definition| definition.output_path.clone())
+                .collect(),
+        )
+    }
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String> {
-        // Dangling only while this build runs; the worker's validity check
-        // re-roots the output once it exists.
-        self.root_outputs([dispatch.definition.output_path.clone()].into())?;
         self.0
             .realise(&native_node(&dispatch.goal, &dispatch.definition))
             .map_err(|e| e.to_string())

@@ -45,6 +45,7 @@ struct TestBackend {
     initial_retains: Mutex<Vec<String>>,
     initial_retain_fails: AtomicBool,
     pruned: Mutex<Vec<BTreeSet<String>>>,
+    reserved: Mutex<Vec<BTreeSet<Goal>>>,
 }
 impl Backend for TestBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
@@ -173,6 +174,13 @@ impl Backend for TestBackend {
     }
     fn valid(&self, goal: &Goal, _: &Definition) -> Result<bool, String> {
         Ok(self.valid.lock().unwrap().contains(goal))
+    }
+    fn reserve(&self, outputs: &Graph) -> Result<(), String> {
+        self.reserved
+            .lock()
+            .unwrap()
+            .push(outputs.keys().cloned().collect());
+        Ok(())
     }
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String> {
         self.started
@@ -1494,6 +1502,13 @@ fn one_builder_result_reconciles_all_valid_named_outputs() {
             == Some(Outcome::Ready)
     });
     assert_eq!(server.backend.started.lock().unwrap().len(), 1);
+    // Both named outputs were reserved before the one build produced them.
+    let mut dev = goal("multi");
+    dev.output = "dev".into();
+    assert_eq!(
+        *server.backend.reserved.lock().unwrap(),
+        [BTreeSet::from([goal("multi"), dev])]
+    );
 }
 
 #[test]

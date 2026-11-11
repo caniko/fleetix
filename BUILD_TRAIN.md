@@ -150,9 +150,9 @@ Caller-owned deployment roots remain the caller's responsibility.
 
 Each request roots only its source and requested derivations under
 `requests/<sha256(attempt)>/`; every planned derivation is in their closure.
-Outputs share `outputs/` and are rooted once they exist: an output is rooted
-just before its own build (dangling only while that build runs) and again when
-the store confirms it. No root points at an output that was merely planned, so
+Outputs share `outputs/` and are rooted once they exist: every live named
+output of a derivation is rooted just before its build (dangling only while
+that build runs) and again when the store confirms it. No root points at an output that was merely planned, so
 cleaners that delete dangling roots (`nh clean`) cannot strip a pending
 request's retention. Startup and every `retire` prune request directories and
 output roots that no journaled request or node still owns, including
