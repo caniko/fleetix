@@ -159,19 +159,34 @@ impl NixBackend {
         Ok(outputs)
     }
 
-    fn root_outputs(&self, mut paths: std::collections::BTreeSet<String>) -> Result<(), String> {
-        let outputs = self.outputs()?;
-        // Skip the directory sync when every root is already in place, as on
-        // restart, where each journaled node is checked once.
-        paths.retain(|path| {
-            Path::new(path).file_name().is_none_or(|name| {
-                std::fs::read_link(outputs.join(name)).ok().as_deref() != Some(Path::new(path))
-            })
-        });
+    /// Idempotent and safe against concurrent writers: fixed-output
+    /// derivations can share an output path across workers.
+    fn root_outputs(&self, paths: std::collections::BTreeSet<String>) -> Result<(), String> {
         if paths.is_empty() {
             return Ok(());
         }
-        nix_manager_core::build::frontier::retain_paths(&outputs, &paths).map_err(|e| e.to_string())
+        let outputs = self.outputs()?;
+        let mut created = false;
+        for path in paths {
+            let root = outputs.join(
+                Path::new(&path)
+                    .file_name()
+                    .ok_or("store path has no basename")?,
+            );
+            match std::os::unix::fs::symlink(&path, &root) {
+                Ok(()) => created = true,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        && std::fs::read_link(&root).ok().as_deref() == Some(Path::new(&path)) => {}
+                Err(e) => return Err(format!("output GC root {}: {e}", root.display())),
+            }
+        }
+        if created {
+            std::fs::File::open(&outputs)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -423,6 +438,16 @@ impl Backend for NixBackend {
             .values()
             .map(|node| node.definition.output_path.as_str())
             .collect();
+        // A live output can appear without its own validity check, e.g.
+        // fetched in another request's closure. Root it before that request's
+        // roots go.
+        self.root_outputs(
+            outputs
+                .iter()
+                .filter(|path| std::fs::symlink_metadata(path).is_ok())
+                .map(|path| path.to_string())
+                .collect(),
+        )?;
         remove_roots(&self.0.gc_roots.join("outputs"), |target| {
             !outputs.contains(target)
         })

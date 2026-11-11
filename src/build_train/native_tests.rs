@@ -516,3 +516,63 @@ fn requests_root_only_their_identity_and_prune_drops_unowned_roots() {
     backend.prune(&Train::new("policy".into(), 300)).unwrap();
     assert_eq!(names(&outputs), BTreeSet::from(["foreign".into()]));
 }
+
+#[test]
+fn prune_roots_live_outputs_that_appeared_without_a_validity_check() {
+    // Any real store entry stands in for an output another request fetched.
+    let Some(existing) = std::fs::read_dir("/nix/store")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().to_string_lossy().into_owned())
+        .find(|path| {
+            let probe = Request {
+                attempt: "probe".into(),
+                target: "builder".into(),
+                source: path.clone(),
+                roots: BTreeSet::new(),
+                activates: false,
+            };
+            validated_request_paths(&probe, &Graph::new()).is_ok()
+        })
+    else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut native = service().native;
+    native.gc_roots = temp.path().join("roots");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&native.gc_roots)
+        .unwrap();
+    let backend = NixBackend(native.clone());
+    let goal = Goal {
+        derivation: format!("/nix/store/{}-held.drv", "0".repeat(32)),
+        output: "out".into(),
+    };
+    let request = Request {
+        attempt: "held".into(),
+        target: "builder".into(),
+        source: format!("/nix/store/{}-source", "0".repeat(32)),
+        roots: BTreeSet::from([goal.clone()]),
+        activates: false,
+    };
+    let mut train = Train::new("policy".into(), 300);
+    train.register(request.clone(), false).unwrap();
+    let definition = Definition {
+        output_path: existing.clone(),
+        dependencies: BTreeSet::new(),
+        operation: Operation::Build,
+    };
+    train
+        .submit(request, Graph::from([(goal, definition)]), 0)
+        .unwrap();
+    backend.prune(&train).unwrap();
+    // Twice: concurrent or repeated writers of one shared root must agree.
+    backend.prune(&train).unwrap();
+    let root = native
+        .gc_roots
+        .join("outputs")
+        .join(Path::new(&existing).file_name().unwrap());
+    assert_eq!(std::fs::read_link(root).unwrap(), Path::new(&existing));
+}
