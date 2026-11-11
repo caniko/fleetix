@@ -44,6 +44,8 @@ struct TestBackend {
     retain_gate: Condvar,
     initial_retains: Mutex<Vec<String>>,
     initial_retain_fails: AtomicBool,
+    pruned: Mutex<Vec<BTreeSet<String>>>,
+    reserved: Mutex<Vec<BTreeSet<Goal>>>,
 }
 impl Backend for TestBackend {
     fn plan(&self, request: &Request) -> Result<Graph, String> {
@@ -54,7 +56,12 @@ impl Backend for TestBackend {
                 released = self.plan_gate.wait(released).unwrap();
             }
         }
-        if request.target == "multi" {
+        if request.target.starts_with("multi") {
+            let operation = if request.target == "multi-restore" {
+                Operation::Restore
+            } else {
+                Operation::Build
+            };
             let mut dev = goal("multi");
             dev.output = "dev".into();
             return Ok([goal("multi"), dev]
@@ -66,7 +73,7 @@ impl Backend for TestBackend {
                         Definition {
                             output_path: path,
                             dependencies: BTreeSet::new(),
-                            operation: Operation::Build,
+                            operation,
                         },
                     )
                 })
@@ -173,6 +180,13 @@ impl Backend for TestBackend {
     fn valid(&self, goal: &Goal, _: &Definition) -> Result<bool, String> {
         Ok(self.valid.lock().unwrap().contains(goal))
     }
+    fn reserve(&self, outputs: &Graph) -> Result<(), String> {
+        self.reserved
+            .lock()
+            .unwrap()
+            .push(outputs.keys().cloned().collect());
+        Ok(())
+    }
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String> {
         self.started
             .lock()
@@ -211,6 +225,13 @@ impl Backend for TestBackend {
             .unwrap()
             .push(request.attempt.clone());
         owned.remove(&request.attempt);
+        Ok(())
+    }
+    fn prune(&self, train: &Train) -> Result<(), String> {
+        self.pruned
+            .lock()
+            .unwrap()
+            .push(train.requests.keys().cloned().collect());
         Ok(())
     }
 }
@@ -352,8 +373,12 @@ fn partial_initial_retention_failure_keeps_retirable_intake_after_restart() {
         .initial_retain_fails
         .store(false, Ordering::Relaxed);
     server.restart();
+    // Startup prunes against the journal, and so does every retirement.
+    let last_pruned = || server.backend.pruned.lock().unwrap().last().cloned();
+    assert_eq!(last_pruned(), Some(BTreeSet::from(["m".into()])));
     client.call(Command::Retire("m".into())).unwrap();
     assert_eq!(*server.backend.released_requests.lock().unwrap(), ["m"]);
+    assert_eq!(last_pruned(), Some(BTreeSet::new()));
     assert!(server.backend.started.lock().unwrap().is_empty());
 }
 
@@ -935,6 +960,8 @@ fn materialized_output_does_not_clear_a_worker_failure_on_completion_or_restart(
             Some(Outcome::Failed(_))
         )
     });
+    // Startup pruned once; the failed completion reconciled roots again.
+    assert!(server.backend.pruned.lock().unwrap().len() >= 2);
     let failure = client
         .call(Command::Status("failed".into()))
         .unwrap()
@@ -1482,6 +1509,33 @@ fn one_builder_result_reconciles_all_valid_named_outputs() {
             == Some(Outcome::Ready)
     });
     assert_eq!(server.backend.started.lock().unwrap().len(), 1);
+    // Both named outputs were reserved before the one build produced them.
+    let mut dev = goal("multi");
+    dev.output = "dev".into();
+    assert_eq!(
+        *server.backend.reserved.lock().unwrap(),
+        [BTreeSet::from([goal("multi"), dev])]
+    );
+}
+
+#[test]
+fn restoring_one_named_output_reserves_only_that_output() {
+    let server = Server::start();
+    let mut req = request("multi-restore", "multi-restore");
+    req.roots = BTreeSet::from([goal("multi")]);
+    server.client().call(Command::Submit(req)).unwrap();
+    eventually(|| {
+        server
+            .client()
+            .call(Command::Status("multi-restore".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        *server.backend.reserved.lock().unwrap(),
+        [BTreeSet::from([goal("multi")])]
+    );
 }
 
 #[test]
@@ -2322,5 +2376,44 @@ fn preparation_is_process_shared_exact_keyed_and_caches_only_passes() {
         )))
         .unwrap(),
         Evidence::Passed(())
+    );
+}
+
+#[test]
+fn restart_reserves_every_output_an_interrupted_build_may_produce() {
+    let mut server = Server::start();
+    let client = server.client();
+    let mut req = request("multi", "multi");
+    req.roots = BTreeSet::from([goal("multi")]);
+    client.call(Command::Submit(req)).unwrap();
+    eventually(|| {
+        client
+            .call(Command::Status("multi".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+    server.shutdown();
+    // A coordinator that stopped while the Nix worker for multi^out was
+    // running; its dev sibling was still pending.
+    let path = server.config.state_dir.join("train.json");
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let nodes = journal["nodes"].as_object_mut().unwrap();
+    for (key, node) in nodes.iter_mut() {
+        node["state"] = if key.ends_with("^out") {
+            serde_json::json!({"Running": {"serial": 1}})
+        } else {
+            serde_json::json!("Pending")
+        };
+    }
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    server.backend.reserved.lock().unwrap().clear();
+    server.restart();
+    let mut dev = goal("multi");
+    dev.output = "dev".into();
+    assert_eq!(
+        server.backend.reserved.lock().unwrap().first(),
+        Some(&BTreeSet::from([goal("multi"), dev]))
     );
 }

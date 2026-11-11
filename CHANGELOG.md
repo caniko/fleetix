@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Build-train requests no longer root every planned path. A request roots its
+  source and requested derivations; outputs are rooted in a shared namespace
+  once they exist and pruned with their last owning node. Startup and `retire`
+  remove abandoned request directories and older per-path roots. A full-fleet
+  request previously left ~115k roots, about 31k of them dangling, which
+  `nh clean` deleted for hours each night while stripping pending retention.
 - `build-train rollover` can adopt a stopped, idle journal which never took a
   drain fence. A fence requires a live request, so a train which finished and
   retired its work before the policy changed could not be handed over at all and

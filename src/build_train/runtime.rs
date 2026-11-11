@@ -42,11 +42,21 @@ pub trait Backend: Send + Sync + 'static {
     /// Bounded graph inspection. The coordinator runs this on dedicated planners.
     fn plan(&self, request: &Request) -> Result<Graph, String>;
     fn retain(&self, request: &Request, graph: &Graph) -> Result<(), String>;
+    /// Protect every live named output a dispatch may produce, before it runs.
+    fn reserve(&self, _outputs: &Graph) -> Result<(), String> {
+        Ok(())
+    }
     fn valid(&self, goal: &Goal, definition: &Definition) -> Result<bool, String>;
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String>;
     /// Release only this request's roots; other owners must retain their own pins.
     /// Backends without request-scoped roots conservatively retain them.
     fn release(&self, _request: &Request, _graph: &Graph) -> Result<(), String> {
+        Ok(())
+    }
+    /// Drop roots no journaled request or node still owns. Runs at startup and
+    /// after every retirement, so abandoned and shared roots never outlive
+    /// their owners.
+    fn prune(&self, _train: &Train) -> Result<(), String> {
         Ok(())
     }
 }
@@ -460,7 +470,22 @@ fn retire(
         archive.roots_released = true;
         save_archive(config, &archive)?;
     }
+    backend.prune(train)?;
     Ok(archive_reply(config, train, &archive))
+}
+
+/// Outputs a dispatch may produce: substitution fetches only the requested
+/// output; a build makes every named output of its derivation.
+fn reservation(train: &Train, goal: &Goal, definition: &Definition) -> Graph {
+    if definition.operation == Operation::Restore {
+        return Graph::from([(goal.clone(), definition.clone())]);
+    }
+    train
+        .nodes
+        .iter()
+        .filter(|(sibling, _)| sibling.derivation == goal.derivation)
+        .map(|(sibling, node)| (sibling.clone(), node.definition.clone()))
+        .collect()
 }
 
 fn archive_reply(config: &Config, train: &Train, archive: &Archive) -> Reply {
@@ -591,6 +616,17 @@ pub fn serve(
         let graph = train.retained_graph(attempt)?;
         backend.retain(&record.request, &graph)?;
     }
+    // An interrupted dispatch's Nix worker may still finish after reconcile
+    // returns its node to pending; keep its outputs reserved.
+    let interrupted: Graph = train
+        .nodes
+        .iter()
+        .filter(|(_, node)| matches!(node.state, NodeState::Running { .. }))
+        .flat_map(|(goal, node)| reservation(&train, goal, &node.definition))
+        .collect();
+    if !interrupted.is_empty() {
+        backend.reserve(&interrupted)?;
+    }
     for (goal, node) in &train.nodes {
         if backend.valid(goal, &node.definition)? {
             valid.insert(goal.clone());
@@ -598,6 +634,7 @@ pub fn serve(
     }
     train.reconcile(&valid);
     save(&config, &train)?;
+    backend.prune(&train)?;
     if config.socket.exists() {
         if UnixStream::connect(&config.socket).is_ok() {
             return Err("a live coordinator already owns this socket".into());
@@ -696,6 +733,7 @@ pub fn serve(
             }
         }
         while let Ok((dispatch, result, valid)) = completed_rx.try_recv() {
+            let failed = result.is_err();
             train.finish(&dispatch, result);
             // One native builder may have produced multiple selected outputs.
             // Store evidence, rather than the worker's exit code, satisfies them.
@@ -705,6 +743,11 @@ pub fn serve(
                 }
             }
             save(&config, &train)?;
+            if failed {
+                // A failed realisation may still have fetched other live
+                // outputs; nothing else checks them until their own dispatch.
+                backend.prune(&train)?;
+            }
         }
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
         outgoing.retain_mut(ipc::Outgoing::pending);
@@ -856,10 +899,13 @@ pub fn serve(
                     .filter(|(goal, _)| goal.derivation == dispatch.goal.derivation)
                     .map(|(goal, node)| (goal.clone(), node.definition.clone()))
                     .collect();
+                let reserved = reservation(&train, &dispatch.goal, &dispatch.definition);
                 workers.push(thread::spawn(move || {
                     let (result, valid) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut result = backend.realise(&dispatch);
+                            let mut result = backend
+                                .reserve(&reserved)
+                                .and_then(|()| backend.realise(&dispatch));
                             let mut valid = BTreeSet::new();
                             for (goal, definition) in siblings {
                                 match backend.valid(&goal, &definition) {

@@ -148,6 +148,21 @@ failure and returns it to held admission. Rerun live checks before `admit`.
 `retire` archives terminal evidence before releasing only its train-owned roots.
 Caller-owned deployment roots remain the caller's responsibility.
 
+Each request roots only its source and requested derivations under
+`requests/<sha256(attempt)>/`; every planned derivation is in their closure.
+Outputs share `outputs/` and are rooted once they exist: every live named
+output of a derivation is rooted just before its build and again when the
+store confirms it. A reservation dangles while its build runs, and after a
+failed build until its node retires. Startup reserves the outputs of
+dispatches it finds interrupted, and a failed completion reroots every
+existing live output, since a partial substitution can fetch other nodes'
+outputs. No root points at an output that was merely planned, so
+cleaners that delete dangling roots (`nh clean`) cannot strip a pending
+request's retention. Startup and every `retire` prune request directories and
+output roots that no journaled request or node still owns, including
+directories whose request left the journal without a release and per-path roots
+written by older coordinators. Non-root entries are left for inspection.
+
 ## Activation and recovery
 
 `drain --attempt ID --wait-seconds N` establishes the durable activation fence

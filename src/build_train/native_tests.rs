@@ -430,3 +430,149 @@ fn root_release_is_request_scoped_retryable_and_rejects_foreign_entries() {
     assert!(backend.release(&b, &Graph::new()).is_err());
     assert!(root_b.join("unexpected").exists());
 }
+
+#[test]
+fn requests_root_only_their_identity_and_prune_drops_unowned_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut native = service().native;
+    native.gc_roots = temp.path().join("roots");
+    let private = |path: &Path| {
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(path)
+            .unwrap()
+    };
+    private(&native.gc_roots);
+    let backend = NixBackend(native.clone());
+    let store = |name: &str| format!("/nix/store/{}-{name}", "0".repeat(32));
+    let base = |path: &str| Path::new(path).file_name().unwrap().to_owned();
+    let goal = |name: &str| Goal {
+        derivation: store(&format!("{name}.drv")),
+        output: "out".into(),
+    };
+    let request = Request {
+        attempt: "a".into(),
+        target: "builder".into(),
+        source: format!("{}#target", store("source")),
+        roots: BTreeSet::from([goal("root")]),
+        activates: false,
+    };
+    let definition = |name: &str, dependencies| Definition {
+        output_path: store(name),
+        dependencies,
+        operation: Operation::Build,
+    };
+    let graph = Graph::from([
+        (
+            goal("root"),
+            definition("root", BTreeSet::from([goal("dep")])),
+        ),
+        (goal("dep"), definition("dep", BTreeSet::new())),
+    ]);
+    // Identity only: intermediate derivations live in the root derivation's
+    // closure, and outputs are rooted in the shared namespace once they exist.
+    let identity = BTreeSet::from([store("source"), store("root.drv")]);
+    assert_eq!(request_paths(&request, &Graph::new()), identity);
+
+    let names = |directory: &Path| -> BTreeSet<std::ffi::OsString> {
+        std::fs::read_dir(directory)
+            .map(|entries| entries.map(|entry| entry.unwrap().file_name()).collect())
+            .unwrap_or_default()
+    };
+    let request_dir = backend.request_native(&request, true).unwrap().gc_roots;
+    let abandoned = native.gc_roots.join("requests").join(digest("gone"));
+    let outputs = native.gc_roots.join("outputs");
+    private(&abandoned);
+    private(&outputs);
+    // An older train's per-path request roots, an abandoned request and a
+    // stale shared output root beside live ones.
+    for path in identity.iter().chain([&store("dep.drv"), &store("dep")]) {
+        symlink(path, request_dir.join(base(path))).unwrap();
+    }
+    symlink(store("gone"), abandoned.join(base(&store("gone")))).unwrap();
+    for name in ["root", "dep", "stale"] {
+        symlink(store(name), outputs.join(base(&store(name)))).unwrap();
+    }
+    std::fs::write(outputs.join("foreign"), "kept for inspection").unwrap();
+
+    let mut train = Train::new("policy".into(), 300);
+    train.register(request.clone(), true).unwrap();
+    train.submit(request.clone(), graph, 0).unwrap();
+    backend.prune(&train).unwrap();
+    assert_eq!(
+        names(&request_dir),
+        identity.iter().map(|path| base(path)).collect()
+    );
+    assert!(!abandoned.exists());
+    assert_eq!(
+        names(&outputs),
+        BTreeSet::from([base(&store("root")), base(&store("dep")), "foreign".into()])
+    );
+
+    // Release drops the request; the next prune drops the outputs it owned.
+    backend.release(&request, &Graph::new()).unwrap();
+    assert!(!request_dir.exists());
+    backend.prune(&Train::new("policy".into(), 300)).unwrap();
+    assert_eq!(names(&outputs), BTreeSet::from(["foreign".into()]));
+}
+
+#[test]
+fn prune_roots_live_outputs_that_appeared_without_a_validity_check() {
+    // Any real store entry stands in for an output another request fetched.
+    let Some(existing) = std::fs::read_dir("/nix/store")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().to_string_lossy().into_owned())
+        .find(|path| {
+            let probe = Request {
+                attempt: "probe".into(),
+                target: "builder".into(),
+                source: path.clone(),
+                roots: BTreeSet::new(),
+                activates: false,
+            };
+            validated_request_paths(&probe, &Graph::new()).is_ok()
+        })
+    else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut native = service().native;
+    native.gc_roots = temp.path().join("roots");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&native.gc_roots)
+        .unwrap();
+    let backend = NixBackend(native.clone());
+    let goal = Goal {
+        derivation: format!("/nix/store/{}-held.drv", "0".repeat(32)),
+        output: "out".into(),
+    };
+    let request = Request {
+        attempt: "held".into(),
+        target: "builder".into(),
+        source: format!("/nix/store/{}-source", "0".repeat(32)),
+        roots: BTreeSet::from([goal.clone()]),
+        activates: false,
+    };
+    let mut train = Train::new("policy".into(), 300);
+    train.register(request.clone(), false).unwrap();
+    let definition = Definition {
+        output_path: existing.clone(),
+        dependencies: BTreeSet::new(),
+        operation: Operation::Build,
+    };
+    train
+        .submit(request, Graph::from([(goal, definition)]), 0)
+        .unwrap();
+    backend.prune(&train).unwrap();
+    // Twice: concurrent or repeated writers of one shared root must agree.
+    backend.prune(&train).unwrap();
+    let root = native
+        .gc_roots
+        .join("outputs")
+        .join(Path::new(&existing).file_name().unwrap());
+    assert_eq!(std::fs::read_link(root).unwrap(), Path::new(&existing));
+}
