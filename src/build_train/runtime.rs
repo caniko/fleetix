@@ -602,6 +602,17 @@ pub fn serve(
         let graph = train.retained_graph(attempt)?;
         backend.retain(&record.request, &graph)?;
     }
+    // An interrupted dispatch's Nix worker may still finish after reconcile
+    // returns its node to pending; keep its outputs reserved.
+    let interrupted: Graph = train
+        .nodes
+        .iter()
+        .filter(|(_, node)| matches!(node.state, NodeState::Running { .. }))
+        .map(|(goal, node)| (goal.clone(), node.definition.clone()))
+        .collect();
+    if !interrupted.is_empty() {
+        backend.reserve(&interrupted)?;
+    }
     for (goal, node) in &train.nodes {
         if backend.valid(goal, &node.definition)? {
             valid.insert(goal.clone());
@@ -708,6 +719,7 @@ pub fn serve(
             }
         }
         while let Ok((dispatch, result, valid)) = completed_rx.try_recv() {
+            let failed = result.is_err();
             train.finish(&dispatch, result);
             // One native builder may have produced multiple selected outputs.
             // Store evidence, rather than the worker's exit code, satisfies them.
@@ -717,6 +729,11 @@ pub fn serve(
                 }
             }
             save(&config, &train)?;
+            if failed {
+                // A failed realisation may still have fetched other live
+                // outputs; nothing else checks them until their own dispatch.
+                backend.prune(&train)?;
+            }
         }
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
         outgoing.retain_mut(ipc::Outgoing::pending);

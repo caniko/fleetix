@@ -960,6 +960,8 @@ fn materialized_output_does_not_clear_a_worker_failure_on_completion_or_restart(
             Some(Outcome::Failed(_))
         )
     });
+    // Startup pruned once; the failed completion reconciled roots again.
+    assert!(server.backend.pruned.lock().unwrap().len() >= 2);
     let failure = client
         .call(Command::Status("failed".into()))
         .unwrap()
@@ -2374,5 +2376,35 @@ fn preparation_is_process_shared_exact_keyed_and_caches_only_passes() {
         )))
         .unwrap(),
         Evidence::Passed(())
+    );
+}
+
+#[test]
+fn restart_reserves_outputs_of_interrupted_dispatches() {
+    let mut server = Server::start();
+    let client = server.client();
+    client.call(Command::Submit(request("m", "murph"))).unwrap();
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    server.shutdown();
+    // Simulate a coordinator that stopped while its Nix worker was running.
+    let path = server.config.state_dir.join("train.json");
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for node in journal["nodes"].as_object_mut().unwrap().values_mut() {
+        node["state"] = serde_json::json!({"Running": {"serial": 1}});
+    }
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    server.backend.reserved.lock().unwrap().clear();
+    server.restart();
+    assert!(
+        server
+            .backend
+            .reserved
+            .lock()
+            .unwrap()
+            .first()
+            .is_some_and(|reserved| reserved.contains(&goal("murph")))
     );
 }

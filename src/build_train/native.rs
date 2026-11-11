@@ -173,12 +173,26 @@ impl NixBackend {
                     .file_name()
                     .ok_or("store path has no basename")?,
             );
-            match std::os::unix::fs::symlink(&path, &root) {
-                Ok(()) => created = true,
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::AlreadyExists
-                        && std::fs::read_link(&root).ok().as_deref() == Some(Path::new(&path)) => {}
-                Err(e) => return Err(format!("output GC root {}: {e}", root.display())),
+            // A second attempt covers a root pruned between the two calls.
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                match std::os::unix::fs::symlink(&path, &root) {
+                    Ok(()) => created = true,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        match std::fs::read_link(&root) {
+                            Ok(target) if target == Path::new(&path) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound && attempts < 2 => {
+                                continue;
+                            }
+                            _ => {
+                                return Err(format!("output GC root collision: {}", root.display()));
+                            }
+                        }
+                    }
+                    Err(e) => return Err(format!("output GC root {}: {e}", root.display())),
+                }
+                break;
             }
         }
         if created {
@@ -408,6 +422,21 @@ impl Backend for NixBackend {
             .map_err(|e| e.to_string())
     }
     fn prune(&self, train: &Train) -> Result<(), String> {
+        let outputs: std::collections::BTreeSet<_> = train
+            .nodes
+            .values()
+            .map(|node| node.definition.output_path.as_str())
+            .collect();
+        // A live output can appear without its own validity check, e.g.
+        // fetched in another request's closure. Root it before any
+        // request's roots go.
+        self.root_outputs(
+            outputs
+                .iter()
+                .filter(|path| std::fs::symlink_metadata(path).is_ok())
+                .map(|path| path.to_string())
+                .collect(),
+        )?;
         let live: std::collections::BTreeMap<_, _> = train
             .requests
             .values()
@@ -438,21 +467,6 @@ impl Backend for NixBackend {
                 }
             }
         }
-        let outputs: std::collections::BTreeSet<_> = train
-            .nodes
-            .values()
-            .map(|node| node.definition.output_path.as_str())
-            .collect();
-        // A live output can appear without its own validity check, e.g.
-        // fetched in another request's closure. Root it before that request's
-        // roots go.
-        self.root_outputs(
-            outputs
-                .iter()
-                .filter(|path| std::fs::symlink_metadata(path).is_ok())
-                .map(|path| path.to_string())
-                .collect(),
-        )?;
         remove_roots(&self.0.gc_roots.join("outputs"), |target| {
             !outputs.contains(target)
         })
