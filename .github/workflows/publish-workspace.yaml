@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
       XDG_CACHE_HOME: "/tmp/.cache"
@@ -140,11 +140,6 @@ jobs:
           db="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
           nix develop -c cargo audit --db "$db" --no-fetch --stale
 
-      - name: Required gate generated-parity
-        timeout-minutes: 30
-        env:
-          SIMIT_REQUIRED_GATE: "1"
-        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/b7657ee584edeab792ca34e28eb2fcde63673433 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
       - name: Test fleetix-sidecar
         run: nix develop -c cargo test --locked -p fleetix-sidecar --all-targets --all-features
       - name: Clippy fleetix-sidecar
