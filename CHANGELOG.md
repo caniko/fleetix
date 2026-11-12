@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-11
+
 ### Added
 
 - Add `nixosModules.boot-operations`: declarative one-shot operations that run
@@ -49,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fleetix.homeModules.mcp`: `fleetix.mcp.topologyServer.{enable,file}` registers
   `fleetix mcp-serve` as the `fleetix` server with `pkl` and `journalctl` on its
   `PATH`, so consumers stop wiring the binary by hand.
+- `fleetix.services.buildTrain.serviceScope = "user"` runs the build-train
+  coordinator under the operator's user manager (lingering enabled, controlled
+  with `systemctl --user`, no sudo). The default stays `"system"`. User mode
+  requires `security.allowUserNamespaces`, and changing scope needs the guarded
+  rollover handover with `retainedDeployment.serviceScope`; see
+  [BUILD_TRAIN.md](BUILD_TRAIN.md#operator-user-service).
 - Publish prebuilt `cargo-binstall` archives from release tags: static musl
   binaries for `x86_64` and `aarch64` Linux, so `cargo binstall fleetix` and
   `cargo binstall fleetix-sidecar` install without a Rust toolchain.
@@ -57,10 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Build-train requests no longer root every planned path. A request roots its
   source and requested derivations; outputs are rooted in a shared namespace
-  once they exist and pruned with their last owning node. Startup and `retire`
-  remove abandoned request directories and older per-path roots. A full-fleet
-  request previously left ~115k roots, about 31k of them dangling, which
-  `nh clean` deleted for hours each night while stripping pending retention.
+  once they exist (or just before the build that produces them) and pruned
+  with their last owning node. Startup, `retire` and failed builds reconcile
+  roots, removing abandoned request directories and older per-path roots. A
+  full-fleet request previously left ~115k roots, about 31k pointing at
+  unbuilt outputs, which `nh clean` spent hours deleting each night; an output
+  built after such a run stayed unrooted until the coordinator restarted.
 - `build-train rollover` can adopt a stopped, idle journal which never took a
   drain fence. A fence requires a live request, so a train which finished and
   retired its work before the policy changed could not be handed over at all and
@@ -71,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Release `SHA256SUMS.txt` checksum manifests are minisign-signed and verified
+  against the committed `keys/minisign.pub` trust root; release archives also
+  carry cosign signatures and provenance attestations.
 - Require tokio 1.53.3 for the AsyncFd I/O safety fix (RUSTSEC-2026-0386).
 
 ## [0.9.1] - 2026-11-07
@@ -391,7 +404,9 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.9.0...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.10.0...HEAD
+[0.10.0]: https://github.com/caniko/fleetix/compare/0.9.1...0.10.0
+[0.9.1]: https://github.com/caniko/fleetix/compare/0.9.0...0.9.1
 [0.9.0]: https://github.com/caniko/fleetix/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/caniko/fleetix/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/caniko/fleetix/compare/0.6.0...0.7.0
