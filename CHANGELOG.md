@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-13
+
 ### Added
 
 - `fleetix_supply_consumers` takes `directOnly` to leave out transitive pins,
@@ -15,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumers of a producer revision into a `fleetix.supply-work-items.v1` file
   and runs an operator-configured landing command, enabled only by
   `--supply-land` alongside the supply flags.
+
+### Fixed
+
+- Build-train coordinator: a slow loop turn no longer drops queued replies,
+  which clients saw as `truncated coordinator reply`. The IO deadline now
+  bounds the peer, not the coordinator, and a turn's completions are
+  journaled with one save instead of one per derivation.
 
 ## [0.10.1] - 2026-11-12
 
@@ -420,7 +429,8 @@ as H`) in aggregates. The automatic Canix-shaped flattening workaround is
   check
 - simit project metadata configuration
 
-[Unreleased]: https://github.com/caniko/fleetix/compare/0.10.1...HEAD
+[Unreleased]: https://github.com/caniko/fleetix/compare/0.10.2...HEAD
+[0.10.2]: https://github.com/caniko/fleetix/compare/0.10.1...0.10.2
 [0.10.1]: https://github.com/caniko/fleetix/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/caniko/fleetix/compare/0.9.1...0.10.0
 [0.9.1]: https://github.com/caniko/fleetix/compare/0.9.0...0.9.1
