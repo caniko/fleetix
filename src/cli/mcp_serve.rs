@@ -79,6 +79,9 @@ struct SupplyConsumersSelection {
     producer: String,
     /// Target revision; consumers that do not pin it are reported `behind`.
     target: Option<String>,
+    /// Keep only direct inputs; transitive pins can be several times as many.
+    #[serde(default, rename = "directOnly")]
+    direct_only: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -220,12 +223,14 @@ pub(super) fn server(
                     async move {
                         let producer = args.producer;
                         let target = args.target;
+                        let direct_only = args.direct_only;
                         blocking(move || {
                             let graph = load_graph(&config)?;
-                            serde_json::to_value(supply::consumers(
+                            serde_json::to_value(consumers_report(
                                 &graph,
                                 &producer,
                                 target.as_deref(),
+                                direct_only,
                             ))
                             .map_err(|error| miette::miette!("serialize consumers: {error}"))
                         })
@@ -345,6 +350,20 @@ fn refresh(config: &SupplyConfig) -> miette::Result<serde_json::Value> {
         "errors": &graph.errors,
         "conflicts": &graph.conflicts,
     }))
+}
+
+/// `supply::consumers`, optionally without transitive pins.
+fn consumers_report(
+    graph: &supply::Graph,
+    producer: &str,
+    target: Option<&str>,
+    direct_only: bool,
+) -> supply::ConsumersReport {
+    let mut report = supply::consumers(graph, producer, target);
+    if direct_only {
+        report.items.retain(|item| item.direct == Some(true));
+    }
+    report
 }
 
 /// Capture limit for one stream of the landing command's output.
@@ -884,6 +903,47 @@ mod tests {
             .to_string();
         assert!(error.contains("github.com/caniko/missing"), "{error}");
         assert!(!error.contains("caniko/app"), "{error}");
+    }
+
+    #[test]
+    fn consumers_direct_only_drops_transitive_pins() {
+        let workspace = tempfile::tempdir().unwrap();
+        let rev = "a".repeat(40);
+        let harbor = |rev: &str| {
+            serde_json::json!({
+                "locked": {"type": "github", "owner": "caniko", "repo": "harbor-rs", "rev": rev},
+                "original": {"type": "github", "owner": "caniko", "repo": "harbor-rs"}
+            })
+        };
+        let lock = serde_json::json!({
+            "nodes": {
+                "root": {"inputs": {"harbor-rs": "harbor-rs", "tool": "tool"}},
+                "harbor-rs": harbor(&rev),
+                "tool": {
+                    "locked": {"type": "github", "owner": "caniko", "repo": "tool", "rev": rev},
+                    "original": {"type": "github", "owner": "caniko", "repo": "tool"},
+                    "inputs": {"harbor-rs": "harbor-rs_2"}
+                },
+                "harbor-rs_2": harbor(&"b".repeat(40))
+            },
+            "root": "root",
+            "version": 7
+        });
+        init_repo(
+            workspace.path(),
+            "app",
+            &[("flake.lock", &lock.to_string())],
+        );
+        let repos: Vec<supply::ObservedRepo> = serde_json::from_value(serde_json::json!([
+            {"coordinate": "github.com/caniko/app", "relativePath": "app"}
+        ]))
+        .unwrap();
+        let graph = supply::build(&[supply::observe(workspace.path(), &repos)], None);
+        let all = consumers_report(&graph, "github.com/caniko/harbor-rs", None, false);
+        assert_eq!(all.items.len(), 2, "{:?}", all.items);
+        let direct = consumers_report(&graph, "github.com/caniko/harbor-rs", None, true);
+        assert_eq!(direct.items.len(), 1, "{:?}", direct.items);
+        assert_eq!(direct.items[0].direct, Some(true));
     }
 
     #[test]

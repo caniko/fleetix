@@ -107,7 +107,7 @@ catalog.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `fleetix_supply_consumers` | `producer`, optional `target` revision | `fleetix.supply-consumers.v1`: repositories that pin the producer, their relative paths, locked revisions and whether each is behind the target |
+| `fleetix_supply_consumers` | `producer`, optional `target` revision, optional `directOnly` | `fleetix.supply-consumers.v1`: repositories that pin the producer, their relative paths, locked revisions and whether each is behind the target |
 | `fleetix_supply_refresh` | Empty object | Observes the configured workspace, stores the snapshot, and returns its `fleetix.supply-diff.v1` change set |
 
 `fleetix_supply_consumers` reads the stored snapshot and performs one

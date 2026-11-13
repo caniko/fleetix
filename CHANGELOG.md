@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `fleetix_supply_consumers` takes `directOnly` to leave out transitive pins,
+  which can make the result several times larger.
 - Add the `fleetix_supply_land` Write MCP tool: it turns behind direct
   consumers of a producer revision into a `fleetix.supply-work-items.v1` file
   and runs an operator-configured landing command, enabled only by
