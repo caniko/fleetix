@@ -30,36 +30,46 @@ impl Incoming {
         })
     }
 
+    /// The deadline bounds a slow sender, not this loop: once it expires,
+    /// whatever has already arrived is still drained, so a frame that is
+    /// complete when the coordinator gets to it is always accepted.
     pub fn receive(&mut self) -> Result<Option<Vec<u8>>, String> {
-        if Instant::now() >= self.deadline {
-            return Err("request delivery deadline exceeded".into());
-        }
         let mut buffer = [0u8; IO_CHUNK];
-        match self.stream.read(&mut buffer) {
-            Ok(0) => Err("truncated protocol frame".into()),
-            Ok(size) => {
-                let frame = &buffer[..size];
-                let newline = frame.iter().position(|byte| *byte == b'\n');
-                self.raw
-                    .extend_from_slice(&frame[..newline.map_or(size, |n| n + 1)]);
-                if self.raw.len() as u64 > MAX_FRAME {
-                    return Err("oversized protocol frame".into());
+        loop {
+            let expired = Instant::now() >= self.deadline;
+            match self.stream.read(&mut buffer) {
+                Ok(0) => return Err("truncated protocol frame".into()),
+                Ok(size) => {
+                    let frame = &buffer[..size];
+                    let newline = frame.iter().position(|byte| *byte == b'\n');
+                    self.raw
+                        .extend_from_slice(&frame[..newline.map_or(size, |n| n + 1)]);
+                    if self.raw.len() as u64 > MAX_FRAME {
+                        return Err("oversized protocol frame".into());
+                    }
+                    if newline.is_some() {
+                        return Ok(Some(std::mem::take(&mut self.raw)));
+                    }
+                    if !expired {
+                        return Ok(None);
+                    }
                 }
-                if newline.is_some() {
-                    Ok(Some(std::mem::take(&mut self.raw)))
-                } else {
-                    Ok(None)
+                // No progress this turn; an expired frame stops here, so EINTR
+                // can never spin the loop.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    return if expired {
+                        Err("request delivery deadline exceeded".into())
+                    } else {
+                        Ok(None)
+                    };
                 }
+                Err(e) => return Err(e.to_string()),
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                Ok(None)
-            }
-            Err(e) => Err(e.to_string()),
         }
     }
 }
@@ -82,21 +92,36 @@ impl Outgoing {
     }
 
     /// A disconnect/timeout detaches the client, never undoing durable state.
+    /// The deadline bounds a slow reader, not this loop: once it expires, the
+    /// reply is still written for as long as the socket accepts it, so a
+    /// stalled coordinator never drops a reply the client can take.
     pub fn pending(&mut self) -> bool {
-        if Instant::now() >= self.deadline {
-            return false;
-        }
-        let end = (self.written + IO_CHUNK).min(self.raw.len());
-        match self.stream.write(&self.raw[self.written..end]) {
-            Ok(0) => false,
-            Ok(size) => {
-                self.written += size;
-                self.written < self.raw.len()
+        loop {
+            let expired = Instant::now() >= self.deadline;
+            let end = (self.written + IO_CHUNK).min(self.raw.len());
+            match self.stream.write(&self.raw[self.written..end]) {
+                Ok(0) => return false,
+                Ok(size) => {
+                    self.written += size;
+                    if self.written == self.raw.len() {
+                        return false;
+                    }
+                    if !expired {
+                        return true;
+                    }
+                }
+                // No progress this turn; an expired reply stops here, so EINTR
+                // can never spin the loop.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    return !expired;
+                }
+                Err(_) => return false,
             }
-            Err(e) => matches!(
-                e.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-            ),
         }
     }
 }
@@ -275,6 +300,30 @@ pub(super) fn exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_turns_still_deliver_replies_and_accept_requests() {
+        // Larger than one IO chunk, so an expired deadline must not stop at it.
+        let mut frame = vec![b'x'; 3 * IO_CHUNK];
+        frame.push(b'\n');
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reply = Outgoing::new(server.try_clone().unwrap(), frame.clone());
+        reply.deadline = Instant::now() - Duration::from_secs(1);
+        assert!(!reply.pending());
+        let mut read = vec![0u8; frame.len()];
+        client.read_exact(&mut read).unwrap();
+        assert_eq!(read, frame);
+
+        client.write_all(&frame).unwrap();
+        let mut request = Incoming::new(server).unwrap();
+        request.deadline = Instant::now() - Duration::from_secs(1);
+        assert_eq!(request.receive().unwrap().unwrap(), frame);
+        assert!(request.receive().is_err());
+    }
 
     #[test]
     fn waiter_disconnect_probe_preserves_live_and_write_half_closed_clients() {
