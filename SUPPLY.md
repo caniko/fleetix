@@ -114,9 +114,9 @@ MCP server read the same shape from an inventory document. Observation emits:
   `state: "unknown"`. A direct input is keyed and named by its root input. Lock
   node keys (`nixpkgs_10`) renumber whenever a lock changes, so all transitive
   pins of one producer in a repository share one usage,
-  `usage:<repo>#flake-input:transitive:<producer>`, with `direct: false`, the
-  node name without its `_N` suffix as `input`, and one `pins` edge per
-  revision. Array-valued root inputs are `follows` and are not producers.
+  `usage:<repo>#flake-input:transitive:<producer>`, with `direct: false`,
+  null `input` and `lockedRev`, and one `pins` edge per revision. `build`
+  folds producer aliases inside that locator too. Array-valued root inputs are `follows` and are not producers.
   `path` inputs are never producers;
 - one usage per Cargo git dependency, `usage:<repo>#cargo-git:<package>`, with
   `path: "Cargo.lock"` and the same revision attribute;

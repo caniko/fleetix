@@ -199,7 +199,7 @@ fn observe_reads_https_ssh_scp_and_github_locks_from_the_committed_tip() {
         &observed,
         "usage:github.com/caniko/app#flake-input:transitive:github.com/caniko/harbor-rs",
     );
-    assert_eq!(text(&transitive.attrs, "input"), Some("harbor-rs"));
+    assert_eq!(transitive.attrs.get("input"), Some(&Value::Null));
     assert_eq!(bool(&transitive.attrs, "direct"), Some(false));
 
     let github_url = usage_node(
@@ -763,4 +763,50 @@ fn renumbered_lock_node_keys_do_not_change_the_snapshot() {
     let after = graph(lock("tool_4", "harbor-rs_7"));
     let report = supply::diff(&before, &after);
     assert!(report.producers.is_empty(), "{report:?}");
+}
+
+#[test]
+fn aliased_transitive_producers_fold_into_one_usage() {
+    // The same transitive pin reached through a mirror alias is the same usage.
+    let lock = |original: Value| {
+        json!({
+            "nodes": {
+                "root": {"inputs": {"tool": "tool"}},
+                "tool": {
+                    "locked": {"type": "github", "owner": "caniko", "repo": "tool", "rev": "aaaa"},
+                    "original": {"type": "github", "owner": "caniko", "repo": "tool"},
+                    "inputs": {"harbor-rs": "harbor-rs_2"}
+                },
+                "harbor-rs_2": {"locked": {"type": "git", "url": "x", "rev": "bbbb"}, "original": original}
+            },
+            "root": "root",
+            "version": 7
+        })
+        .to_string()
+    };
+    let facts = document(json!({
+        "nodes": [{
+            "id": "producer:github.com/caniko/harbor-rs",
+            "kind": "producer",
+            "attrs": {"aliases": ["codeberg.org/caniko/rs-harbor"]}
+        }]
+    }));
+    let graph = |text: String| {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path(), "app", &[("flake.lock", &text)]);
+        let observed = supply::observe(root.path(), &[repo("github.com/caniko/app", "app")]);
+        supply::build(&[observed, facts.clone()], None)
+    };
+    let github = graph(lock(
+        json!({"type": "github", "owner": "caniko", "repo": "harbor-rs"}),
+    ));
+    let mirror = graph(lock(
+        json!({"type": "git", "url": "https://codeberg.org/caniko/rs-harbor"}),
+    ));
+    assert!(mirror.conflicts.is_empty(), "{:?}", mirror.conflicts);
+    let report = supply::diff(&github, &mirror);
+    assert!(report.producers.is_empty(), "{report:?}");
+    let consumers = supply::consumers(&mirror, "github.com/caniko/harbor-rs", None);
+    assert_eq!(consumers.items.len(), 1, "{:?}", consumers.items);
+    assert_eq!(consumers.items[0].locked_revs, ["bbbb"]);
 }

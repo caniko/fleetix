@@ -251,13 +251,13 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         let (input, direct) = root_input_name(root_inputs, key);
         // Lock node keys (`nixpkgs_10`) renumber whenever a lock changes, so a
         // transitive pin is keyed by its producer: one usage per repository
-        // and producer, holding every transitive revision.
-        let (locator, input) = if direct {
-            (input.clone(), input)
+        // and producer. Its input and revision stay unknown (null) so aliased
+        // producers fold in `build`; the pins edges carry every revision.
+        let (locator, input, locked) = if direct {
+            let locked = revision.map_or(Value::Null, |revision| Value::String(revision.into()));
+            (input.clone(), Value::String(input), locked)
         } else {
-            let base = input.trim_end_matches(|c: char| c.is_ascii_digit());
-            let base = base.strip_suffix('_').unwrap_or(&input).to_string();
-            (format!("transitive:{producer}"), base)
+            (format!("transitive:{producer}"), Value::Null, Value::Null)
         };
         let node = usage(
             coordinate,
@@ -265,12 +265,9 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
             Attrs::from([
                 ("usageKind".to_string(), Value::String("flake-input".into())),
                 ("path".to_string(), Value::String("flake.lock".into())),
-                ("input".to_string(), Value::String(input)),
+                ("input".to_string(), input),
                 ("direct".to_string(), Value::Bool(direct)),
-                (
-                    "lockedRev".to_string(),
-                    revision.map_or(Value::Null, |revision| Value::String(revision.into())),
-                ),
+                ("lockedRev".to_string(), locked),
             ]),
         );
         let pins: Vec<_> = revision

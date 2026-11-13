@@ -408,7 +408,17 @@ fn canonicalize_id(id: &str, aliases: &BTreeMap<String, String>) -> String {
     match prefix {
         "repo" | "producer" => rebuilt(rest, ""),
         "usage" | "workflow" => match rest.split_once('#') {
-            Some((coordinate, rest)) => rebuilt(coordinate, &format!("#{rest}")),
+            // A transitive flake usage also names its producer.
+            Some((coordinate, rest)) => match rest.strip_prefix("flake-input:transitive:") {
+                Some(producer) => rebuilt(
+                    coordinate,
+                    &format!(
+                        "#flake-input:transitive:{}",
+                        canonical_coordinate(producer, aliases)
+                    ),
+                ),
+                None => rebuilt(coordinate, &format!("#{rest}")),
+            },
             None => rebuilt(rest, ""),
         },
         "rev" => match rest.rsplit_once('@') {
