@@ -133,7 +133,8 @@ choose what runs. Destructive effects stay denied.
 | `fleetix_supply_land` | `producer`, `target` (40-hex revision), optional `coordinates` | `workItems` path, the work items, `exitCode`, `success` and the command's `stdout` (parsed JSON when it parses) and `stderr`, each capped at 64 KiB |
 
 The handler observes the workspace and stores the snapshot first, then keeps
-direct consumers that are behind the target, one item per coordinate and input,
+direct consumers that are behind the target, one item per coordinate (a second
+direct input of the same producer lands on a later call),
 optionally restricted to the given consumer coordinates (an unknown coordinate
 is an error naming it). With nothing left it returns
 `{"items": [], "landed": false, "reason": "nothing-behind"}` and runs nothing.

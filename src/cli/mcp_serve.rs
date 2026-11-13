@@ -403,9 +403,10 @@ fn work_items(
                 item.coordinate
             ));
         };
-        // One item per coordinate and input: a producer pinned through two
-        // direct inputs stays two items, a duplicated usage folds into one.
-        if !seen.insert((item.coordinate.clone(), input.to_string())) {
+        // One item per coordinate: a landing command updates a repository in
+        // one transaction. A second direct input of the same producer lands
+        // on a later call, once the first no longer shows as behind.
+        if !seen.insert(item.coordinate.clone()) {
             continue;
         }
         items.push(supply::WorkItem {
@@ -850,9 +851,10 @@ mod tests {
                 consumer_input("github.com/caniko/app", "harbor-rs", true, true),
                 // A duplicated usage folds into one item.
                 consumer_input("github.com/caniko/app", "harbor-rs", true, true),
-                // A second direct input of the same coordinate stays separate.
+                // A second direct input of the same coordinate waits for a later call.
                 consumer_input("github.com/caniko/app", "harbor-rs_2", true, true),
                 consumer_input("github.com/caniko/current", "harbor-rs", true, false),
+                consumer_input("github.com/caniko/other", "harbor-rs", true, true),
                 consumer_input("github.com/caniko/transitive", "harbor-rs_2", false, true),
             ],
         };
@@ -860,11 +862,11 @@ mod tests {
         assert_eq!(items.len(), 2, "{items:?}");
         assert_eq!(items[0].coordinate, "github.com/caniko/app");
         assert_eq!(items[0].input, "harbor-rs");
-        assert_eq!(items[1].input, "harbor-rs_2");
+        assert_eq!(items[1].coordinate, "github.com/caniko/other");
         assert!(items.iter().all(|item| item.target == target));
 
         let app = ["github.com/caniko/app".to_string()];
-        assert_eq!(work_items(&report, &target, Some(&app)).unwrap().len(), 2);
+        assert_eq!(work_items(&report, &target, Some(&app)).unwrap().len(), 1);
         let current = ["github.com/caniko/current".to_string()];
         assert!(
             work_items(&report, &target, Some(&current))
