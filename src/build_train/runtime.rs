@@ -732,8 +732,12 @@ pub fn serve(
                 flush_waiters(&config, &train, &mut waiters, &mut outgoing, attempt)?;
             }
         }
+        // Journal a turn's completions once: the journal holds every graph, so a
+        // save per completion stalls the loop past client IO deadlines.
+        let (mut completed, mut failed) = (false, false);
         while let Ok((dispatch, result, valid)) = completed_rx.try_recv() {
-            let failed = result.is_err();
+            completed = true;
+            failed |= result.is_err();
             train.finish(&dispatch, result);
             // One native builder may have produced multiple selected outputs.
             // Store evidence, rather than the worker's exit code, satisfies them.
@@ -742,12 +746,14 @@ pub fn serve(
                     node.state = NodeState::Complete;
                 }
             }
+        }
+        if completed {
             save(&config, &train)?;
-            if failed {
-                // A failed realisation may still have fetched other live
-                // outputs; nothing else checks them until their own dispatch.
-                backend.prune(&train)?;
-            }
+        }
+        if failed {
+            // A failed realisation may still have fetched other live
+            // outputs; nothing else checks them until their own dispatch.
+            backend.prune(&train)?;
         }
         workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
         outgoing.retain_mut(ipc::Outgoing::pending);
