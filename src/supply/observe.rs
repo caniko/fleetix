@@ -249,9 +249,19 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
             .and_then(|locked| locked.get("rev"))
             .and_then(Value::as_str);
         let (input, direct) = root_input_name(root_inputs, key);
+        // Lock node keys (`nixpkgs_10`) renumber whenever a lock changes, so a
+        // transitive pin is keyed by its producer: one usage per repository
+        // and producer, holding every transitive revision.
+        let (locator, input) = if direct {
+            (input.clone(), input)
+        } else {
+            let base = input.trim_end_matches(|c: char| c.is_ascii_digit());
+            let base = base.strip_suffix('_').unwrap_or(&input).to_string();
+            (format!("transitive:{producer}"), base)
+        };
         let node = usage(
             coordinate,
-            format!("flake-input:{input}"),
+            format!("flake-input:{locator}"),
             Attrs::from([
                 ("usageKind".to_string(), Value::String("flake-input".into())),
                 ("path".to_string(), Value::String("flake.lock".into())),

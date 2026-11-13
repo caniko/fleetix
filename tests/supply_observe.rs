@@ -194,11 +194,12 @@ fn observe_reads_https_ssh_scp_and_github_locks_from_the_committed_tip() {
     assert_eq!(text(&direct.attrs, "lockedRev"), Some("aaaa"));
     assert_eq!(text(&direct.attrs, "state"), Some("unknown"));
 
+    // Transitive pins are keyed by producer: lock node keys renumber.
     let transitive = usage_node(
         &observed,
-        "usage:github.com/caniko/app#flake-input:harbor-rs_2",
+        "usage:github.com/caniko/app#flake-input:transitive:github.com/caniko/harbor-rs",
     );
-    assert_eq!(text(&transitive.attrs, "input"), Some("harbor-rs_2"));
+    assert_eq!(text(&transitive.attrs, "input"), Some("harbor-rs"));
     assert_eq!(bool(&transitive.attrs, "direct"), Some(false));
 
     let github_url = usage_node(
@@ -212,25 +213,31 @@ fn observe_reads_https_ssh_scp_and_github_locks_from_the_committed_tip() {
     );
     assert_eq!(bool(&github_url.attrs, "direct"), Some(true));
     assert_eq!(
-        github_url.attrs.get("lockedRev"),
-        Some(&Value::Null),
-        "a root input name and a transitive key with different revisions fold into one set"
+        text(&github_url.attrs, "lockedRev"),
+        Some("cccc"),
+        "a transitive node named like a root input keeps its own usage"
     );
-    let harbor_py_pins: Vec<_> = observed
-        .edges
-        .iter()
-        .filter(|edge| edge.from == github_url.id && edge.kind == "pins")
-        .map(|edge| edge.to.as_str())
-        .collect();
-    assert!(harbor_py_pins.contains(&"rev:github.com/caniko/harbor-py@cccc"));
-    assert!(harbor_py_pins.contains(&"rev:github.com/caniko/harbor-py@ffff"));
-
-    assert!(
+    let pins_of = |id: &str| -> Vec<String> {
         observed
-            .nodes
+            .edges
             .iter()
-            .any(|node| { node.id == "usage:github.com/caniko/app#flake-input:codeberg" })
+            .filter(|edge| edge.from == id && edge.kind == "pins")
+            .map(|edge| edge.to.clone())
+            .collect()
+    };
+    assert_eq!(
+        pins_of(&github_url.id),
+        ["rev:github.com/caniko/harbor-py@cccc"]
     );
+    assert_eq!(
+        pins_of("usage:github.com/caniko/app#flake-input:transitive:github.com/caniko/harbor-py"),
+        ["rev:github.com/caniko/harbor-py@ffff"]
+    );
+
+    assert!(observed.nodes.iter().any(|node| {
+        node.id
+            == "usage:github.com/caniko/app#flake-input:transitive:codeberg.org/caniko/rs-harbor"
+    }));
     let one_element = usage_node(
         &observed,
         "usage:github.com/caniko/app#flake-input:harbor-meta",
@@ -716,4 +723,44 @@ fn missing_lock_files_are_empty_and_git_or_parse_failures_become_fact_errors() {
             |error| error.subject == "github.com/caniko/missing" && error.code == "git-failure"
         )
     );
+}
+
+#[test]
+fn renumbered_lock_node_keys_do_not_change_the_snapshot() {
+    // Nix renumbers `_N` node keys whenever a lock changes; the same pins
+    // under other keys must diff as nothing.
+    let lock = |tool: &str, harbor: &str| {
+        json!({
+            "nodes": {
+                "root": {"inputs": {"tool": tool}},
+                tool: {
+                    "locked": {"type": "github", "owner": "caniko", "repo": "tool", "rev": "aaaa"},
+                    "original": {"type": "github", "owner": "caniko", "repo": "tool"},
+                    "inputs": {"harbor-rs": harbor}
+                },
+                harbor: {
+                    "locked": {"type": "github", "owner": "caniko", "repo": "harbor-rs", "rev": "bbbb"},
+                    "original": {"type": "github", "owner": "caniko", "repo": "harbor-rs"}
+                }
+            },
+            "root": "root",
+            "version": 7
+        })
+        .to_string()
+    };
+    let graph = |text: String| {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path(), "app", &[("flake.lock", &text)]);
+        supply::build(
+            &[supply::observe(
+                root.path(),
+                &[repo("github.com/caniko/app", "app")],
+            )],
+            None,
+        )
+    };
+    let before = graph(lock("tool", "harbor-rs_2"));
+    let after = graph(lock("tool_4", "harbor-rs_7"));
+    let report = supply::diff(&before, &after);
+    assert!(report.producers.is_empty(), "{report:?}");
 }
