@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `supply::observe` keys transitive flake pins by producer
+  (`flake-input:transitive:<producer>`) instead of renumbered lock node keys,
+  so refresh diffs no longer report pins that did not move, and producer
+  aliases fold inside those ids.
+
 ## [0.10.2] - 2026-11-13
 
 ### Added
