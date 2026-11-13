@@ -139,6 +139,15 @@ target, behind}`. The producer may be an alias; it resolves to the canonical
 coordinate. `behind` is true when a target revision is given and the usage does
 not pin it. `fleetix_supply_consumers` exposes the same query over MCP.
 
+`WorkItems` is the `fleetix.supply-work-items.v1` handoff from that query to an
+operator-configured landing command:
+`{contract, producer, target, items}` where each item is
+`{coordinate, relativePath, input, target}` for a direct consumer behind the
+target. `producer` and `target` are the resolved coordinate and revision. The
+library builds and serializes the document; writing the file and running the
+command belong to the caller (`fleetix_supply_land` stores it next to the
+snapshot). Fleetix assigns no meaning to the landing command's output.
+
 ## Topology supply
 
 The topology declares the shared supply that facts join against: runner pools,

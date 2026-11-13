@@ -170,6 +170,27 @@ pub struct ConsumersReport {
     pub items: Vec<ConsumerItem>,
 }
 
+/// One repository to land on a target revision: the input of a direct,
+/// behind consumer. A landing command receives these in a [`WorkItems`] file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkItem {
+    pub coordinate: String,
+    pub relative_path: String,
+    pub input: String,
+    pub target: String,
+}
+
+/// The `fleetix.supply-work-items.v1` handoff to a landing command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkItems {
+    pub contract: &'static str,
+    pub producer: String,
+    pub target: String,
+    pub items: Vec<WorkItem>,
+}
+
 /// Every usage that pins `producer` (an alias resolves to its canonical
 /// coordinate). `behind` is true when a target revision is given and the
 /// usage does not pin it.

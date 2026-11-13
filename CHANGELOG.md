@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the `fleetix_supply_land` Write MCP tool: it turns behind direct
+  consumers of a producer revision into a `fleetix.supply-work-items.v1` file
+  and runs an operator-configured landing command, enabled only by
+  `--supply-land` alongside the supply flags.
+
 ## [0.10.1] - 2026-11-12
 
 ### Fixed

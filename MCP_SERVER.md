@@ -77,6 +77,9 @@ cargo run --features mcp-server -- mcp-serve examples/Topology.pkl
 cargo run --features mcp-server -- mcp-serve examples/Topology.pkl \
   --supply-root /workspace --supply-inventory /workspace/inventory.json \
   --supply-facts harbor-facts.json
+cargo run --features mcp-server -- mcp-serve examples/Topology.pkl \
+  --supply-root /workspace --supply-inventory /workspace/inventory.json \
+  --supply-land /usr/local/bin/land-pins --supply-land-arg --quiet
 ```
 
 The operator supplies the topology path at startup. It is evaluated once; tool
@@ -114,6 +117,37 @@ and replaces the snapshot under
 committed lock files through `git`, never the network or a Nix evaluation. A
 repository's git or parse failure is returned in `errors` and does not fail the
 refresh.
+
+### Landing behind consumers
+
+`--supply-land PROGRAM` adds one Write tool, `fleetix_supply_land`. The flag
+requires `--supply-root` and `--supply-inventory`; without it the tool is absent
+from the catalog and the authorizer keeps denying every Write call. A repeatable
+`--supply-land-arg ARG` is passed before the work-item file. The server runs
+`PROGRAM ARG... <work-item-file>` directly, without a shell, inheriting its own
+environment; `PROGRAM` is startup configuration, so tool arguments can never
+choose what runs. Destructive effects stay denied.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `fleetix_supply_land` | `producer`, `target` (40-hex revision), optional `coordinates` | `workItems` path, the work items, `exitCode`, `success` and the command's `stdout` (parsed JSON when it parses) and `stderr`, each capped at 64 KiB |
+
+The handler observes the workspace and stores the snapshot first, then keeps
+direct consumers that are behind the target, one item per coordinate and input,
+optionally restricted to the given consumer coordinates (an unknown coordinate
+is an error naming it). With nothing left it returns
+`{"items": [], "landed": false, "reason": "nothing-behind"}` and runs nothing.
+Otherwise it atomically writes a mode-0600
+`fleetix.supply-work-items.v1` file next to the snapshot as
+`work-items.json`:
+
+```json
+{"contract":"fleetix.supply-work-items.v1","producer":"github.com/caniko/harbor-rs","target":"<rev>","items":[{"coordinate":"github.com/caniko/app","relativePath":"projects/app","input":"harbor-rs","target":"<rev>"}]}
+```
+
+A non-zero command exit is a structured result with `success: false`, not a
+protocol error. Fleetix does not interpret the landing command's output; the
+operator's program owns what the work items mean.
 
 With `fleetix.homeModules.mcp`, register this server for every enabled harness
 by naming the snapshot; the module supplies the packaged binary, `pkl` and
