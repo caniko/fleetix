@@ -96,6 +96,23 @@ pub enum Command {
         /// Producer facts merged into every supply observation (repeatable).
         #[arg(long)]
         supply_facts: Vec<PathBuf>,
+        /// Landing command `fleetix_supply_land` runs with the work-item file
+        /// path (requires --supply-root and --supply-inventory).
+        #[arg(
+            long,
+            value_name = "PROGRAM",
+            requires_all = ["supply_root", "supply_inventory"]
+        )]
+        supply_land: Option<PathBuf>,
+        /// Extra argument passed to --supply-land before the work-item file
+        /// (repeatable).
+        #[arg(
+            long = "supply-land-arg",
+            value_name = "ARG",
+            requires = "supply_land",
+            allow_hyphen_values = true
+        )]
+        supply_land_arg: Vec<String>,
         #[command(flatten)]
         evaluator: EvaluatorArgs,
     },
@@ -369,14 +386,22 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             supply_root,
             supply_inventory,
             supply_facts,
+            supply_land,
+            supply_land_arg,
             evaluator,
         } => {
+            let land = supply_land.map(|program| mcp_serve::LandConfig {
+                program,
+                args: supply_land_arg,
+            });
             let supply = match (supply_root, supply_inventory) {
                 (Some(root), Some(inventory)) => Some(mcp_serve::SupplyConfig {
                     root,
                     inventory,
                     facts: supply_facts,
+                    land,
                 }),
+                // clap's `requires_all` keeps `land` unset here.
                 (None, None) => None,
                 _ => {
                     return Err(CliError::new(
@@ -1391,6 +1416,56 @@ mod tests {
             cfg!(feature = "mcp-server"),
         );
         assert!(Cli::try_parse_from(["fleetix", "mcp-serve"]).is_err());
+    }
+
+    #[cfg(feature = "mcp-server")]
+    #[test]
+    fn supply_land_requires_the_supply_flags_and_accepts_extra_arguments() {
+        assert!(
+            Cli::try_parse_from([
+                "fleetix",
+                "mcp-serve",
+                "Topology.pkl",
+                "--supply-land",
+                "/bin/true"
+            ])
+            .is_err(),
+            "--supply-land needs the supply flags"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "fleetix",
+                "mcp-serve",
+                "Topology.pkl",
+                "--supply-root",
+                "/workspace",
+                "--supply-inventory",
+                "/workspace/inventory.json",
+                "--supply-land-arg",
+                "update"
+            ])
+            .is_err(),
+            "arguments without the program are refused"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "fleetix",
+                "mcp-serve",
+                "Topology.pkl",
+                "--supply-root",
+                "/workspace",
+                "--supply-inventory",
+                "/workspace/inventory.json",
+                "--supply-land",
+                "/bin/true",
+                "--supply-land-arg",
+                "--push",
+                "--supply-land-arg",
+                "--pin-file"
+            ])
+            .is_ok(),
+            "flag-shaped arguments pass through to the landing command"
+        );
     }
 
     async fn supply(args: &[&str]) -> Result<(), CliError> {

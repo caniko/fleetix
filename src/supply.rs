@@ -9,8 +9,8 @@ mod report;
 
 pub use observe::{ObservedRepo, observe};
 pub use report::{
-    ConsumerItem, ConsumersReport, DiffReport, ProducerDiff, RevisionChange, consumers, diff,
-    load_snapshot, save_snapshot, store_path,
+    ConsumerItem, ConsumersReport, DiffReport, ProducerDiff, RevisionChange, WorkItem, WorkItems,
+    consumers, diff, load_snapshot, save_snapshot, store_path,
 };
 
 use crate::topology::{RunnerPool, Supply, Topology};
@@ -26,6 +26,7 @@ pub const GRAPH_CONTRACT: &str = "fleetix.supply-graph.v1";
 pub const BUDGET_CONTRACT: &str = "fleetix.supply-budget.v1";
 pub const DIFF_CONTRACT: &str = "fleetix.supply-diff.v1";
 pub const CONSUMERS_CONTRACT: &str = "fleetix.supply-consumers.v1";
+pub const WORK_ITEMS_CONTRACT: &str = "fleetix.supply-work-items.v1";
 
 pub type Attrs = BTreeMap<String, Value>;
 
