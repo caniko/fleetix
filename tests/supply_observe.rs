@@ -810,3 +810,44 @@ fn aliased_transitive_producers_fold_into_one_usage() {
     assert_eq!(consumers.items.len(), 1, "{:?}", consumers.items);
     assert_eq!(consumers.items[0].locked_revs, ["bbbb"]);
 }
+
+#[test]
+fn aliased_transitive_pins_at_different_revisions_merge_without_conflict() {
+    let lock = json!({
+        "nodes": {
+            "root": {"inputs": {"tool": "tool"}},
+            "tool": {
+                "locked": {"type": "github", "owner": "caniko", "repo": "tool", "rev": "aaaa"},
+                "original": {"type": "github", "owner": "caniko", "repo": "tool"},
+                "inputs": {"a": "harbor-rs", "b": "rs-harbor"}
+            },
+            "harbor-rs": {
+                "locked": {"type": "github", "owner": "caniko", "repo": "harbor-rs", "rev": "bbbb"},
+                "original": {"type": "github", "owner": "caniko", "repo": "harbor-rs"}
+            },
+            "rs-harbor": {
+                "locked": {"type": "git", "url": "x", "rev": "cccc"},
+                "original": {"type": "git", "url": "https://codeberg.org/caniko/rs-harbor"}
+            }
+        },
+        "root": "root",
+        "version": 7
+    });
+    let facts = document(json!({
+        "nodes": [{
+            "id": "producer:github.com/caniko/harbor-rs",
+            "kind": "producer",
+            "attrs": {"aliases": ["codeberg.org/caniko/rs-harbor"]}
+        }]
+    }));
+    let root = tempfile::tempdir().unwrap();
+    init_repo(root.path(), "app", &[("flake.lock", &lock.to_string())]);
+    let observed = supply::observe(root.path(), &[repo("github.com/caniko/app", "app")]);
+    let graph = supply::build(&[observed, facts], None);
+    assert!(graph.conflicts.is_empty(), "{:?}", graph.conflicts);
+    let consumers = supply::consumers(&graph, "github.com/caniko/harbor-rs", None);
+    assert_eq!(consumers.items.len(), 1, "{:?}", consumers.items);
+    let mut revs = consumers.items[0].locked_revs.clone();
+    revs.sort();
+    assert_eq!(revs, ["bbbb", "cccc"]);
+}
