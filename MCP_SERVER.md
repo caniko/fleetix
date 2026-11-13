@@ -138,8 +138,9 @@ optionally restricted to the given consumer coordinates (an unknown coordinate
 is an error naming it). With nothing left it returns
 `{"items": [], "landed": false, "reason": "nothing-behind"}` and runs nothing.
 Otherwise it atomically writes a mode-0600
-`fleetix.supply-work-items.v1` file next to the snapshot as
-`work-items.json`:
+`fleetix.supply-work-items.v1` file next to the snapshot, named
+`work-items-<nanos>-<pid>.json` so concurrent calls never share one, and runs
+`PROGRAM ARG... <file>`. A call cancelled before that point runs nothing:
 
 ```json
 {"contract":"fleetix.supply-work-items.v1","producer":"github.com/caniko/harbor-rs","target":"<rev>","items":[{"coordinate":"github.com/caniko/app","relativePath":"projects/app","input":"harbor-rs","target":"<rev>"}]}

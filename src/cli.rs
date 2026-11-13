@@ -106,7 +106,12 @@ pub enum Command {
         supply_land: Option<PathBuf>,
         /// Extra argument passed to --supply-land before the work-item file
         /// (repeatable).
-        #[arg(long = "supply-land-arg", value_name = "ARG", requires = "supply_land")]
+        #[arg(
+            long = "supply-land-arg",
+            value_name = "ARG",
+            requires = "supply_land",
+            allow_hyphen_values = true
+        )]
         supply_land_arg: Vec<String>,
         #[command(flatten)]
         evaluator: EvaluatorArgs,
@@ -1454,9 +1459,12 @@ mod tests {
                 "--supply-land",
                 "/bin/true",
                 "--supply-land-arg",
-                "update"
+                "--push",
+                "--supply-land-arg",
+                "--pin-file"
             ])
-            .is_ok()
+            .is_ok(),
+            "flag-shaped arguments pass through to the landing command"
         );
     }
 

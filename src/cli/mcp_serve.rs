@@ -258,8 +258,10 @@ pub(super) fn server(
                         "fleetix_supply_land",
                         "Run the configured landing command with the work items of behind direct consumers",
                     )?,
-                    move |Parameters(args): Parameters<SupplyLandSelection>| {
+                    move |Parameters(args): Parameters<SupplyLandSelection>,
+                          context: rmcp::service::RequestContext<rmcp::RoleServer>| {
                         let config = Arc::clone(&land_config);
+                        let cancelled = context.ct.clone();
                         let lander = Arc::clone(&lander);
                         let SupplyLandSelection {
                             producer,
@@ -274,6 +276,7 @@ pub(super) fn server(
                                     &producer,
                                     &target,
                                     coordinates.as_deref(),
+                                    &cancelled,
                                 )
                             })
                             .await
@@ -423,9 +426,14 @@ fn land(
     producer: &str,
     target: &str,
     coordinates: Option<&[String]>,
+    cancelled: &tokio_util::sync::CancellationToken,
 ) -> miette::Result<serde_json::Value> {
     let target = target_revision(target)?;
     let (graph, _) = store_refresh(config)?;
+    // Safe point: a call cancelled while observing never starts the command.
+    if cancelled.is_cancelled() {
+        return Err(miette::miette!("cancelled before landing"));
+    }
     let report = supply::consumers(&graph, producer, Some(&target));
     let items = work_items(&report, &target, coordinates)?;
     if items.is_empty() {
@@ -435,7 +443,12 @@ fn land(
             "reason": "nothing-behind",
         }));
     }
-    let path = supply::store_path(&config.root).with_file_name("work-items.json");
+    // One handoff per call, so concurrent calls never overwrite each other's.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let path = supply::store_path(&config.root)
+        .with_file_name(format!("work-items-{stamp}-{}.json", std::process::id()));
     let work = supply::WorkItems {
         contract: supply::WORK_ITEMS_CONTRACT,
         producer: report.producer,
@@ -819,7 +832,8 @@ mod tests {
                 &lander,
                 "github.com/caniko/harbor-rs",
                 "short",
-                None
+                None,
+                &tokio_util::sync::CancellationToken::new(),
             )
             .is_err()
         );
@@ -915,17 +929,25 @@ mod tests {
             "github.com/caniko/harbor-rs",
             &target,
             None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["exitCode"], 0, "{result}");
         assert_eq!(result["stdout"], serde_json::json!({"ok": true}));
+        let handoff = Path::new(result["workItems"].as_str().unwrap());
         assert_eq!(
-            result["workItems"].as_str().unwrap(),
-            supply::store_path(&config.root)
-                .with_file_name("work-items.json")
-                .display()
-                .to_string()
+            handoff.parent(),
+            supply::store_path(&config.root).parent(),
+            "{result}"
+        );
+        assert!(
+            handoff
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("work-items-"),
+            "{result}"
         );
 
         let written: serde_json::Value =
@@ -959,12 +981,26 @@ mod tests {
             program: PathBuf::from("/nonexistent/fleetix-lander"),
             args: Vec::new(),
         };
+        // A call cancelled before the safe point never runs the command.
+        let cancelled = tokio_util::sync::CancellationToken::new();
+        cancelled.cancel();
+        let error = land(
+            &config,
+            &unreachable,
+            "github.com/caniko/harbor-rs",
+            &target,
+            None,
+            &cancelled,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
         let current = land(
             &config,
             &unreachable,
             "github.com/caniko/harbor-rs",
             &pinned,
             None,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(
