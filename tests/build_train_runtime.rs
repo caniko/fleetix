@@ -1999,6 +1999,9 @@ fn client_policy_mismatch_is_typed_but_transport_failure_is_not() {
     };
     let error = wrong.call(Command::Inspect).unwrap_err();
     assert!(is_policy_changed(&error), "{error}");
+    // Helpers wrap the sentinel with context; it must still be recognised.
+    let error = wrong.drain("any", Duration::from_secs(1)).unwrap_err();
+    assert!(is_policy_changed(&error), "{error}");
     let absent = Client {
         socket: server._temp.path().join("absent.sock"),
         policy: server.config.policy.clone(),

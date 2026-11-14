@@ -31,9 +31,10 @@ mod wire;
 /// Prefix clients use to tell a protocol/policy change from an I/O failure.
 pub const POLICY_CHANGED: &str = "coordinator protocol or policy changed";
 
-/// Whether a client error means the coordinator runs another policy or protocol.
+/// Whether a client error, including one wrapped with context, means the
+/// coordinator runs another policy or protocol.
 pub fn is_policy_changed(error: &str) -> bool {
-    error.starts_with(POLICY_CHANGED)
+    error.contains(POLICY_CHANGED)
 }
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
@@ -319,15 +320,19 @@ impl Client {
                     .saturating_duration_since(std::time::Instant::now())
                     .min(Duration::from_millis(100)),
             );
-            running = self
+            let reply = self
                 .call_until(Command::Inspect, deadline)
                 .map_err(|error| {
                     format!(
                         "drain failed; fence {} retained for request {attempt}: {error}",
                         fence.token
                     )
-                })?
-                .running;
+                })?;
+            // An expired fence reopened dispatch; draining under it proves nothing.
+            if reply.fence.as_ref().map(|f| &f.token) != Some(&fence.token) {
+                return Err(format!("fence {} expired while draining", fence.token));
+            }
+            running = reply.running;
         }
         Ok(fence)
     }
@@ -420,15 +425,16 @@ fn remove_tree(path: &Path) -> Result<(), String> {
 /// after startup by the backend against the fresh journal.
 fn discard_journal(config: &Config, detail: &str) -> Result<(), String> {
     eprintln!("build-train: discarding journal: {detail}");
-    for name in ["train.json", "rollover.json"] {
+    // History first: the journal and marker are the retry trigger if this stops.
+    remove_tree(&config.state_dir.join("archive"))?;
+    remove_tree(&config.state_dir.join("rollovers"))?;
+    for name in ["rollover.json", "train.json"] {
         match fs::remove_file(config.state_dir.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
         }
     }
-    remove_tree(&config.state_dir.join("archive"))?;
-    remove_tree(&config.state_dir.join("rollovers"))?;
     private_dir(&config.state_dir.join("archive"))
 }
 
@@ -512,14 +518,14 @@ fn retire(
         archive.roots_released = true;
         save_archive(config, &archive)?;
     }
-    // The archive only makes Retire idempotent while its roots are released.
-    // Once that is durable it is redundant history, not recovery evidence.
+    backend.prune(train)?;
+    // The archive only makes Retire idempotent until its cleanup is durable;
+    // after that it is redundant history, not recovery evidence.
     match fs::remove_file(archive_path(config, attempt)) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
-    backend.prune(train)?;
     Ok(archive_reply(config, train, &archive))
 }
 
