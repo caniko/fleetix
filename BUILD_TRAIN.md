@@ -10,7 +10,7 @@ and each request becomes ready as soon as its own exact outputs are valid.
 | Cargo feature | Capability |
 | --- | --- |
 | `build-train-runtime` | Private coordinator, client, durable journal and preparation receipts |
-| `build-train-native` | Native Nix backend, connection/service contracts and policy rollover |
+| `build-train-native` | Native Nix backend, connection/service contracts and policy identity |
 | `build-train-cli` | Typed standalone lifecycle commands; combine with `cli` for the `fleetix` executable |
 
 The production `fleetixCrate` package enables `cli,build-train-cli`. Pure scheduler
@@ -51,10 +51,11 @@ Defaults preserve existing deployments:
 - direct roots: `/nix/var/nix/gcroots/per-user/<operator>/fleetix-train`.
 
 `runtimeDirectory`, `stateDirectory` and `gcRoots` configure ownership locations.
-An in-place policy rollover requires those locations to remain unchanged.
-The NixOS service preserves its private runtime directory on stop so offline
-rollover can acquire the same socket lease as the operator. Reboot clears `/run`;
-start and stop the service to provision that namespace before offline rollover.
+The NixOS service preserves its private runtime directory on stop so the socket
+lease inode and operator-owned parent survive restarts. Reboot clears `/run`;
+start and stop the service to provision that namespace again.
+Changing any coordinator configuration restarts the unit. A changed policy then
+discards the foreign journal instead of failing closed.
 
 ### Operator user service
 
@@ -73,13 +74,11 @@ directories use user namespaces, so user mode requires `security.allowUserNamesp
 Nix clients connect to the system daemon socket; ordering against a user-manager
 `nix-daemon.service` would not order the system daemon.
 
-Changing manager scope changes policy and requires the same guarded handover as
-other incompatible upgrades. Record the original `serviceScope` alongside the
-package, user and immutable config in `retainedDeployment` (its default remains
-`"system"`). This keeps the original manager selected while the next contract is
-staged; only clear retention after the old service is stopped and rollover succeeds.
-The initial handoff still needs permission to stop the system unit and activate
-the replacement configuration. Never start both managers against one journal.
+Changing manager scope changes policy; activate the new configuration and restart
+the selected unit. The coordinator discards the old journal, so no offline
+handover is needed. The initial handoff still needs permission to stop the
+previous unit and activate the replacement configuration. Never start both
+managers against one journal.
 
 User mode retains the coordinator memory ceiling and stop/retention semantics, but
 does not move Nix daemon builders or grant host-resource authority. Consumers must
@@ -145,8 +144,9 @@ not cancel construction. Completion failures and cancellation return nonzero.
 Explicit `cancel` removes only that request's interests; already-running shared
 work finishes. Explicit `retry` clears only the invoking request's terminal
 failure and returns it to held admission. Rerun live checks before `admit`.
-`retire` archives terminal evidence before releasing only its train-owned roots.
-Caller-owned deployment roots remain the caller's responsibility.
+`retire` releases only its train-owned roots and is idempotent: an attempt the
+coordinator no longer knows is a successful no-op. Caller-owned deployment roots
+remain the caller's responsibility.
 
 Each request roots only its source and requested derivations under
 `requests/<sha256(attempt)>/`; every planned derivation is in their closure.
@@ -162,6 +162,8 @@ request's retention. Startup and every `retire` prune request directories and
 output roots that no journaled request or node still owns, including
 directories whose request left the journal without a release and per-path roots
 written by older coordinators. Non-root entries are left for inspection.
+Retirement writes an archive only while its root release is outstanding; the
+archive is removed once the release is durable, so history does not grow.
 
 ## Activation and recovery
 
@@ -169,51 +171,30 @@ written by older coordinators. Non-root entries are left for inspection.
 before waiting for workers. Timeout or uncertain delivery requires inspecting
 status; it must never be treated as fence release. `authorize-activation` checks
 construction-side readiness but does not acquire the host execution lease or
-activate anything. `release-fence --token TOKEN` requires the exact retained
-token and a verified owner outcome.
+activate anything. `release-fence --token TOKEN` is idempotent: a token which no
+longer holds the fence is already released, so a retried release succeeds.
 
-Policy changes require explicit staging of the retained deployment. Before
-builder activation, retain and GC-root the original service
-configuration and verify coordinator/Nix/admission/resource compatibility. Stage
-policy changes with `fleetix.services.buildTrain.retainedDeployment` set to the
-original `package`, `user` and immutable store `serviceConfig`. This keeps the
-active unit (including crash restarts), `/etc/fleetix-train/service.json` and
-`connection.json` on the original contract. The desired replacement is exposed
-as `next-service.json` and `next-connection.json`; drain and cancel using the
-active connection. The retained package and config remain in the system closure.
+A fence records its deadline (`fenceSeconds`, default 3600). Every scheduling
+tick and startup drops an expired fence and dispatch resumes, so a dead owner
+cannot block builders forever. The owning attempt refreshes the deadline while
+it still holds the fence; another attempt is refused (`builder fenced by …`).
+Choose a deadline above the expected drain and activation window.
 
-The module binds the operator account into the opaque admission component of
-the version-2 policy. Historical contracts and their positional serialization
-remain valid. An operator change is an ownership-domain migration, not an
-in-place policy rollover: finish and retire the original deployment, then
-provision a separate private namespace for the new account. Do not transfer
-request-root or journal custody through `retainedDeployment`.
-
-For an incompatible policy upgrade, hold the shared host activation lease, drain
-the train, cancel pending requests individually and stop the old service. Then:
-
-```text
-fleetix build-train rollover --previous-config /nix/store/…-original-service.json --config /etc/fleetix-train/next-service.json --token exact-retained-token
-```
-
-A fence can only be taken by a live request, so a train which finished and
-retired its work before the policy changed leaves no token behind. When the
-stopped journal has no fence and no pending or running work, hand over without
-one; the coordinator and socket leases still prove that no old coordinator is
-alive, and any fence on the journal still requires its exact token:
-
-```text
-fleetix build-train rollover --previous-config /nix/store/…-original-service.json --config /etc/fleetix-train/next-service.json
-```
-
-After rollover succeeds, clear `retainedDeployment`, activate the configuration
-under the same host lease, and start the service with the replacement policy.
-Never restart the retained old-policy service against the replaced journal. Interrupted
-rollover rejects startup and can be retried only with exact retained evidence.
-Completed retries preserve replacement-policy work. Historical old-policy clients
-can query `status` and `retire`; they cannot register, admit, retry or activate.
-Protocol, journal and positional policy serialization remain version 2.
+The coordinator is crash-only. The journal is a cache of scheduling state bound
+to one policy, not recovery evidence: Nix already deduplicates store outputs.
+At startup a journal with another protocol version, policy or aging value (or
+one that cannot be parsed), or an interrupted handover marker, is discarded. One
+stderr line records the old version, policy, request count and fence. The
+coordinator removes `train.json`, `rollover.json`, `archive/` and the legacy
+`rollovers/` directory, starts an empty train, and prunes every coordinator-owned
+GC root that the fresh journal does not own. Caller-owned `attempts/` roots and
+`preparation/` are untouched. A policy change therefore needs only an ordinary
+unit restart; no drain, fence token or offline handover is required.
 
 Library consumers use `build_train::native::{Connection, Service, serve,
-policy_identity, rollover}` and `build_train::runtime::Client` directly. Frontends
+policy_identity}` and `build_train::runtime::Client` directly. A client reply
+from another policy or protocol fails with `runtime::POLICY_CHANGED`; use
+`runtime::is_policy_changed` to separate that from transport errors. Frontends
 can use `build_train::cli::execute` for typed results and their own presentation.
+Protocol and positional policy serialization remain version 2; a journal without
+a fence deadline is treated as already expired.

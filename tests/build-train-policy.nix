@@ -15,11 +15,11 @@ let
     queueLimit = 128;
     agingSeconds = 300;
     planningTimeoutSeconds = 180;
+    fenceSeconds = 3600;
     workerTimeoutSeconds = 21600;
     queryTimeoutSeconds = 60;
     substitutes = true;
     memoryMax = "1G";
-    retainedDeployment = null;
   };
   module = import ../modules/build-train.nix {
     config = {
@@ -31,6 +31,7 @@ let
     lib = {
       getExe = p: p.executable;
       mkIf = condition: content: assert condition; content;
+      mkRemovedOptionModule = _: _: {};
       max = a: b:
         if a > b
         then a

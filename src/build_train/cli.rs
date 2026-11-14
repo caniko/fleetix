@@ -97,32 +97,14 @@ pub enum TrainCommand {
         #[arg(long)]
         token: String,
     },
-    /// Complete offline policy handover with both immutable contracts and retained fence.
-    Rollover {
-        #[arg(long)]
-        previous_config: PathBuf,
-        #[arg(long)]
-        config: PathBuf,
-        /// Drained activation fence token; omit it to adopt an idle journal.
-        #[arg(long)]
-        token: Option<String>,
-    },
 }
 
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum Execution {
     Reply(Reply),
-    Completion {
-        outcome: Outcome,
-    },
-    Drained {
-        fence: Fence,
-    },
-    Rollover {
-        #[serde(rename = "rolloverReceipt")]
-        receipt: PathBuf,
-    },
+    Completion { outcome: Outcome },
+    Drained { fence: Fence },
     Served,
 }
 
@@ -226,18 +208,6 @@ pub fn execute(command: TrainCommand) -> Result<Execution, String> {
         } => call(&connection, Command::AuthorizeActivation(attempt)),
         TrainCommand::ReleaseFence { connection, token } => {
             call(&connection, Command::ReleaseFence(token))
-        }
-        TrainCommand::Rollover {
-            previous_config,
-            config,
-            token,
-        } => {
-            let receipt = native::rollover(
-                service(&previous_config)?,
-                service(&config)?,
-                token.as_deref(),
-            )?;
-            Ok(Execution::Rollover { receipt })
         }
     }
 }

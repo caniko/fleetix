@@ -138,11 +138,14 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// Durable fence survives both client disconnect and coordinator replacement.
+/// Durable fence survives client disconnect. It expires so a dead owner cannot
+/// block dispatch forever; a pre-expiry journal (no recorded deadline) is expired.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Fence {
     pub token: String,
     pub attempt: String,
+    #[serde(default)]
+    pub expires_at: u64,
 }
 
 /// Builder-local state. Mutation is serialized by the coordinator, not clients.
@@ -604,16 +607,22 @@ impl Train {
         self.running() == 0
     }
 
-    pub fn fence(&mut self, attempt: &str) -> Result<String, String> {
+    /// Take or refresh the activation fence. Dispatch stays closed while the
+    /// fence is live, and another attempt cannot take it from its owner.
+    pub fn fence(&mut self, attempt: &str, now: u64, seconds: u64) -> Result<String, String> {
         if !self.requests.contains_key(attempt) {
             return Err("unknown request".into());
         }
-        if let Some(fence) = &self.fence {
-            return if fence.attempt == attempt {
-                Ok(fence.token.clone())
-            } else {
-                Err(format!("builder fenced by {}", fence.attempt))
-            };
+        let expires_at = now.saturating_add(seconds);
+        if let Some(fence) = &mut self.fence {
+            if fence.expires_at > now {
+                return if fence.attempt == attempt {
+                    fence.expires_at = expires_at;
+                    Ok(fence.token.clone())
+                } else {
+                    Err(format!("builder fenced by {}", fence.attempt))
+                };
+            }
         }
         self.sequence = self
             .sequence
@@ -623,13 +632,28 @@ impl Train {
         self.fence = Some(Fence {
             token: token.clone(),
             attempt: attempt.into(),
+            expires_at,
         });
         Ok(token)
     }
 
+    /// Drop a fence whose deadline passed. Returns whether dispatch reopened.
+    pub fn expire_fence(&mut self, now: u64) -> bool {
+        if self
+            .fence
+            .as_ref()
+            .is_some_and(|fence| fence.expires_at <= now)
+        {
+            self.fence = None;
+            return true;
+        }
+        false
+    }
+
+    /// Idempotent: a token which no longer holds the fence is already released.
     pub fn release_fence(&mut self, token: &str) -> Result<(), String> {
         if self.fence.as_ref().is_none_or(|fence| fence.token != token) {
-            return Err("fence token mismatch".into());
+            return Ok(());
         }
         if !self.drained() {
             return Err("builder workers have not drained".into());

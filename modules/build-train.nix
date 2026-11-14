@@ -43,6 +43,7 @@
     aging_seconds = cfg.agingSeconds;
     planning_workers = cfg.planningWorkers;
     planning_timeout_seconds = cfg.planningTimeoutSeconds;
+    fence_seconds = cfg.fenceSeconds;
   };
   serviceConfig = pkgs.writeText "fleetix-train-service.json" (builtins.toJSON {
     inherit native coordinator;
@@ -57,59 +58,26 @@
     preparation_dir = "${coordinator.state_dir}/preparation";
     inherit (native) gc_roots;
   };
-  retained = cfg.retainedDeployment;
-  activeService =
-    if retained == null
-    then {
-      inherit native coordinator;
-      memory_max = cfg.memoryMax;
-      inherit (cfg) builder;
-    }
-    else builtins.fromJSON (builtins.readFile retained.serviceConfig);
-  activeUser =
-    if retained == null
-    then cfg.user
-    else retained.user;
-  activeScope =
-    if retained == null
-    then cfg.serviceScope
-    else retained.serviceScope;
-  activePackage =
-    if retained == null
-    then cfg.package
-    else retained.package;
-  activeServiceConfig =
-    if retained == null
-    then serviceConfig
-    else retained.serviceConfig;
-  activeConnection =
-    connection
-    // {
-      inherit (activeService.coordinator) policy socket;
-      inherit (activeService) builder;
-      preparation_dir = "${activeService.coordinator.state_dir}/preparation";
-      inherit (activeService.native) gc_roots;
-    };
-  activeRuntimeDirectory = lib.removePrefix "/run/" (builtins.dirOf activeConnection.socket);
-  activeStateDirectory = lib.removePrefix "/var/lib/" activeService.coordinator.state_dir;
+  runtimeDirectoryName = lib.removePrefix "/run/" (builtins.dirOf coordinator.socket);
+  stateDirectoryName = lib.removePrefix "/var/lib/" coordinator.state_dir;
   unit = {
     description = "Fleetix dependency-aware shared construction";
-    # Keep the old immutable execution policy alive until explicitly drained.
-    restartIfChanged = false;
-    stopIfChanged = false;
     serviceConfig = {
-      ExecStart = "${lib.getExe activePackage} build-train serve --config ${activeServiceConfig}";
+      ExecStart = "${lib.getExe cfg.package} build-train serve --config ${serviceConfig}";
       UMask = "0077";
       Restart = "on-failure";
       RestartSec = 5;
       KillMode = "control-group";
-      TimeoutStopSec = lib.max activeService.native.timeout_seconds activeService.coordinator.planning_timeout_seconds + 30;
-      MemoryMax = activeService.memory_max;
+      TimeoutStopSec = lib.max native.timeout_seconds coordinator.planning_timeout_seconds + 30;
+      MemoryMax = cfg.memoryMax;
       NoNewPrivileges = true;
       PrivateTmp = true;
     };
   };
 in {
+  imports = [
+    (lib.mkRemovedOptionModule ["fleetix" "services" "buildTrain" "retainedDeployment"] "the coordinator discards a foreign journal at startup; no staged handover is needed")
+  ];
   options.fleetix.services.buildTrain = {
     enable = lib.mkEnableOption "builder-local dependency-aware shared construction";
     package = lib.mkOption {
@@ -123,32 +91,7 @@ in {
     serviceScope = lib.mkOption {
       type = lib.types.enum ["system" "user"];
       default = "system";
-      description = "Manager owning the operator service. User mode enables lingering and sudo-free unit control while retaining existing paths. Changing scope requires guarded policy rollover and qualified host resource/routing policy.";
-    };
-    retainedDeployment = lib.mkOption {
-      default = null;
-      type = lib.types.nullOr (lib.types.submodule {
-        options = {
-          package = lib.mkOption {
-            type = lib.types.package;
-            description = "Original qualified coordinator package retained in the system closure.";
-          };
-          user = lib.mkOption {
-            type = lib.types.str;
-            description = "Original operator account; in-place ownership transfer is unsupported.";
-          };
-          serviceScope = lib.mkOption {
-            type = lib.types.enum ["system" "user"];
-            default = "system";
-            description = "Original service manager, retained until the stopped coordinator completes guarded handover.";
-          };
-          serviceConfig = lib.mkOption {
-            type = lib.types.path;
-            description = "Original immutable /nix/store service JSON captured before activation.";
-          };
-        };
-      });
-      description = "Pin the active executable, connection, operator and unit resource policy while staging changed options. Set before activating a policy change; clear only after the stopped coordinator completes guarded offline rollover. Candidate contracts are exposed as next-service.json and next-connection.json.";
+      description = "Manager owning the operator service. User mode enables lingering and sudo-free unit control while retaining existing paths. Changing scope requires qualified host resource/routing policy.";
     };
     builder = lib.mkOption {
       type = lib.types.str;
@@ -162,19 +105,19 @@ in {
     runtimeDirectory = lib.mkOption {
       type = lib.types.strMatching "[a-zA-Z0-9_-]+";
       default = "fleetix-train";
-      description = "Private directory name under /run. Changing it requires guarded policy rollover.";
+      description = "Private directory name under /run.";
     };
     stateDirectory = lib.mkOption {
       type = lib.types.strMatching "[a-zA-Z0-9_-]+";
       default = "fleetix-train";
-      description = "Private durable directory name under /var/lib. Preserve it across policy rollover.";
+      description = "Private durable directory name under /var/lib. A journal from another policy is discarded at startup.";
     };
     gcRoots = lib.mkOption {
       type = lib.types.addCheck (lib.types.strMatching "/nix/var/nix/gcroots/[A-Za-z0-9_+./-]+") (path:
         lib.all (component: component != "" && component != "." && component != "..")
         (lib.splitString "/" (lib.removePrefix "/nix/var/nix/gcroots/" path)));
       default = "/nix/var/nix/gcroots/per-user/${cfg.user}/fleetix-train";
-      description = "Normalized private descendant of /nix/var/nix/gcroots, without empty, dot or parent components; preserve its ownership across policy rollover.";
+      description = "Normalized private descendant of /nix/var/nix/gcroots, without empty, dot or parent components.";
     };
     workers = lib.mkOption {
       type = lib.types.ints.between 1 64;
@@ -204,6 +147,11 @@ in {
       type = lib.types.ints.between 1 86400;
       default = 180;
     };
+    fenceSeconds = lib.mkOption {
+      type = lib.types.ints.between 1 86400;
+      default = 3600;
+      description = "Activation fence lifetime; an expired fence no longer closes dispatch.";
+    };
     substitutes = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -221,7 +169,7 @@ in {
         message = "buildTrain requires Linux peer authentication.";
       }
       {
-        assertion = activeScope != "user" || config.security.allowUserNamespaces;
+        assertion = cfg.serviceScope != "user" || config.security.allowUserNamespaces;
         message = "buildTrain user services require user namespaces for private temporary-directory isolation.";
       }
       {
@@ -240,61 +188,42 @@ in {
         assertion = cfg.planningTimeoutSeconds >= 2 * cfg.queryTimeoutSeconds + 20;
         message = "buildTrain planning timeout must cover two native queries and their kill grace periods.";
       }
-      {
-        assertion = retained == null || (activeUser == cfg.user && builtins.hasAttr activeUser config.users.users);
-        message = "buildTrain cannot transfer an existing deployment to another operator account.";
-      }
-      {
-        assertion = retained == null || builtins.match "/nix/store/[^/]+" (toString retained.serviceConfig) != null;
-        message = "buildTrain retainedDeployment.serviceConfig must be an immutable store file.";
-      }
-      {
-        assertion = retained == null || (activeService.builder == cfg.builder && activeService.native.gc_roots == native.gc_roots && activeService.coordinator.socket == coordinator.socket && activeService.coordinator.state_dir == coordinator.state_dir);
-        message = "buildTrain retained deployment must preserve builder, socket, state and request-root ownership locations.";
-      }
     ];
-    environment.etc."fleetix-train/connection.json".text = builtins.toJSON activeConnection;
-    # Retain this immutable path before activation for guarded offline rollover.
-    environment.etc."fleetix-train/service.json".source = activeServiceConfig;
-    environment.etc."fleetix-train/next-service.json".source = serviceConfig;
-    environment.etc."fleetix-train/next-connection.json".text = builtins.toJSON connection;
-    # Realize and retain the replacement executable before offline handover,
-    # while the active unit keeps the original package's closure referenced.
-    system.extraDependencies = lib.optional (retained != null) cfg.package;
+    environment.etc."fleetix-train/connection.json".text = builtins.toJSON connection;
+    environment.etc."fleetix-train/service.json".source = serviceConfig;
     systemd.tmpfiles.rules =
       [
-        "d /nix/var/nix/gcroots/per-user/${activeUser} 0700 ${activeUser} - -"
-        "d ${activeConnection.gc_roots} 0700 ${activeUser} - -"
-        "d ${activeConnection.preparation_dir} 0700 ${activeUser} - -"
+        "d /nix/var/nix/gcroots/per-user/${cfg.user} 0700 ${cfg.user} - -"
+        "d ${connection.gc_roots} 0700 ${cfg.user} - -"
+        "d ${connection.preparation_dir} 0700 ${cfg.user} - -"
       ]
-      ++ lib.optionals (activeScope == "user") [
+      ++ lib.optionals (cfg.serviceScope == "user") [
         # Root provisions these at boot; user service lifecycle must not remove
         # the persistent journal or recreate either coordinator lease anchor.
-        "d /run/${activeRuntimeDirectory} 0700 ${activeUser} - -"
-        "d /var/lib/${activeStateDirectory} 0700 ${activeUser} - -"
+        "d /run/${runtimeDirectoryName} 0700 ${cfg.user} - -"
+        "d /var/lib/${stateDirectoryName} 0700 ${cfg.user} - -"
       ];
-    users.users.${activeUser}.linger = lib.mkIf (activeScope == "user") true;
-    systemd.services.fleetix-build-train = lib.mkIf (activeScope == "system") (unit
+    users.users.${cfg.user}.linger = lib.mkIf (cfg.serviceScope == "user") true;
+    systemd.services.fleetix-build-train = lib.mkIf (cfg.serviceScope == "system") (unit
       // {
         wantedBy = ["multi-user.target"];
         after = ["nix-daemon.service"];
         serviceConfig =
           unit.serviceConfig
           // {
-            User = activeUser;
-            RuntimeDirectory = activeRuntimeDirectory;
-            # Offline rollover runs as the operator after the service stops, and
-            # must keep the same socket lease inode and operator-owned parent.
+            User = cfg.user;
+            RuntimeDirectory = runtimeDirectoryName;
+            # The socket lease inode and operator-owned parent survive restarts.
             RuntimeDirectoryPreserve = "yes";
             RuntimeDirectoryMode = "0700";
-            StateDirectory = activeStateDirectory;
+            StateDirectory = stateDirectoryName;
             StateDirectoryMode = "0700";
           };
       });
-    systemd.user.services.fleetix-build-train = lib.mkIf (activeScope == "user") (unit
+    systemd.user.services.fleetix-build-train = lib.mkIf (cfg.serviceScope == "user") (unit
       // {
         wantedBy = ["default.target"];
-        unitConfig.ConditionUser = activeUser;
+        unitConfig.ConditionUser = cfg.user;
         # User units cannot order against the system manager's nix-daemon unit.
         # Native Nix connects to the existing system daemon socket itself.
         serviceConfig = unit.serviceConfig // {PrivateUsers = true;};

@@ -14,6 +14,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so refresh diffs no longer report pins that did not move, and producer
   aliases fold inside those ids.
 
+## [0.11.0] - 2026-11-14
+
+### Added
+
+- `fleetix.services.buildTrain.fenceSeconds` (default 3600, 1–86400) bounds an
+  activation fence. Every scheduling tick and startup drops an expired fence, so
+  a dead owner cannot block builders forever; the owning attempt refreshes it.
+- `build_train::runtime::POLICY_CHANGED` and `runtime::is_policy_changed` let
+  clients tell a coordinator policy/protocol change from a transport error.
+
+### Changed
+
+- The build-train coordinator is crash-only. Startup discards a journal from
+  another version, policy or aging value, an unparsable journal, or an
+  interrupted handover marker, logs one line naming the old version, policy,
+  request count and fence, and removes `train.json`, `rollover.json`, `archive/`
+  and `rollovers/`. A fresh train then prunes every coordinator-owned request and
+  output GC root it does not own. Caller-owned `attempts/` roots and
+  `preparation/` are untouched.
+- `release-fence` is idempotent: a token which no longer holds the fence is
+  already released.
+- `Retire` keeps an archive only while the root release is outstanding and
+  removes it once that is durable; retiring an unknown attempt is a successful
+  no-op. The NixOS module no longer pins `restartIfChanged`/`stopIfChanged`, so a
+  policy change restarts the unit.
+
+### Removed
+
+- `fleetix build-train rollover` and the offline policy-handover machinery,
+  including `build_train::native::rollover` and
+  `fleetix.services.buildTrain.retainedDeployment` (now a removed option).
+
 ## [0.10.2] - 2026-11-13
 
 ### Added

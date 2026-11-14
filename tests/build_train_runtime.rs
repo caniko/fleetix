@@ -247,6 +247,13 @@ fn eventually(mut predicate: impl FnMut() -> bool) {
     }
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 struct Server {
     config: Config,
     stop: Arc<AtomicBool>,
@@ -269,6 +276,7 @@ impl Server {
             aging_seconds: 60,
             planning_workers: 1,
             planning_timeout_seconds: 10,
+            fence_seconds: 3600,
         };
         let backend = Arc::new(TestBackend::default());
         let mut server = Self {
@@ -556,7 +564,7 @@ fn oversized_legacy_fence_returns_a_diagnostic_and_survives_restart() {
     let mut legacy = request("legacy", "atlas");
     legacy.attempt = "x".repeat(600_000);
     state.register(legacy.clone(), false).unwrap();
-    let token = state.fence(&legacy.attempt).unwrap();
+    let token = state.fence(&legacy.attempt, unix_now(), 3600).unwrap();
     std::fs::write(
         server.config.state_dir.join("train.json"),
         serde_json::to_vec(&state).unwrap(),
@@ -1038,11 +1046,12 @@ fn retirement_requires_terminal_state_drained_interest_and_no_owned_fence() {
             .contains("fence owner")
     );
     client.call(Command::ReleaseFence(fence.token)).unwrap();
-    client.call(Command::Retire("a".into())).unwrap();
     assert_eq!(
-        client.call(Command::Status("a".into())).unwrap().outcome,
+        client.call(Command::Retire("a".into())).unwrap().outcome,
         Some(Outcome::Cancelled)
     );
+    // The archive is gone with the release, so later status is unknown.
+    assert!(client.call(Command::Status("a".into())).is_err());
 }
 
 #[test]
@@ -1069,27 +1078,6 @@ fn durable_unprepared_intake_resumes_after_restart_in_held_admission() {
     eventually(|| {
         client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
     });
-}
-
-#[test]
-fn incompatible_journal_is_rejected_without_rewriting_evidence() {
-    let mut server = Server::start();
-    server.shutdown();
-    let state_path = server.config.state_dir.join("train.json");
-    let mut state: serde_json::Value =
-        serde_json::from_reader(std::fs::File::open(&state_path).unwrap()).unwrap();
-    state["version"] = serde_json::json!(1);
-    let evidence = serde_json::to_vec(&state).unwrap();
-    std::fs::write(&state_path, &evidence).unwrap();
-    let error = serve(
-        server.config.clone(),
-        server.backend.clone(),
-        server.stop.clone(),
-    )
-    .unwrap_err();
-    assert!(error.contains("persisted train protocol/policy mismatch"));
-    assert_eq!(std::fs::read(&state_path).unwrap(), evidence);
-    assert!(!server.config.socket.exists());
 }
 
 #[test]
@@ -1584,516 +1572,6 @@ fn durable_fence_survives_service_restart_and_rejects_wrong_policy() {
 }
 
 #[test]
-fn policy_rollover_requires_a_stopped_drained_fenced_terminal_train() {
-    let mut server = Server::start();
-    let old = server.config.clone();
-    let next = Config {
-        policy: "new-policy".into(),
-        ..old.clone()
-    };
-    let client = server.client();
-    client.call(Command::Submit(request("m", "murph"))).unwrap();
-    eventually(|| {
-        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
-    });
-    client
-        .call(Command::Register(request("held", "atlas")))
-        .unwrap();
-    let fence = client.drain("m", Duration::from_secs(1)).unwrap();
-    assert!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap_err()
-        .contains("stop")
-    );
-    server.shutdown();
-    let journal = std::fs::read(old.state_dir.join("train.json")).unwrap();
-    assert!(
-        rollover(&old, &next, server.backend.as_ref(), Some("wrong"))
-            .unwrap_err()
-            .contains("fence")
-    );
-    assert!(
-        rollover(&old, &next, server.backend.as_ref(), None)
-            .unwrap_err()
-            .contains("fence")
-    );
-    assert!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap_err()
-        .contains("cancel pending")
-    );
-    assert_eq!(
-        journal,
-        std::fs::read(old.state_dir.join("train.json")).unwrap()
-    );
-    assert!(!old.state_dir.join("rollover.json").exists());
-    assert!(server.backend.released_requests.lock().unwrap().is_empty());
-}
-
-#[test]
-fn idle_unfenced_journal_is_adopted_without_a_drain_fence() {
-    let mut server = Server::start();
-    let old = server.config.clone();
-    let next = Config {
-        policy: "new-policy".into(),
-        ..old.clone()
-    };
-    let client = server.client();
-    client.call(Command::Submit(request("m", "murph"))).unwrap();
-    eventually(|| {
-        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
-    });
-    client.call(Command::Retire("m".into())).unwrap();
-    server.shutdown();
-    let idle: Train =
-        serde_json::from_reader(std::fs::File::open(old.state_dir.join("train.json")).unwrap())
-            .unwrap();
-    // A fence can only be taken by a live request, so a train which finished
-    // its work before the policy changed leaves no token to authorize handover.
-    assert!(idle.fence.is_none() && idle.requests.is_empty() && idle.nodes.is_empty());
-    assert!(
-        std::fs::read_dir(old.state_dir.join("archive"))
-            .unwrap()
-            .count()
-            > 0
-    );
-    assert_eq!(
-        rollover(&old, &next, server.backend.as_ref(), Some("stale")).unwrap_err(),
-        "rollover has no retained drain fence; omit the token to adopt an idle journal"
-    );
-    let receipt = rollover(&old, &next, server.backend.as_ref(), None).unwrap();
-    assert!(receipt.ends_with("receipt.json"));
-    assert!(!old.state_dir.join("rollover.json").exists());
-    // A completed unfenced handover is idempotent and still refuses a token.
-    assert_eq!(
-        rollover(&old, &next, server.backend.as_ref(), None).unwrap(),
-        receipt
-    );
-    assert!(rollover(&old, &next, server.backend.as_ref(), Some("stale")).is_err());
-    let replacement: Train =
-        serde_json::from_reader(std::fs::File::open(old.state_dir.join("train.json")).unwrap())
-            .unwrap();
-    assert_eq!(replacement.policy, next.policy);
-    assert!(replacement.requests.is_empty() && replacement.fence.is_none());
-    server.config = next;
-    server.restart();
-    assert!(
-        server
-            .client()
-            .call(Command::Submit(request("n", "atlas")))
-            .is_ok()
-    );
-}
-
-#[test]
-fn unfenced_rollover_still_requires_pending_requests_to_be_cancelled() {
-    let mut server = Server::start();
-    let old = server.config.clone();
-    let next = Config {
-        policy: "new-policy".into(),
-        ..old.clone()
-    };
-    server
-        .client()
-        .call(Command::Register(request("held", "atlas")))
-        .unwrap();
-    server.shutdown();
-    assert_eq!(
-        rollover(&old, &next, server.backend.as_ref(), None).unwrap_err(),
-        "cancel pending requests explicitly before policy rollover"
-    );
-    assert!(
-        rollover(&old, &next, server.backend.as_ref(), Some("token"))
-            .unwrap_err()
-            .contains("no retained drain fence")
-    );
-}
-
-#[test]
-fn policy_rollover_preserves_old_failure_fence_and_history_without_admitting_old_work() {
-    let mut server = Server::start();
-    let old = server.config.clone();
-    let next = Config {
-        policy: "new-policy".into(),
-        ..old.clone()
-    };
-    let client = server.client();
-    client.call(Command::Submit(request("m", "murph"))).unwrap();
-    eventually(|| {
-        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
-    });
-    client
-        .call(Command::Register(request("bad", "unsupported")))
-        .unwrap_err();
-    let failure = client.call(Command::Status("bad".into())).unwrap().outcome;
-    client
-        .call(Command::Register(request("cancelled", "atlas")))
-        .unwrap();
-    client.call(Command::Cancel("cancelled".into())).unwrap();
-    client.call(Command::Retire("cancelled".into())).unwrap();
-    let fence = client.drain("m", Duration::from_secs(1)).unwrap();
-    let original = std::fs::read(old.state_dir.join("train.json")).unwrap();
-    server.shutdown();
-    let receipt = rollover(
-        &old,
-        &next,
-        server.backend.as_ref(),
-        Some(fence.token.as_str()),
-    )
-    .unwrap();
-    let snapshot: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(receipt.parent().unwrap().join("snapshot.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        snapshot["train"],
-        serde_json::from_slice::<serde_json::Value>(&original).unwrap()
-    );
-    assert_eq!(snapshot["train"]["fence"]["token"], fence.token);
-    assert_eq!(snapshot["archives"].as_array().unwrap().len(), 1);
-    assert!(!old.state_dir.join("rollover.json").exists());
-    assert_eq!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap(),
-        receipt
-    );
-    assert_eq!(server.backend.released_requests.lock().unwrap().len(), 3);
-    server.config = next.clone();
-    server.restart();
-    assert_eq!(
-        client.call(Command::Status("bad".into())).unwrap().outcome,
-        failure
-    );
-    assert_eq!(
-        client.call(Command::Retire("m".into())).unwrap().outcome,
-        Some(Outcome::Ready)
-    );
-    assert_eq!(
-        client
-            .call(Command::Status("cancelled".into()))
-            .unwrap()
-            .outcome,
-        Some(Outcome::Cancelled)
-    );
-    for command in [
-        Command::Retry("bad".into()),
-        Command::Admit("m".into()),
-        Command::AuthorizeActivation("m".into()),
-        Command::Register(request("fresh-old", "murph")),
-        Command::ReleaseFence(fence.token.clone()),
-    ] {
-        assert!(client.call(command).is_err());
-    }
-    let new_client = server.client();
-    assert!(
-        new_client
-            .call(Command::Register(request("m", "murph")))
-            .is_err()
-    );
-    new_client
-        .call(Command::Submit(request("new", "murph")))
-        .unwrap();
-    eventually(|| {
-        new_client
-            .call(Command::Status("new".into()))
-            .unwrap()
-            .outcome
-            == Some(Outcome::Ready)
-    });
-    let replacement_journal = std::fs::read(next.state_dir.join("train.json")).unwrap();
-    server.shutdown();
-    // Retrying a completed handover cannot reset work admitted by the new policy.
-    assert_eq!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap(),
-        receipt
-    );
-    assert_eq!(
-        replacement_journal,
-        std::fs::read(next.state_dir.join("train.json")).unwrap()
-    );
-}
-
-#[test]
-fn interrupted_policy_rollover_blocks_startup_and_recovers_only_with_exact_evidence() {
-    let mut server = Server::start();
-    let old = server.config.clone();
-    let next = Config {
-        policy: "new-policy".into(),
-        ..old.clone()
-    };
-    let client = server.client();
-    client.call(Command::Submit(request("m", "murph"))).unwrap();
-    eventually(|| {
-        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
-    });
-    let fence = client.drain("m", Duration::from_secs(1)).unwrap();
-    server.shutdown();
-    server.backend.release_fails.store(true, Ordering::Relaxed);
-    assert!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap_err()
-        .contains("injected")
-    );
-    assert!(old.state_dir.join("rollover.json").exists());
-    for config in [&old, &next] {
-        assert!(
-            serve(
-                config.clone(),
-                server.backend.clone(),
-                Arc::new(AtomicBool::new(true))
-            )
-            .unwrap_err()
-            .contains("interrupted policy rollover")
-        );
-    }
-    let wrong = Config {
-        workers: 2,
-        ..next.clone()
-    };
-    assert!(
-        rollover(
-            &old,
-            &wrong,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap_err()
-        .contains("different configs")
-    );
-    // A fenced interruption cannot be resumed as an unfenced adoption.
-    assert!(
-        rollover(&old, &next, server.backend.as_ref(), None)
-            .unwrap_err()
-            .contains("different configs")
-    );
-    assert!(server.backend.released_requests.lock().unwrap().is_empty());
-    server.backend.release_fails.store(false, Ordering::Relaxed);
-    rollover(
-        &old,
-        &next,
-        server.backend.as_ref(),
-        Some(fence.token.as_str()),
-    )
-    .unwrap();
-    assert_eq!(
-        server.backend.released_requests.lock().unwrap().as_slice(),
-        ["m"]
-    );
-    server.config = next;
-    server.restart();
-    assert_eq!(
-        client.call(Command::Status("m".into())).unwrap().outcome,
-        Some(Outcome::Ready)
-    );
-    server.shutdown();
-}
-
-#[test]
-fn successive_rollovers_keep_each_policy_history_and_survive_post_publication_interruption() {
-    let mut server = Server::start();
-    let first = server.config.clone();
-    let second = Config {
-        policy: "second-policy".into(),
-        ..first.clone()
-    };
-    let third = Config {
-        policy: "third-policy".into(),
-        ..first.clone()
-    };
-    let first_client = server.client();
-    first_client
-        .call(Command::Submit(request("first", "murph")))
-        .unwrap();
-    eventually(|| {
-        first_client
-            .call(Command::Status("first".into()))
-            .unwrap()
-            .outcome
-            == Some(Outcome::Ready)
-    });
-    let fence = first_client.drain("first", Duration::from_secs(1)).unwrap();
-    server.shutdown();
-    let receipt = rollover(
-        &first,
-        &second,
-        server.backend.as_ref(),
-        Some(fence.token.as_str()),
-    )
-    .unwrap();
-    // Recreate a crash after the replacement journal and receipt were durably
-    // written, but before the marker was removed. No roots may be released twice.
-    std::fs::copy(&receipt, first.state_dir.join("rollover.json")).unwrap();
-    rollover(
-        &first,
-        &second,
-        server.backend.as_ref(),
-        Some(fence.token.as_str()),
-    )
-    .unwrap();
-    assert_eq!(
-        server.backend.released_requests.lock().unwrap().as_slice(),
-        ["first"]
-    );
-    server.config = second.clone();
-    server.restart();
-    let second_client = server.client();
-    second_client
-        .call(Command::Submit(request("second", "murph")))
-        .unwrap();
-    eventually(|| {
-        second_client
-            .call(Command::Status("second".into()))
-            .unwrap()
-            .outcome
-            == Some(Outcome::Ready)
-    });
-    let second_fence = second_client
-        .drain("second", Duration::from_secs(1))
-        .unwrap();
-    server.shutdown();
-    rollover(
-        &second,
-        &third,
-        server.backend.as_ref(),
-        Some(second_fence.token.as_str()),
-    )
-    .unwrap();
-    server.config = third;
-    server.restart();
-    for (client, attempt) in [(&first_client, "first"), (&second_client, "second")] {
-        assert_eq!(
-            client
-                .call(Command::Status(attempt.into()))
-                .unwrap()
-                .outcome,
-            Some(Outcome::Ready)
-        );
-        assert_eq!(
-            client
-                .call(Command::Retire(attempt.into()))
-                .unwrap()
-                .outcome,
-            Some(Outcome::Ready)
-        );
-        assert!(
-            client
-                .call(Command::AuthorizeActivation(attempt.into()))
-                .is_err()
-        );
-    }
-    assert_eq!(
-        server.backend.released_requests.lock().unwrap().as_slice(),
-        ["first", "second"]
-    );
-}
-
-#[test]
-fn completed_rollover_retry_verifies_snapshot_without_rewriting_replacement_work() {
-    let mut server = Server::start();
-    let old = server.config.clone();
-    let next = Config {
-        policy: "new-policy".into(),
-        ..old.clone()
-    };
-    let client = server.client();
-    client.call(Command::Submit(request("m", "murph"))).unwrap();
-    eventually(|| {
-        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
-    });
-    let fence = client.drain("m", Duration::from_secs(1)).unwrap();
-    server.shutdown();
-    let receipt = rollover(
-        &old,
-        &next,
-        server.backend.as_ref(),
-        Some(fence.token.as_str()),
-    )
-    .unwrap();
-    let journal = std::fs::read(next.state_dir.join("train.json")).unwrap();
-    let path = receipt.parent().unwrap().join("snapshot.json");
-    let original = std::fs::read(&path).unwrap();
-    let mut changed = original.clone();
-    changed.push(b' ');
-    std::fs::write(&path, changed).unwrap();
-    assert!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap_err()
-        .contains("checksum changed")
-    );
-    assert_eq!(
-        journal,
-        std::fs::read(next.state_dir.join("train.json")).unwrap()
-    );
-    assert!(!old.state_dir.join("rollover.json").exists());
-    assert_eq!(
-        server.backend.released_requests.lock().unwrap().as_slice(),
-        ["m"]
-    );
-    std::fs::write(path, original).unwrap();
-    assert_eq!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap(),
-        receipt
-    );
-    let journal_path = next.state_dir.join("train.json");
-    let mut incompatible: serde_json::Value = serde_json::from_slice(&journal).unwrap();
-    incompatible["version"] = serde_json::json!(fleetix::build_train::VERSION + 1);
-    let raw = serde_json::to_vec(&incompatible).unwrap();
-    std::fs::write(&journal_path, &raw).unwrap();
-    assert!(
-        rollover(
-            &old,
-            &next,
-            server.backend.as_ref(),
-            Some(fence.token.as_str())
-        )
-        .unwrap_err()
-        .contains("unsupported rollover journal version")
-    );
-    assert_eq!(std::fs::read(&journal_path).unwrap(), raw);
-    assert_eq!(
-        server.backend.released_requests.lock().unwrap().as_slice(),
-        ["m"]
-    );
-}
-
-#[test]
 fn bounded_drain_keeps_fence_and_cancellation_removes_only_one_interest() {
     let server = Server::start();
     let client = server.client();
@@ -2161,6 +1639,7 @@ fn drain_deadline_bounds_a_stalled_status_reply_and_reports_its_fence() {
                 fence: Some(Fence {
                     token: "a-1".into(),
                     attempt: "a".into(),
+                    expires_at: u64::MAX,
                 }),
                 running,
                 error: None,
@@ -2416,4 +1895,117 @@ fn restart_reserves_every_output_an_interrupted_build_may_produce() {
         server.backend.reserved.lock().unwrap().first(),
         Some(&BTreeSet::from([goal("multi"), dev]))
     );
+}
+
+#[test]
+fn foreign_journal_is_discarded_with_its_history_and_roots() {
+    let mut server = Server::start();
+    server.shutdown();
+    let mut foreign = Train::new("other-policy".into(), server.config.aging_seconds);
+    foreign.register(request("legacy", "atlas"), false).unwrap();
+    foreign.fence("legacy", unix_now(), 3600).unwrap();
+    std::fs::write(
+        server.config.state_dir.join("train.json"),
+        serde_json::to_vec(&foreign).unwrap(),
+    )
+    .unwrap();
+    let archive = server.config.state_dir.join("archive");
+    let rollovers = server.config.state_dir.join("rollovers");
+    std::fs::create_dir_all(&archive).unwrap();
+    std::fs::write(archive.join("retired.json"), "{}").unwrap();
+    std::fs::create_dir_all(&rollovers).unwrap();
+    std::fs::write(rollovers.join("receipt.json"), "{}").unwrap();
+    server.backend.pruned.lock().unwrap().clear();
+    server.restart();
+    assert_eq!(std::fs::read_dir(&archive).unwrap().count(), 0);
+    assert!(!rollovers.exists());
+    // Startup pruned every coordinator root against the fresh empty journal.
+    assert_eq!(
+        server.backend.pruned.lock().unwrap().last().cloned(),
+        Some(BTreeSet::new())
+    );
+    let client = server.client();
+    assert!(client.call(Command::Inspect).unwrap().fence.is_none());
+    assert!(client.call(Command::Status("legacy".into())).is_err());
+    client
+        .call(Command::Register(request("fresh", "murph")))
+        .unwrap();
+}
+
+#[test]
+fn startup_drops_an_expired_fence_and_resumes_dispatch() {
+    let mut server = Server::start();
+    server.shutdown();
+    let path = server.config.state_dir.join("train.json");
+    let mut state: Train = serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
+    let request = request("m", "murph");
+    let graph = server.backend.plan(&request).unwrap();
+    state.submit(request, graph, 0).unwrap();
+    // Its owner died before releasing it; the deadline is already behind us.
+    state.fence("m", unix_now() - 60, 30).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    server.restart();
+    let client = server.client();
+    assert!(client.call(Command::Inspect).unwrap().fence.is_none());
+    eventually(|| {
+        client.call(Command::Status("m".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+}
+
+#[test]
+fn retire_drops_its_archive_after_release_and_unknown_attempt_is_ok() {
+    let server = Server::start();
+    let client = server.client();
+    client
+        .call(Command::Submit(request("old", "murph")))
+        .unwrap();
+    eventually(|| {
+        client.call(Command::Status("old".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    let archive = server.config.state_dir.join("archive");
+    server.backend.release_fails.store(true, Ordering::Relaxed);
+    assert!(
+        client
+            .call(Command::Retire("old".into()))
+            .unwrap_err()
+            .contains("root release")
+    );
+    // The archive exists only while the root release is outstanding.
+    assert_eq!(std::fs::read_dir(&archive).unwrap().count(), 1);
+    server.backend.release_fails.store(false, Ordering::Relaxed);
+    assert_eq!(
+        client.call(Command::Retire("old".into())).unwrap().outcome,
+        Some(Outcome::Ready)
+    );
+    assert_eq!(std::fs::read_dir(&archive).unwrap().count(), 0);
+    for attempt in ["old", "never-known"] {
+        assert_eq!(
+            client
+                .call(Command::Retire(attempt.into()))
+                .unwrap()
+                .outcome,
+            None,
+            "{attempt}"
+        );
+    }
+}
+
+#[test]
+fn client_policy_mismatch_is_typed_but_transport_failure_is_not() {
+    let server = Server::start();
+    let wrong = Client {
+        socket: server.config.socket.clone(),
+        policy: "other-policy".into(),
+    };
+    let error = wrong.call(Command::Inspect).unwrap_err();
+    assert!(is_policy_changed(&error), "{error}");
+    // Helpers wrap the sentinel with context; it must still be recognised.
+    let error = wrong.drain("any", Duration::from_secs(1)).unwrap_err();
+    assert!(is_policy_changed(&error), "{error}");
+    let absent = Client {
+        socket: server._temp.path().join("absent.sock"),
+        policy: server.config.policy.clone(),
+    };
+    let error = absent.call(Command::Inspect).unwrap_err();
+    assert!(!is_policy_changed(&error), "{error}");
 }
