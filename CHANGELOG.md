@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-14
+
 ### Fixed
 
+- Release `fleetix-sidecar` at the workspace version. 0.11.0 was tagged with the
+  sidecar still at 0.10.2, so its crates never published; 0.11.1 ships the
+  crash-only build train.
 - `supply::observe` keys transitive flake pins by producer
   (`flake-input:transitive:<producer>`) instead of renumbered lock node keys,
   so refresh diffs no longer report pins that did not move, and producer
