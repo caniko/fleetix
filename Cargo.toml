@@ -48,6 +48,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # AsyncFd I/O safety fix (RUSTSEC-2026-0386).
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "time"] }
 clap = { version = "4", features = ["derive"] }
@@ -78,6 +79,7 @@ serde_json.workspace = true
 indexmap = { version = "2", features = ["serde"] }
 tempfile.workspace = true
 sha2.workspace = true
+chrono.workspace = true
 toml_edit = { version = "0.23", features = ["serde"], optional = true }
 fs2 = { version = "0.4", optional = true }
 libc = { version = "0.2", optional = true }

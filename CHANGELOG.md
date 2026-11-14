@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fleetix::rops` owns the root-transaction ("rops") spool contract: `Op`,
+  `Source`, `queue`, `validate`, `load`, `pending` and the `pending/`,
+  `running/`, `done/` and `watch/` state names. It writes the exact files
+  `canix host rops` approves, so another tool can queue a transaction; host
+  lookup, approval, sudo and watchers stay with the caller.
+
 ## [0.11.1] - 2026-11-14
 
 ### Fixed
