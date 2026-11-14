@@ -307,8 +307,16 @@ impl Client {
         if fence.attempt != attempt {
             return Err("coordinator returned another request's fence".into());
         }
+        let mut fence = fence;
         let mut running = reply.running;
-        while running != 0 {
+        loop {
+            // A reply delivered after the deadline proves nothing: dispatch reopened.
+            if fence.expires_at <= now() {
+                return Err(format!("fence {} expired while draining", fence.token));
+            }
+            if running == 0 {
+                return Ok(fence);
+            }
             if std::time::Instant::now() >= deadline {
                 return Err(format!(
                     "drain timed out; fence {} retained for request {}",
@@ -329,12 +337,12 @@ impl Client {
                     )
                 })?;
             // An expired fence reopened dispatch; draining under it proves nothing.
-            if reply.fence.as_ref().map(|f| &f.token) != Some(&fence.token) {
-                return Err(format!("fence {} expired while draining", fence.token));
+            match reply.fence {
+                Some(latest) if latest.token == fence.token => fence = latest,
+                _ => return Err(format!("fence {} expired while draining", fence.token)),
             }
             running = reply.running;
         }
-        Ok(fence)
     }
 }
 
@@ -428,7 +436,8 @@ fn discard_journal(config: &Config, detail: &str) -> Result<(), String> {
     // History first: the journal and marker are the retry trigger if this stops.
     remove_tree(&config.state_dir.join("archive"))?;
     remove_tree(&config.state_dir.join("rollovers"))?;
-    for name in ["rollover.json", "train.json"] {
+    // Journal before marker: either one left behind still forces a discard.
+    for name in ["train.json", "rollover.json"] {
         match fs::remove_file(config.state_dir.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
