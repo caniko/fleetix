@@ -16,7 +16,8 @@
     "queue_limit": 128,
     "aging_seconds": 300,
     "planning_timeout_seconds": 180,
-    "policy": "81bc67d6105138d4e343df0f4459e7bc71e37af91bf463d69f093e08f3bb115b"
+    "policy": "81bc67d6105138d4e343df0f4459e7bc71e37af91bf463d69f093e08f3bb115b",
+    "fence_seconds": 3600
   },
   "builder": "atlas",
   "admission_contract": "[\"fleetix-train-operator\",\"can\",\"qualified-resource-policy\"]",

@@ -19,7 +19,7 @@ fn policy_matches_original_nix_contract() {
 }
 
 #[test]
-fn operator_bound_admission_keeps_version_two_parity_and_rejects_ownership_transfer() {
+fn operator_bound_admission_keeps_version_two_parity() {
     let service: Service = serde_json::from_str(include_str!(
         "../../tests/fixtures/build-train-operator-service.json"
     ))
@@ -27,19 +27,6 @@ fn operator_bound_admission_keeps_version_two_parity_and_rejects_ownership_trans
     assert_eq!(
         policy_identity(&service).unwrap(),
         service.coordinator.policy
-    );
-    let mut next = service.clone();
-    next.admission_contract = serde_json::to_string(&(
-        "fleetix-train-operator",
-        "other",
-        "qualified-resource-policy",
-    ))
-    .unwrap();
-    next.coordinator.policy = policy_identity(&next).unwrap();
-    assert_ne!(next.coordinator.policy, service.coordinator.policy);
-    assert_eq!(
-        rollover(service, next, Some("unused")).unwrap_err(),
-        "policy rollover cannot transfer operator ownership"
     );
 }
 
@@ -67,43 +54,6 @@ fn scheduling_and_execution_limits_remain_policy_bound() {
     let mut changed = service;
     changed.coordinator.policy = "not-part-of-itself".into();
     assert_eq!(policy_identity(&changed).unwrap(), expected);
-}
-
-#[test]
-fn rollover_rejects_changed_ownership_and_invalid_contracts_before_touching_state() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut previous = service();
-    previous.coordinator.state_dir = temp.path().join("state");
-    previous.coordinator.socket = temp.path().join("coordinator.sock");
-    previous.coordinator.policy = policy_identity(&previous).unwrap();
-    std::fs::create_dir(&previous.coordinator.state_dir).unwrap();
-    let journal = previous.coordinator.state_dir.join("train.json");
-    std::fs::write(&journal, "original recovery evidence").unwrap();
-    for field in ["builder", "roots", "policy", "deadline"] {
-        let mut next = previous.clone();
-        match field {
-            "builder" => next.builder = "replacement-builder".into(),
-            "roots" => next.native.gc_roots = temp.path().join("foreign-roots"),
-            "deadline" => next.coordinator.planning_timeout_seconds = 1,
-            _ => {}
-        }
-        next.coordinator.policy = policy_identity(&next).unwrap();
-        if field == "policy" {
-            next.coordinator.policy = "unverified-policy".into();
-        }
-        assert!(rollover(previous.clone(), next, Some("token")).is_err());
-        assert_eq!(
-            std::fs::read_to_string(&journal).unwrap(),
-            "original recovery evidence"
-        );
-        assert!(
-            !previous
-                .coordinator
-                .state_dir
-                .join("rollover.json")
-                .exists()
-        );
-    }
 }
 
 #[test]

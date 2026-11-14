@@ -296,7 +296,7 @@ fn fence_blocks_dispatch_survives_restart_and_waits_for_drain() {
         .submit(request("a", "atlas", "one"), graph(&[("one", &[])]), 0)
         .unwrap();
     let work = train.dispatch(0).unwrap().unwrap();
-    let fence = train.fence("a").unwrap();
+    let fence = train.fence("a", 1, 60).unwrap();
     assert!(!train.drained());
     assert!(train.dispatch(1).unwrap().is_none());
     assert!(train.release_fence(&fence).is_err());
@@ -305,8 +305,34 @@ fn fence_blocks_dispatch_survives_restart_and_waits_for_drain() {
         serde_json::from_value(serde_json::to_value(&train).unwrap()).unwrap();
     assert!(restored.drained());
     assert!(restored.dispatch(1).unwrap().is_none());
-    assert!(restored.release_fence("wrong-token").is_err());
+    // A token which no longer holds the fence is already released.
+    restored.release_fence("wrong-token").unwrap();
     restored.release_fence(&fence).unwrap();
+    assert!(restored.fence.is_none());
+}
+
+#[test]
+fn expired_fence_reopens_dispatch_and_same_attempt_refreshes_its_deadline() {
+    let mut train = Train::new("p".into(), 10);
+    train
+        .submit(request("a", "atlas", "one"), graph(&[("one", &[])]), 0)
+        .unwrap();
+    train
+        .submit(request("b", "atlas", "two"), graph(&[("two", &[])]), 0)
+        .unwrap();
+    let fence = train.fence("a", 100, 30).unwrap();
+    assert!(train.dispatch(110).unwrap().is_none());
+    // The owner may refresh while dispatch stays closed.
+    assert_eq!(train.fence("a", 120, 30).unwrap(), fence);
+    assert_eq!(
+        train.fence("b", 120, 30).unwrap_err(),
+        "builder fenced by a"
+    );
+    assert!(!train.expire_fence(149));
+    assert!(train.dispatch(149).unwrap().is_none());
+    assert!(train.expire_fence(150));
+    assert!(train.fence.is_none());
+    assert!(train.dispatch(150).unwrap().is_some());
 }
 
 #[test]

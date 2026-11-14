@@ -26,9 +26,15 @@ const MAX_FRAME: u64 = 1024 * 1024;
 
 mod ipc;
 pub mod preparation;
-mod rollover;
 mod wire;
-pub use rollover::rollover;
+
+/// Prefix clients use to tell a protocol/policy change from an I/O failure.
+pub const POLICY_CHANGED: &str = "coordinator protocol or policy changed";
+
+/// Whether a client error means the coordinator runs another policy or protocol.
+pub fn is_policy_changed(error: &str) -> bool {
+    error.starts_with(POLICY_CHANGED)
+}
 
 /// Specialist backend owns graph discovery, substitution, GC roots and realization.
 pub trait Backend: Send + Sync + 'static {
@@ -77,6 +83,9 @@ pub struct Config {
     /// Reply deadline. A tardy backend still occupies its slot until it exits.
     #[serde(default = "default_planning_timeout")]
     pub planning_timeout_seconds: u64,
+    /// Activation fence lifetime. An expired fence no longer closes dispatch.
+    #[serde(default = "default_fence_seconds")]
+    pub fence_seconds: u64,
 }
 
 fn default_planning_workers() -> usize {
@@ -84,6 +93,9 @@ fn default_planning_workers() -> usize {
 }
 fn default_planning_timeout() -> u64 {
     180
+}
+fn default_fence_seconds() -> u64 {
+    3600
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -169,7 +181,7 @@ impl Client {
             serde_json::from_slice(&ipc::exchange(&self.socket, &raw, deadline, stop)?)
                 .map_err(|e| e.to_string())?;
         if reply.version != VERSION || reply.policy != self.policy {
-            return Err("coordinator protocol or policy changed".into());
+            return Err(POLICY_CHANGED.into());
         }
         if let Some(error) = &reply.error {
             return Err(error.clone());
@@ -395,6 +407,31 @@ fn save(config: &Config, train: &Train) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+fn remove_tree(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Discard a journal the current coordinator must not inherit, with the
+/// scheduling history that only described it. Coordinate roots are pruned
+/// after startup by the backend against the fresh journal.
+fn discard_journal(config: &Config, detail: &str) -> Result<(), String> {
+    eprintln!("build-train: discarding journal: {detail}");
+    for name in ["train.json", "rollover.json"] {
+        match fs::remove_file(config.state_dir.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    remove_tree(&config.state_dir.join("archive"))?;
+    remove_tree(&config.state_dir.join("rollovers"))?;
+    private_dir(&config.state_dir.join("archive"))
+}
+
 #[derive(Serialize, Deserialize)]
 struct Archive {
     version: u32,
@@ -463,12 +500,24 @@ fn retire(
         *train = next;
         archive
     } else {
-        read_archive(config, attempt)?.ok_or("unknown request")?
+        // No request and no archive: already retired or never known. Retirement
+        // is idempotent, so this is a successful no-op.
+        let Some(archive) = read_archive(config, attempt)? else {
+            return Ok(reply(config, train, None, None));
+        };
+        archive
     };
     if !archive.roots_released {
         backend.release(&archive.record.request, &archive.graph)?;
         archive.roots_released = true;
         save_archive(config, &archive)?;
+    }
+    // The archive only makes Retire idempotent while its roots are released.
+    // Once that is durable it is redundant history, not recovery evidence.
+    match fs::remove_file(archive_path(config, attempt)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
     }
     backend.prune(train)?;
     Ok(archive_reply(config, train, &archive))
@@ -558,6 +607,7 @@ pub fn serve(
         || config.policy.len() > wire::FIELD_LIMIT
         || !(1..=16).contains(&config.planning_workers)
         || !(1..=86_400).contains(&config.planning_timeout_seconds)
+        || !(1..=86_400).contains(&config.fence_seconds)
     {
         return Err("invalid coordinator capacity or policy".into());
     }
@@ -588,29 +638,59 @@ pub fn serve(
     socket_lease
         .try_lock_exclusive()
         .map_err(|e| format!("coordinator socket lease held: {e}"))?;
-    if config
+    // Crash-only startup: a journal is a cache of scheduling state, so a
+    // journal from another protocol or policy, an unparsable one, or an
+    // interrupted handover marker is discarded rather than repaired. Nix still
+    // deduplicates the store outputs the old journal used to root.
+    let handover = config
         .state_dir
         .join("rollover.json")
         .try_exists()
-        .map_err(|e| e.to_string())?
-    {
-        return Err("interrupted policy rollover; repeat the exact offline rollover before starting the coordinator".into());
-    }
-    let mut train: Train = match File::open(config.state_dir.join("train.json")) {
+        .map_err(|e| e.to_string())?;
+    let persisted = match File::open(config.state_dir.join("train.json")) {
         Ok(file) => {
-            serde_json::from_reader(file).map_err(|e| format!("invalid coordinator state: {e}"))?
+            Some(serde_json::from_reader::<_, Train>(file).map_err(|e| format!("unparsable: {e}")))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Train::new(config.policy.clone(), config.aging_seconds)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.to_string()),
     };
-    if train.version != VERSION
-        || train.policy != config.policy
-        || train.aging_seconds != config.aging_seconds
-    {
-        return Err("persisted train protocol/policy mismatch; retain the old coordinator until its requests finish".into());
-    }
+    let mut train = match persisted {
+        Some(Ok(train))
+            if !handover
+                && train.version == VERSION
+                && train.policy == config.policy
+                && train.aging_seconds == config.aging_seconds =>
+        {
+            train
+        }
+        Some(Ok(old)) => {
+            discard_journal(
+                &config,
+                &format!(
+                    "version {}, policy {}, {} requests, fence {}",
+                    old.version,
+                    old.policy,
+                    old.requests.len(),
+                    old.fence
+                        .as_ref()
+                        .map_or("none", |fence| fence.token.as_str())
+                ),
+            )?;
+            Train::new(config.policy.clone(), config.aging_seconds)
+        }
+        Some(Err(error)) => {
+            discard_journal(&config, &error)?;
+            Train::new(config.policy.clone(), config.aging_seconds)
+        }
+        None if handover => {
+            discard_journal(&config, "interrupted rollover marker")?;
+            Train::new(config.policy.clone(), config.aging_seconds)
+        }
+        None => Train::new(config.policy.clone(), config.aging_seconds),
+    };
+    // Legacy offline-handover history has no remaining reader.
+    remove_tree(&config.state_dir.join("rollovers"))?;
+    train.expire_fence(now());
     let mut valid = BTreeSet::new();
     for (attempt, record) in &train.requests {
         let graph = train.retained_graph(attempt)?;
@@ -659,6 +739,10 @@ pub fn serve(
     let mut outgoing = Vec::<ipc::Outgoing>::new();
     let mut workers = Vec::new();
     while !stop.load(Ordering::Relaxed) || train.running() != 0 || !planners.is_empty() {
+        // A fence must never outlive its owner's deadline and block dispatch.
+        if train.expire_fence(now()) {
+            save(&config, &train)?;
+        }
         while let Ok((attempt, receipt)) = planned_rx.try_recv() {
             let planner = planners.remove(&attempt).ok_or("unknown planner receipt")?;
             let _ = planner.worker.join();
@@ -795,7 +879,9 @@ pub fn serve(
                             );
                         }
                         if envelope.policy != config.policy {
-                            return historical_reply(&config, envelope).map(|reply| (reply, None));
+                            return Err(
+                                "incompatible coordinator execution policy; a foreign journal is discarded at startup".into(),
+                            );
                         }
                         let subject = match &envelope.command {
                             Command::Submit(request) | Command::Register(request) => {
@@ -1067,7 +1153,7 @@ fn apply(
             outcome = Some(next.outcome(&attempt)?);
         }
         Command::Fence(attempt) => {
-            next.fence(&attempt)?;
+            next.fence(&attempt, now(), config.fence_seconds)?;
         }
         Command::ReleaseFence(token) => next.release_fence(&token)?,
         Command::AuthorizeActivation(attempt) => next.authorize_activation(&attempt)?,
@@ -1091,32 +1177,6 @@ fn active_requests(train: &Train) -> Result<usize, String> {
                 .filter(|outcome| *outcome == Outcome::Pending)
                 .count()
         })
-}
-
-fn historical_reply(config: &Config, envelope: Envelope) -> Result<Reply, String> {
-    let attempt = match envelope.command {
-        Command::Status(attempt) | Command::Retire(attempt) => attempt,
-        _ => return Err("incompatible coordinator execution policy; historical attempts cannot be admitted, retried or activated".into()),
-    };
-    let archive: Archive = serde_json::from_reader(
-        File::open(archive_path(config, &attempt)).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    if archive.version != VERSION
-        || archive.policy != envelope.policy
-        || archive.record.request.attempt != attempt
-        || !archive.roots_released
-    {
-        return Err("historical retirement evidence is incompatible or incomplete".into());
-    }
-    // This is retired evidence, never an attachment to the new train or fence.
-    let mut reply = archive_reply(
-        config,
-        &Train::new(envelope.policy.clone(), config.aging_seconds),
-        &archive,
-    );
-    reply.policy = envelope.policy;
-    Ok(reply)
 }
 
 fn reply(config: &Config, train: &Train, outcome: Option<Outcome>, subject: Option<&str>) -> Reply {

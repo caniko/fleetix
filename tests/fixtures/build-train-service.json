@@ -16,7 +16,8 @@
     "queue_limit": 128,
     "aging_seconds": 300,
     "planning_timeout_seconds": 180,
-    "policy": "042d72fa94a66f2d66d1b1995c9a28c79a088346e613971cade1a765b444ecf1"
+    "policy": "042d72fa94a66f2d66d1b1995c9a28c79a088346e613971cade1a765b444ecf1",
+    "fence_seconds": 3600
   },
   "builder": "atlas",
   "admission_contract": "qualified-resource-policy",

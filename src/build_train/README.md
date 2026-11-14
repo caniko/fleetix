@@ -19,23 +19,27 @@ backend; consumers retain fleet policy and deployment stages.
   for callers that have already passed admission.
 - Intake reserves its exact identity and activation order durably before planning.
   Protocol/journal version 2 prevents older coordinators from interpreting held
-  unprepared requests as fully planned work. Version 1 journals fail closed and
-  remain untouched; finish their requests with their original coordinator policy.
-  Dedicated bounded planners leave completions and control commands responsive.
-  Planning deadlines fail only that request; a tardy planner retains its slot and
-  roots until it exits. Retry then returns the request to held admission.
+  unprepared requests as fully planned work. A journal from another version,
+  policy or aging value, or one which cannot be parsed, is discarded at startup
+  with its history; the journal is a cache of scheduling state and Nix already
+  deduplicates store outputs. Dedicated bounded planners leave completions and
+  control commands responsive. Planning deadlines fail only that request; a tardy
+  planner retains its slot and roots until it exits. Retry then returns the
+  request to held admission.
 - Requests and replies fit a one-MiB frame. Planning rejects root-output evidence
   that cannot fit a reply before admission, keeping the terminal failure available
   through status. Wire diagnostics are bounded on UTF-8 boundaries; their full
   detail remains in the journal. Oversized retained replies return an explicit
   error rather than silently dropping a durable operation's acknowledgement.
 - Capacity counts pending requests, including held/preparing requests, rather than
-  terminal history. Explicit `Retire` archives terminal identity, outcome and graph
-  before removing membership and releasing request-owned roots. Status remains
-  available from the archive and a retired attempt cannot be reused. Retirement
-  rejects live planners, running interests and fence owners. Release failure is
-  retryable after restart. Other requests and caller-owned attempt roots retain
-  their independent pins; backends without scoped release conservatively retain
+  terminal history. Explicit `Retire` releases request-owned roots and is
+  idempotent; an unknown attempt is a successful no-op. Its archive exists only
+  while the root release is outstanding and is removed once that is durable.
+  Status of a retired attempt is available until then, and a retired attempt
+  cannot be resubmitted while its archive remains. Retirement rejects live
+  planners, running interests and fence owners. Release failure is retryable
+  after restart. Other requests and caller-owned attempt roots retain their
+  independent pins; backends without scoped release conservatively retain
   roots. Activation tombstones prevent retirement from promoting an older request.
 - Only ready dependency-frontier goals dispatch. Shared-first prioritizes pending
   work; bounded aging eventually gives oldest-ready precedence. Ready roots win
@@ -61,8 +65,9 @@ backend; consumers retain fleet policy and deployment stages.
   redispatch. Old acknowledgements cannot complete a new generation.
 - Source and requested-derivation roots are retained before journal admission;
   outputs are rooted in a shared namespace only once they exist. Startup and
-  retirement prune roots no journaled request or node owns. History is not
-  pruned; operators retain archives until request owners release them.
+  retirement prune roots no journaled request or node owns. History is bounded:
+  a startup discard removes `archive/` and legacy `rollovers/`, and retirement
+  removes its archive once the release is durable.
 - The newest submitted activating request supersedes older requests for the same
   target. Build-only requests do not supersede. Frontends authorize immediately
   before mutation under their shared target activation lease.
@@ -72,17 +77,31 @@ backend; consumers retain fleet policy and deployment stages.
 `Fence` atomically closes dispatch while intake remains available. The caller
 waits a bounded time for affected workers to drain, acquires the existing target
 lease, activates, reconciles the backend/policy, and releases the exact fence
-token. A timeout or failed activation retains the fence, including across service
-restart, until the owner verifies the outcome and explicitly releases it.
-The drain deadline also bounds socket connection, request delivery and status
-replies; slow or partial replies cannot extend it. Zero wait permits a five-second
-fence round trip but never waits for workers. An ambiguous fence reply requires
-inspection of that request's existing fence before retrying.
+token. A timeout or failed activation retains the fence until the owner verifies
+the outcome and explicitly releases it. `release-fence` is idempotent: a token
+which no longer holds the fence is already released.
 
-Deployment integration keeps the old immutable coordinator alive while its
-requests finish. A newly configured policy cannot attach to that older service.
-An explicit policy upgrade must drain/resolve retained requests and migrate state;
-incompatible state is never silently reused.
+A fence records a deadline (`fenceSeconds`, default 3600). Every scheduling tick
+and startup drops an expired fence and dispatch resumes, so a dead owner cannot
+block builders forever; the same attempt refreshes the deadline while it still
+holds the fence, and another attempt is refused. The drain deadline also bounds
+socket connection, request delivery and status replies; slow or partial replies
+cannot extend it. Zero wait permits a five-second fence round trip but never
+waits for workers. An ambiguous fence reply requires inspection of that request's
+existing fence before retrying.
+
+## Crash-only policy changes
+
+The journal is bound to one builder policy and is not recovery evidence. When the
+service restarts with another protocol version, policy or aging value, an
+interrupted online handover marker, or an unparsable journal, the coordinator logs
+one line naming the old version, policy, request count and fence, then removes the
+journal, `rollover.json`, `archive/` and `rollovers/`. It starts an empty train and
+prunes every coordinator-owned request/output root the fresh journal does not own;
+caller-owned `attempts/` roots and `preparation/` are untouched. A deployment that
+changes policy therefore only needs an ordinary unit restart, and a stale fence
+cannot block dispatch forever. Clients told their coordinator runs another policy
+or protocol see `runtime::POLICY_CHANGED` (`runtime::is_policy_changed`).
 
 ## Preparation receipts
 
@@ -96,15 +115,17 @@ inside the work callback and released before Cargo or realization.
 ## Verification and rollout
 
 ```sh
-cargo test --no-default-features --features build-train-runtime --test build_train --test build_train_runtime
-cargo clippy --no-default-features --features build-train-runtime --all-targets -- -D warnings
+cargo test --no-default-features --features build-train-cli --test build_train --test build_train_runtime
+cargo clippy --no-default-features --features build-train-cli --all-targets -- -D warnings
 treefmt --ci
 ```
 
 Tests cover late joins changing actual coordinator worker order, independent
 completion, restored-parent pruning, cancellation, failure isolation, exact
 outputs/revisions, same-target supersession, bounded fairness, held admission,
-durable fences, restart reconciliation, policy mismatch and preparation reuse.
+durable and expiring fences, foreign-journal discard with history and root
+pruning, bounded retirement archives, restart reconciliation, typed policy
+mismatch and preparation reuse.
 
 These fixtures establish scheduling and lifecycle behavior. Real Nix dispatch,
 builder-host activation and performance require the integration gate. Compare

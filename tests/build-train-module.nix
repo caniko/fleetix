@@ -20,39 +20,21 @@
     }).config;
   config = evaluate {};
   service = config.systemd.services.fleetix-build-train;
+  contract = builtins.fromJSON (builtins.unsafeDiscardStringContext config.environment.etc."fleetix-train/service.json".source.text);
   connection = builtins.fromJSON config.environment.etc."fleetix-train/connection.json".text;
   rootsType = (import ../modules/build-train.nix {inherit config lib pkgs;}).options.fleetix.services.buildTrain.gcRoots.type;
   invalid = evaluate {fleetix.services.buildTrain.planningTimeoutSeconds = 30;};
+  removed = evaluate {fleetix.services.buildTrain.retainedDeployment = null;};
   custom = evaluate {
     fleetix.services.buildTrain = {
       runtimeDirectory = "custom-train";
       stateDirectory = "custom-train";
       gcRoots = "/nix/var/nix/gcroots/per-user/operator/custom-train";
+      fenceSeconds = 90;
     };
   };
   customConnection = builtins.fromJSON custom.environment.etc."fleetix-train/connection.json".text;
-  retainedConfig = builtins.toFile "fleetix-retained-service.json" (builtins.readFile ./fixtures/build-train-operator-service.json);
-  retainedContract = builtins.fromJSON (builtins.readFile retainedConfig);
-  stagedOptions = {
-    users.users.can.isNormalUser = true;
-    fleetix.services.buildTrain = {
-      user = lib.mkForce "can";
-      builder = "atlas";
-      gcRoots = retainedContract.native.gc_roots;
-      package = lib.mkForce pkgs.coreutils;
-      workers = 3;
-      memoryMax = "2G";
-      workerTimeoutSeconds = 600;
-      retainedDeployment = {
-        package = pkgs.hello;
-        user = "can";
-        serviceConfig = retainedConfig;
-      };
-    };
-  };
-  staged = evaluate stagedOptions;
-  stagedConnection = builtins.fromJSON staged.environment.etc."fleetix-train/connection.json".text;
-  nextConnection = builtins.fromJSON staged.environment.etc."fleetix-train/next-connection.json".text;
+  customContract = builtins.fromJSON (builtins.unsafeDiscardStringContext custom.environment.etc."fleetix-train/service.json".source.text);
   otherOperator = evaluate {
     users.users.other.isNormalUser = true;
     fleetix.services.buildTrain = {
@@ -64,16 +46,6 @@
   user = evaluate {fleetix.services.buildTrain.serviceScope = "user";};
   userService = user.systemd.user.services.fleetix-build-train;
   userConnection = builtins.fromJSON user.environment.etc."fleetix-train/connection.json".text;
-  stagedUser = evaluate (lib.recursiveUpdate stagedOptions {fleetix.services.buildTrain.serviceScope = "user";});
-  retainedUser = evaluate {
-    fleetix.services.buildTrain.retainedDeployment = {
-      user = "operator";
-      package = pkgs.hello;
-      serviceScope = "user";
-      # This evaluation-only fixture never executes or realizes its Nix tools.
-      serviceConfig = builtins.toFile "fleetix-retained-user-service.json" (builtins.unsafeDiscardStringContext user.environment.etc."fleetix-train/service.json".source.text);
-    };
-  };
   withoutNamespaces = evaluate {
     security.allowUserNamespaces = false;
     nix.settings.sandbox = false;
@@ -88,8 +60,9 @@ in
   assert service.serviceConfig.TimeoutStopSec == 21630;
   assert service.serviceConfig.MemoryMax == "1G";
   assert service.serviceConfig.KillMode == "control-group";
-  assert !service.restartIfChanged && !service.stopIfChanged;
+  assert service.restartIfChanged && service.stopIfChanged;
   assert service.serviceConfig.ExecStart == "${lib.getExe pkgs.hello} build-train serve --config ${config.environment.etc."fleetix-train/service.json".source}";
+  assert contract.coordinator.fence_seconds == 3600;
   assert connection.builder == "builder";
   assert connection.socket == "/run/fleetix-train/coordinator.sock";
   assert connection.gc_roots == "/nix/var/nix/gcroots/per-user/operator/fleetix-train";
@@ -108,29 +81,19 @@ in
   ];
   assert lib.elem "d ${connection.gc_roots} 0700 operator - -" config.systemd.tmpfiles.rules;
   assert builtins.any (entry: !entry.assertion && lib.hasInfix "two native queries" entry.message) invalid.assertions;
+  assert builtins.any (entry: !entry.assertion && lib.hasInfix "no staged handover" entry.message) removed.assertions;
   assert customConnection.socket == "/run/custom-train/coordinator.sock";
   assert custom.systemd.services.fleetix-build-train.serviceConfig.RuntimeDirectoryPreserve == "yes";
   assert customConnection.preparation_dir == "/var/lib/custom-train/preparation";
+  assert customContract.coordinator.fence_seconds == 90;
   assert customConnection.policy != connection.policy;
   assert otherConnection.policy != connection.policy;
-  assert stagedConnection.policy == retainedContract.coordinator.policy;
-  assert stagedConnection.socket == retainedContract.coordinator.socket;
-  assert stagedConnection.gc_roots == retainedContract.native.gc_roots;
-  assert nextConnection.policy != stagedConnection.policy;
-  assert staged.systemd.services.fleetix-build-train.serviceConfig.User == "can";
-  assert staged.systemd.services.fleetix-build-train.serviceConfig.MemoryMax == "1G";
-  assert staged.systemd.services.fleetix-build-train.serviceConfig.TimeoutStopSec == 21630;
-  assert staged.systemd.services.fleetix-build-train.serviceConfig.ExecStart == "${lib.getExe pkgs.hello} build-train serve --config ${retainedConfig}";
-  assert staged.environment.etc."fleetix-train/service.json".source == retainedConfig;
-  assert staged.environment.etc."fleetix-train/next-service.json".source != staged.environment.etc."fleetix-train/service.json".source;
-  assert lib.elem pkgs.coreutils staged.system.extraDependencies;
   assert config.fleetix.services.buildTrain.serviceScope == "system";
   assert !(config.systemd.user.services ? fleetix-build-train);
   assert !(user.systemd.services ? fleetix-build-train);
   assert userService.unitConfig.ConditionUser == "operator";
   assert userService.wantedBy == ["default.target"];
   assert userService.after == [];
-  assert !userService.restartIfChanged && !userService.stopIfChanged;
   assert !(userService.serviceConfig ? User);
   assert !(userService.serviceConfig ? RuntimeDirectory);
   assert !(userService.serviceConfig ? StateDirectory);
@@ -145,13 +108,5 @@ in
   assert userConnection.policy != connection.policy;
   assert lib.elem "d /run/fleetix-train 0700 operator - -" user.systemd.tmpfiles.rules;
   assert lib.elem "d /var/lib/fleetix-train 0700 operator - -" user.systemd.tmpfiles.rules;
-  assert stagedUser.systemd.services.fleetix-build-train.serviceConfig.ExecStart == staged.systemd.services.fleetix-build-train.serviceConfig.ExecStart;
-  assert !(stagedUser.systemd.user.services ? fleetix-build-train);
-  assert (builtins.fromJSON stagedUser.environment.etc."fleetix-train/connection.json".text).policy == stagedConnection.policy;
-  assert (builtins.fromJSON stagedUser.environment.etc."fleetix-train/next-connection.json".text).policy != nextConnection.policy;
-  assert !(retainedUser.systemd.services ? fleetix-build-train);
-  assert retainedUser.systemd.user.services.fleetix-build-train.unitConfig.ConditionUser == "operator";
-  assert (builtins.fromJSON retainedUser.environment.etc."fleetix-train/connection.json".text).policy == userConnection.policy;
-  assert (builtins.fromJSON retainedUser.environment.etc."fleetix-train/next-connection.json".text).policy == connection.policy;
   assert builtins.any (entry: !entry.assertion && lib.hasInfix "private temporary-directory" entry.message) withoutNamespaces.assertions;
-    pkgs.writeText "fleetix-build-train-module" "Private operator service, independent planning limits, custom paths and retained activation policy verified\n"
+    pkgs.writeText "fleetix-build-train-module" "Private operator service, independent planning limits, custom paths and restart-on-policy-change verified\n"

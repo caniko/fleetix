@@ -505,34 +505,6 @@ fn validate_service(service: &Service) -> Result<(), String> {
     Ok(())
 }
 
-/// Caller holds the host activation lease and stops the old service first.
-pub fn rollover(previous: Service, next: Service, token: Option<&str>) -> Result<PathBuf, String> {
-    validate_service(&previous)?;
-    validate_service(&next)?;
-    if previous.builder != next.builder || previous.native.gc_roots != next.native.gc_roots {
-        return Err("policy rollover cannot move builder or request-root ownership".into());
-    }
-    // New modules bind operator custody inside the existing opaque admission
-    // string, preserving positional v2 digests for historical service files.
-    let operator = |service: &Service| {
-        serde_json::from_str::<(String, String, String)>(&service.admission_contract)
-            .ok()
-            .filter(|(marker, _, _)| marker == "fleetix-train-operator")
-            .map(|(_, user, _)| user)
-    };
-    if let (Some(previous), Some(next)) = (operator(&previous), operator(&next)) {
-        if previous != next {
-            return Err("policy rollover cannot transfer operator ownership".into());
-        }
-    }
-    runtime::rollover(
-        &previous.coordinator,
-        &next.coordinator,
-        &NixBackend(previous.native),
-        token,
-    )
-}
-
 #[cfg(test)]
 #[path = "native_tests.rs"]
 mod tests;
