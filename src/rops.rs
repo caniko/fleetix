@@ -60,7 +60,10 @@ pub struct Source {
 impl Source {
     /// The source this process runs under, if any harness identifies it.
     pub fn from_env() -> Option<Self> {
-        let var = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+        // The source only helps the operator find the thread, so an id the
+        // spool would refuse (T3's `mcp:launch:…` threads) is left out rather
+        // than failing the request.
+        let var = |name| std::env::var(name).ok().filter(|value| valid_id(value));
         let source = Self {
             t3_thread: var("T3CODE_THREAD_ID"),
             claude_session: var("CLAUDE_CODE_SESSION_ID"),
