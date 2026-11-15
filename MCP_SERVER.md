@@ -114,7 +114,7 @@ catalog.
 observation first when none exists. With a target it checks each behind direct
 consumer's `follows` against the producer's `flake.lock` at that revision
 ([SUPPLY.md](SUPPLY.md#snapshots-and-consumers)); it never fetches, so a target
-the producer's checkout lacks reports `unknown`. `fleetix_supply_refresh` always observes
+neither the producer's checkout nor its cache holds reports `unknown`. `fleetix_supply_refresh` always observes
 and replaces the snapshot under
 `$XDG_STATE_HOME/fleetix/supply/<root-digest>/graph.json`. Observation reads
 committed lock files through `git`, never the network or a Nix evaluation. A
@@ -144,7 +144,7 @@ gets no work item: it is returned under `blocked` as
 `{coordinate, input, target, "phase": "skipped", "reason": "dangling-follows: harbor-rs/git-hooks"}`,
 the shape of a landing command's skipped item, and never holds up the others.
 For this check the handler fetches the target into the producer's checkout when
-it is missing; if the producer's lock stays unreadable nothing is blocked and
+it is missing, or into the producer's cache repository when it has no checkout; if the producer's lock stays unreadable nothing is blocked and
 `followsUnknown` carries the reason. With nothing left it returns
 `{"items": [], "landed": false, "reason": "nothing-behind"}` (or
 `"reason": "all-blocked"` plus `blocked`) and runs nothing.

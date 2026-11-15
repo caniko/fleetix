@@ -1025,3 +1025,73 @@ fn a_target_the_producer_checkout_lacks_is_fetched_only_on_request() {
         Some("dangling-follows: harbor-rs/git-hooks, harbor-rs/nixpkgs")
     );
 }
+
+#[test]
+fn a_producer_without_a_checkout_is_read_from_a_cache_only_a_fetch_fills() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    // Only the renamed repository still serves the producer: the canonical
+    // coordinate has no remote, so the fetch falls through to the alias.
+    let remote = init_repo(
+        root,
+        "remotes/github.com/caniko/rs-harbor.git",
+        &[("flake.lock", &producer_lock(&["crane", "nixpkgs"]))],
+    );
+    git(&remote, &["config", "uploadpack.allowFilter", "true"]);
+    let target = head(&remote);
+    let later = commit_lock(&remote, &producer_lock(&["crane"]));
+    init_repo(root, "ok", &[("flake.lock", &following_lock("crane"))]);
+    init_repo(
+        root,
+        "stale",
+        &[("flake.lock", &following_lock("git-hooks"))],
+    );
+
+    // harbor-rs is a superproject component: pinned, never observed.
+    let repos = [
+        repo("github.com/caniko/ok", "ok"),
+        repo("github.com/caniko/stale", "stale"),
+    ];
+    let mut graph = supply::build(&[supply::observe(root, &repos)], None);
+    let producer = json!({
+        "id": format!("producer:{HARBOR}"),
+        "kind": "producer",
+        "attrs": {"aliases": ["../../etc/passwd", "github.com/caniko/rs-harbor"]}
+    });
+    let producer = serde_json::from_value(producer).unwrap();
+    graph.nodes.insert(format!("producer:{HARBOR}"), producer);
+    let cache = root.join("cache");
+    let base = format!("file://{}/remotes/", root.display());
+    let check = |target: &str, fetch: bool| {
+        let mut report = supply::consumers(&graph, HARBOR, Some(target));
+        supply::check_follows_with(root, &graph, &mut report, fetch, &cache, &base);
+        report
+    };
+    let unknown = [
+        ("ok", Some("unknown"), None),
+        ("stale", Some("unknown"), None),
+    ];
+    let dangling = [
+        ("ok", Some("satisfied"), None),
+        (
+            "stale",
+            Some("dangling"),
+            Some("dangling-follows: harbor-rs/git-hooks"),
+        ),
+    ];
+
+    // Read-only: nothing is fetched and no cache appears.
+    let report = check(&target, false);
+    assert_eq!(checks(&report), unknown);
+    let reason = report.follows_unknown.unwrap();
+    assert!(reason.contains("has no observed checkout"), "{reason}");
+    assert!(!cache.exists());
+
+    let report = check(&target, true);
+    assert_eq!(checks(&report), dangling);
+    assert_eq!(report.follows_unknown, None);
+
+    // The cache now answers the read-only path, but only for that commit.
+    assert_eq!(checks(&check(&target, false)), dangling);
+    assert_eq!(checks(&check(&later, false)), unknown);
+}

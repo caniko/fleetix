@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns it under `blocked`, shaped like a landing command's skipped item;
   with only blocked consumers it runs nothing (`reason: "all-blocked"`). Land
   fetches a target revision the producer's checkout lacks (60 s bound).
+- A producer without an observed checkout (a superproject component such as
+  harbor-rs) is checked through a bare cache repository beside the snapshot,
+  `producers/<sha256(coordinate)>.git`. Land fetches the target commit into it
+  from `https://<coordinate>.git` or an alias, shallow and blobless;
+  `fleetix_supply_consumers` reads the cache and never fetches.
 
 ### Changed
 

@@ -229,7 +229,7 @@ pub(super) fn server(
                             let mut report =
                                 consumers_report(&graph, &producer, target.as_deref(), direct_only);
                             // A Read tool never fetches: a target the producer's
-                            // checkout lacks reports `unknown`.
+                            // checkout or cache lacks reports `unknown`.
                             supply::check_follows(&config.root, &graph, &mut report, false);
                             serde_json::to_value(report)
                                 .map_err(|error| miette::miette!("serialize consumers: {error}"))

@@ -154,10 +154,16 @@ producer's observed checkout. It sets `followsCheck` to `satisfied`, `dangling`
 or `unknown`, and on `dangling` sets `blocked` to
 `dangling-follows: <input>/<name>[, ...]`, because relocking that consumer
 fails with "follows a non-existent input". A target missing from the checkout
-is fetched from `origin` when `fetch` is set (objects only, 60 s bound). If the
-lock stays unreadable (no checkout in the inventory, no such revision, no
-`flake.lock`) the check is `unknown`, blocks nothing, and the report's
-`followsUnknown` says why.
+is fetched from `origin` when `fetch` is set (objects only, 60 s bound). A
+producer with no observed checkout, such as a superproject component, is read
+from a bare cache repository beside the snapshot,
+`producers/<sha256(coordinate)>.git`: `fetch` fills it with the target commit
+(shallow, blobless, then the lock blob) from `https://<coordinate>.git`, trying
+each alias in turn when that fails, and only for a `host/owner/repo`
+coordinate; without `fetch` the cache answers only for commits it already
+holds. If the lock stays unreadable (no such revision, no `flake.lock`, no
+checkout and nothing cached) the check is `unknown`, blocks nothing, and the
+report's `followsUnknown` says why.
 
 `WorkItems` is the `fleetix.supply-work-items.v1` handoff from that query to an
 operator-configured landing command:

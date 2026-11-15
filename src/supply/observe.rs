@@ -3,7 +3,7 @@
 //! No network access and no Nix evaluation: every read is `git show` against
 //! the repository's default-branch tip, so an uncommitted or stashed lock file
 //! never enters the facts. [`root_inputs_at`] is the one exception: asked to,
-//! it fetches a revision its checkout lacks.
+//! it fetches a revision its repository lacks.
 
 use super::{
     Attrs, CONTRACT, Edge, FactError, FactsDocument, Node, Producer, normalize_coordinate,
@@ -186,11 +186,15 @@ fn show_file(directory: &Path, reference: &str, file: &str) -> Result<Option<Str
 const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The root input names in the `flake.lock` committed at `revision` of the
-/// checkout in `directory`. With `fetch`, a revision the checkout lacks is
-/// fetched from `origin` first (objects only, no ref or `FETCH_HEAD` moves).
-/// An error means the names are unknown, never that there are none.
+/// repository in `directory`. With `fetch`, a commit or lock blob the
+/// repository lacks is fetched first (objects only, no ref or `FETCH_HEAD`
+/// moves): from `origin` for a checkout, or shallow and blobless from
+/// `remote` for a producer cache. Without it nothing touches the network,
+/// partial clone or not. An error means the names are unknown, never that
+/// there are none.
 pub(super) fn root_inputs_at(
     directory: &Path,
+    remote: Option<&str>,
     revision: &str,
     fetch: bool,
 ) -> Result<BTreeSet<String>, String> {
@@ -198,33 +202,58 @@ pub(super) fn root_inputs_at(
     if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(format!("{revision:?} is not a 40-character hex revision"));
     }
+    // Reads must not fetch a promised object behind the policy and its bound.
+    let local = |arguments: &[&str]| {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(directory).args(arguments);
+        let output = command.env("GIT_NO_LAZY_FETCH", "1").output();
+        output.map_err(|error| format!("git -C {}: {error}", directory.display()))
+    };
+    let present = |object: &str| local(&["cat-file", "-e", object]).map(|out| out.status.success());
     let commit = format!("{revision}^{{commit}}");
-    let present = || git(directory, &["cat-file", "-e", &commit]).map(|out| out.status.success());
-    if !present()? {
+    if !present(&commit)? {
         if fetch {
-            fetch_revision(directory, revision)?;
+            fetch_object(directory, remote, revision)?;
         }
-        if !present()? {
+        if !present(&commit)? {
             return Err(format!("{revision} is not in {}", directory.display()));
         }
     }
-    let text = show_file(directory, revision, "flake.lock")?
-        .ok_or_else(|| format!("no flake.lock at {revision}"))?;
+    let spec = format!("{revision}:flake.lock");
+    let blob = local(&["rev-parse", "--verify", "--quiet", &spec])?;
+    if !blob.status.success() {
+        return Err(format!("no flake.lock at {revision}"));
+    }
+    let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    if fetch && !present(&blob)? {
+        fetch_object(directory, remote, &blob)?;
+    }
+    let output = local(&["cat-file", "blob", &blob])?;
+    if !output.status.success() {
+        return Err(format!("git show {spec}: {}", stderr(&output)));
+    }
     let lock: Value =
-        serde_json::from_str(&text).map_err(|error| format!("flake.lock: {error}"))?;
+        serde_json::from_slice(&output.stdout).map_err(|error| format!("flake.lock: {error}"))?;
     let inputs = lock
         .pointer("/nodes/root/inputs")
         .and_then(Value::as_object);
     Ok(inputs.map_or_else(BTreeSet::new, |inputs| inputs.keys().cloned().collect()))
 }
 
-fn fetch_revision(directory: &Path, revision: &str) -> Result<(), String> {
-    let describe = |detail: String| format!("git fetch origin {revision}: {detail}");
+/// Fetch one object: from `origin`, or shallow and blobless from the URL
+/// `remote` (a wanted blob is sent whatever the filter).
+fn fetch_object(directory: &Path, remote: Option<&str>, object: &str) -> Result<(), String> {
+    let (remote, shallow): (&str, &[&str]) = match remote {
+        Some(url) => (url, &["--depth=1", "--filter=blob:none"]),
+        None => ("origin", &[]),
+    };
+    let describe = |detail: String| format!("git fetch {remote} {object}: {detail}");
     let mut child = Command::new("git")
         .arg("-C")
         .arg(directory)
         .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
-        .args(["origin", revision])
+        .args(shallow)
+        .args([remote, object])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -249,6 +278,21 @@ fn fetch_revision(directory: &Path, revision: &str) -> Result<(), String> {
             Err(error) => return Err(describe(error.to_string())),
         }
     }
+}
+
+/// Create the bare repository a producer without a checkout is fetched into.
+pub(super) fn init_bare(directory: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let output = git(directory, &["init", "--quiet", "--bare"])?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "git init {}: {}",
+        directory.display(),
+        stderr(&output)
+    ))
 }
 
 fn git(directory: &Path, arguments: &[&str]) -> Result<Output, String> {
