@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fleetix::status` reports secret lifecycles: `FleetStatus.secrets`
+  (`Option<SecretInventory>`, absent from old producers) lists every secret in a
+  scope with its policy kind, a typed `ExpiryValue` (`date`, `never` or
+  `unknown`) and a `SecretState` judged by `assess_secret` against an explicit
+  `as_of`. `never` is its own kind, distinct from undeclared, and never warns.
+  Expiring (30 days, inclusive), expired, invalid and unverifiable secrets each
+  add one to `FleetStatus::attention()`. Provider evidence is fresh for 48 hours
+  and fails closed: missing, malformed or future timestamps are unverifiable.
+  The wire format stays at schema version 1.
+
+### Changed
+
+- `FleetStatus` gained a public field, so struct literals must set `secrets`.
+
 ## [0.11.2] - 2026-11-14
 
 ### Added
