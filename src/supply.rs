@@ -10,7 +10,7 @@ mod report;
 pub use observe::{ObservedRepo, observe};
 pub use report::{
     ConsumerItem, ConsumersReport, DiffReport, ProducerDiff, RevisionChange, WorkItem, WorkItems,
-    consumers, diff, load_snapshot, save_snapshot, store_path,
+    check_follows, check_follows_with, consumers, diff, load_snapshot, save_snapshot, store_path,
 };
 
 use crate::topology::{RunnerPool, Supply, Topology};

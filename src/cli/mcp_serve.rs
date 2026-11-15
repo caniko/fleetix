@@ -226,13 +226,13 @@ pub(super) fn server(
                         let direct_only = args.direct_only;
                         blocking(move || {
                             let graph = load_graph(&config)?;
-                            serde_json::to_value(consumers_report(
-                                &graph,
-                                &producer,
-                                target.as_deref(),
-                                direct_only,
-                            ))
-                            .map_err(|error| miette::miette!("serialize consumers: {error}"))
+                            let mut report =
+                                consumers_report(&graph, &producer, target.as_deref(), direct_only);
+                            // A Read tool never fetches: a target the producer's
+                            // checkout or cache lacks reports `unknown`.
+                            supply::check_follows(&config.root, &graph, &mut report, false);
+                            serde_json::to_value(report)
+                                .map_err(|error| miette::miette!("serialize consumers: {error}"))
                         })
                         .await
                     }
@@ -408,7 +408,7 @@ fn work_items(
     let mut seen = std::collections::BTreeSet::new();
     let mut items = Vec::new();
     for item in &report.items {
-        if item.direct != Some(true) || !item.behind {
+        if item.direct != Some(true) || !item.behind || item.blocked.is_some() {
             continue;
         }
         if coordinates.is_some_and(|coordinates| !coordinates.contains(&item.coordinate)) {
@@ -438,6 +438,25 @@ fn work_items(
     Ok(items)
 }
 
+/// The selected consumers `supply::check_follows` blocked, shaped like the
+/// landing command's own skipped items.
+fn blocked_items(
+    report: &supply::ConsumersReport,
+    coordinates: Option<&[String]>,
+) -> Vec<serde_json::Value> {
+    let selected = |item: &&supply::ConsumerItem| {
+        coordinates.is_none_or(|coordinates| coordinates.contains(&item.coordinate))
+    };
+    let blocked = report.items.iter().filter(selected).filter_map(|item| {
+        let reason = item.blocked.as_ref()?;
+        Some(serde_json::json!({
+            "coordinate": item.coordinate, "input": item.input,
+            "target": item.target, "phase": "skipped", "reason": reason,
+        }))
+    });
+    blocked.collect()
+}
+
 /// Observe fresh, then hand the behind direct consumers to the configured
 /// landing command. A non-zero command exit is a result, not an error.
 fn land(
@@ -450,18 +469,26 @@ fn land(
 ) -> miette::Result<serde_json::Value> {
     let target = target_revision(target)?;
     let (graph, _) = store_refresh(config)?;
-    // Safe point: a call cancelled while observing never starts the command.
+    let mut report = supply::consumers(&graph, producer, Some(&target));
+    supply::check_follows(&config.root, &graph, &mut report, true);
+    // Safe point: a call cancelled while observing or fetching never starts
+    // the command.
     if cancelled.is_cancelled() {
         return Err(miette::miette!("cancelled before landing"));
     }
-    let report = supply::consumers(&graph, producer, Some(&target));
     let items = work_items(&report, &target, coordinates)?;
+    let blocked = blocked_items(&report, coordinates);
     if items.is_empty() {
-        return Ok(serde_json::json!({
+        let mut nothing = serde_json::json!({
             "items": [],
             "landed": false,
             "reason": "nothing-behind",
-        }));
+        });
+        if !blocked.is_empty() {
+            nothing["reason"] = "all-blocked".into();
+            nothing["blocked"] = blocked.into();
+        }
+        return Ok(nothing);
     }
     // One handoff per call, so concurrent calls never overwrite each other's.
     let stamp = std::time::SystemTime::now()
@@ -485,6 +512,8 @@ fn land(
     Ok(serde_json::json!({
         "workItems": path.display().to_string(),
         "items": work.items,
+        "blocked": blocked,
+        "followsUnknown": report.follows_unknown,
         "exitCode": output.status.code(),
         "success": output.status.success(),
         "stdout": serde_json::from_str(&stdout).unwrap_or(serde_json::Value::String(stdout)),
@@ -815,7 +844,20 @@ mod tests {
             locked_revs: Vec::new(),
             target: Some("b".repeat(40)),
             behind,
+            follows: Some(Vec::new()),
+            follows_check: None,
+            blocked: None,
         }
+    }
+
+    fn head(directory: &Path) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 
     #[test]
@@ -875,7 +917,12 @@ mod tests {
                 consumer_input("github.com/caniko/current", "harbor-rs", true, false),
                 consumer_input("github.com/caniko/other", "harbor-rs", true, true),
                 consumer_input("github.com/caniko/transitive", "harbor-rs_2", false, true),
+                supply::ConsumerItem {
+                    blocked: Some("dangling-follows: harbor-rs/git-hooks".into()),
+                    ..consumer_input("github.com/caniko/blocked", "harbor-rs", true, true)
+                },
             ],
+            follows_unknown: None,
         };
         let items = work_items(&report, &target, None).unwrap();
         assert_eq!(items.len(), 2, "{items:?}");
@@ -952,19 +999,42 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let _state_home = StateHome::set(state.path());
         let pinned = "a".repeat(40);
-        let target = "b".repeat(40);
         init_repo(
             workspace.path(),
             "app",
             &[("flake.lock", &flake_lock(&pinned))],
         );
+        // The producer's target lock has no `git-hooks` root input, so a
+        // consumer following `harbor-rs/git-hooks` cannot be relocked.
+        let producer = init_repo(
+            workspace.path(),
+            "harbor-rs",
+            &[("flake.lock", r#"{"nodes":{"root":{"inputs":{}}}}"#)],
+        );
+        let target = head(&producer);
+        let mut stale: serde_json::Value = serde_json::from_str(&flake_lock(&pinned)).unwrap();
+        stale["nodes"]["root"]["inputs"]["git-hooks"] =
+            serde_json::json!(["harbor-rs", "git-hooks"]);
+        init_repo(
+            workspace.path(),
+            "stale",
+            &[("flake.lock", &stale.to_string())],
+        );
+        let blocked = serde_json::json!([{
+            "coordinate": "github.com/caniko/stale",
+            "input": "harbor-rs",
+            "target": target,
+            "phase": "skipped",
+            "reason": "dangling-follows: harbor-rs/git-hooks",
+        }]);
         let inventory = workspace.path().join("inventory.json");
         std::fs::write(
             &inventory,
-            serde_json::json!([{
-                "coordinate": "github.com/caniko/app",
-                "relativePath": "app"
-            }])
+            serde_json::json!([
+                {"coordinate": "github.com/caniko/app", "relativePath": "app"},
+                {"coordinate": "github.com/caniko/harbor-rs", "relativePath": "harbor-rs"},
+                {"coordinate": "github.com/caniko/stale", "relativePath": "stale"}
+            ])
             .to_string(),
         )
         .unwrap();
@@ -997,6 +1067,8 @@ mod tests {
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["exitCode"], 0, "{result}");
         assert_eq!(result["stdout"], serde_json::json!({"ok": true}));
+        assert_eq!(result["items"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["blocked"], blocked, "{result}");
         let handoff = Path::new(result["workItems"].as_str().unwrap());
         assert_eq!(
             handoff.parent(),
@@ -1043,6 +1115,22 @@ mod tests {
             program: PathBuf::from("/nonexistent/fleetix-lander"),
             args: Vec::new(),
         };
+        // Only blocked consumers selected: reported like skipped items.
+        let only_blocked = land(
+            &config,
+            &unreachable,
+            "github.com/caniko/harbor-rs",
+            &target,
+            Some(&["github.com/caniko/stale".to_string()]),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            only_blocked,
+            serde_json::json!({
+                "items": [], "landed": false, "reason": "all-blocked", "blocked": blocked,
+            })
+        );
         // A call cancelled before the safe point never runs the command.
         let cancelled = tokio_util::sync::CancellationToken::new();
         cancelled.cancel();

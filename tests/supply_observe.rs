@@ -851,3 +851,247 @@ fn aliased_transitive_pins_at_different_revisions_merge_without_conflict() {
     revs.sort();
     assert_eq!(revs, ["bbbb", "cccc"]);
 }
+
+fn head(directory: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+fn commit_lock(directory: &Path, lock: &str) -> String {
+    std::fs::write(directory.join("flake.lock"), lock).unwrap();
+    git(
+        directory,
+        &["-c", "commit.gpgsign=false", "commit", "-qam", "relock"],
+    );
+    head(directory)
+}
+
+/// A producer lock with these root inputs.
+fn producer_lock(inputs: &[&str]) -> String {
+    let inputs: serde_json::Map<_, _> = inputs
+        .iter()
+        .map(|name| (name.to_string(), json!(name)))
+        .collect();
+    json!({"nodes": {"root": {"inputs": inputs}}, "root": "root", "version": 7}).to_string()
+}
+
+/// A consumer lock whose root follows `harbor-rs/<followed>` and whose `tool`
+/// input is overridden to follow `harbor-rs/nixpkgs`.
+fn following_lock(followed: &str) -> String {
+    let github = |repo: &str| {
+        json!({
+            "locked": {"type": "github", "owner": "caniko", "repo": repo, "rev": "a".repeat(40)},
+            "original": {"type": "github", "owner": "caniko", "repo": repo}
+        })
+    };
+    let mut harbor = github("harbor-rs");
+    harbor["inputs"] = json!({"crane": "crane", "gone": "gone"});
+    // Inside the producer's subtree: its own follows, replaced on relock.
+    let mut gone = github("gone");
+    gone["inputs"] = json!({"nixpkgs": ["harbor-rs", "inherited"]});
+    let mut tool = github("tool");
+    tool["inputs"] = json!({"nixpkgs": ["harbor-rs", "nixpkgs"]});
+    json!({
+        "nodes": {
+            "root": {"inputs": {
+                "harbor-rs": "harbor-rs",
+                followed: ["harbor-rs", followed],
+                "tool": "tool"
+            }},
+            "harbor-rs": harbor,
+            "crane": github("crane"),
+            "gone": gone,
+            "tool": tool
+        },
+        "root": "root",
+        "version": 7
+    })
+    .to_string()
+}
+
+const HARBOR: &str = "github.com/caniko/harbor-rs";
+
+/// Observe `harbor-rs` plus the `ok` (follows crane) and `stale` (follows
+/// git-hooks) consumers under `root`, and report them against `target`.
+fn follows_report(root: &Path, target: &str, fetch: bool) -> supply::ConsumersReport {
+    let repos = [
+        repo(HARBOR, "harbor-rs"),
+        repo("github.com/caniko/ok", "ok"),
+        repo("github.com/caniko/stale", "stale"),
+    ];
+    let graph = supply::build(&[supply::observe(root, &repos)], None);
+    let mut report = supply::consumers(&graph, HARBOR, Some(target));
+    report.items.retain(|item| item.direct == Some(true));
+    supply::check_follows(root, &graph, &mut report, fetch);
+    report
+}
+
+fn checks(report: &supply::ConsumersReport) -> Vec<(&str, Option<&str>, Option<&str>)> {
+    let items = report.items.iter();
+    items
+        .map(|item| {
+            let coordinate = item.coordinate.rsplit('/').next().unwrap();
+            (coordinate, item.follows_check, item.blocked.as_deref())
+        })
+        .collect()
+}
+
+#[test]
+fn follows_the_target_lacks_block_a_consumer_and_an_unreadable_target_is_unknown() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    let producer = init_repo(
+        root,
+        "harbor-rs",
+        &[(
+            "flake.lock",
+            &producer_lock(&["crane", "git-hooks", "nixpkgs"]),
+        )],
+    );
+    let target = commit_lock(&producer, &producer_lock(&["crane", "nixpkgs"]));
+    init_repo(root, "ok", &[("flake.lock", &following_lock("crane"))]);
+    init_repo(
+        root,
+        "stale",
+        &[("flake.lock", &following_lock("git-hooks"))],
+    );
+
+    let doc = supply::observe(root, &[repo("github.com/caniko/ok", "ok")]);
+    assert_eq!(
+        usage_node(&doc, "usage:github.com/caniko/ok#flake-input:harbor-rs").attrs["follows"],
+        json!(["crane", "nixpkgs"]),
+        "the producer's own follows are not the consumer's"
+    );
+
+    let report = follows_report(root, &target, false);
+    assert_eq!(
+        checks(&report),
+        [
+            ("ok", Some("satisfied"), None),
+            (
+                "stale",
+                Some("dangling"),
+                Some("dangling-follows: harbor-rs/git-hooks")
+            ),
+        ]
+    );
+    assert_eq!(report.follows_unknown, None);
+    let stale = serde_json::to_value(&report.items[1]).unwrap();
+    assert_eq!(stale["followsCheck"], "dangling");
+    assert_eq!(stale["follows"], json!(["git-hooks", "nixpkgs"]));
+
+    // No such commit and no origin to fetch it from: unknown, never blocked.
+    let report = follows_report(root, &"c".repeat(40), true);
+    assert_eq!(
+        checks(&report),
+        [
+            ("ok", Some("unknown"), None),
+            ("stale", Some("unknown"), None)
+        ]
+    );
+    assert!(report.follows_unknown.is_some());
+}
+
+#[test]
+fn a_target_the_producer_checkout_lacks_is_fetched_only_on_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    let upstream = init_repo(
+        root,
+        "upstream",
+        &[("flake.lock", &producer_lock(&["crane", "git-hooks"]))],
+    );
+    git(root, &["clone", "-q", "upstream", "harbor-rs"]);
+    let target = commit_lock(&upstream, &producer_lock(&["crane"]));
+    init_repo(root, "ok", &[("flake.lock", &following_lock("crane"))]);
+    init_repo(
+        root,
+        "stale",
+        &[("flake.lock", &following_lock("git-hooks"))],
+    );
+
+    let report = follows_report(root, &target, false);
+    assert_eq!(report.items[1].follows_check, Some("unknown"));
+    assert_eq!(report.items[1].blocked, None);
+
+    let report = follows_report(root, &target, true);
+    assert_eq!(
+        report.items[1].blocked.as_deref(),
+        Some("dangling-follows: harbor-rs/git-hooks, harbor-rs/nixpkgs")
+    );
+}
+
+#[test]
+fn a_producer_without_a_checkout_is_read_from_a_cache_only_a_fetch_fills() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    // Only the renamed repository still serves the producer: the canonical
+    // coordinate has no remote, so the fetch falls through to the alias.
+    let remote = init_repo(
+        root,
+        "remotes/github.com/caniko/rs-harbor.git",
+        &[("flake.lock", &producer_lock(&["crane", "nixpkgs"]))],
+    );
+    git(&remote, &["config", "uploadpack.allowFilter", "true"]);
+    let target = head(&remote);
+    let later = commit_lock(&remote, &producer_lock(&["crane"]));
+    init_repo(root, "ok", &[("flake.lock", &following_lock("crane"))]);
+    init_repo(
+        root,
+        "stale",
+        &[("flake.lock", &following_lock("git-hooks"))],
+    );
+
+    // harbor-rs is a superproject component: pinned, never observed.
+    let repos = [
+        repo("github.com/caniko/ok", "ok"),
+        repo("github.com/caniko/stale", "stale"),
+    ];
+    let mut graph = supply::build(&[supply::observe(root, &repos)], None);
+    let producer = json!({
+        "id": format!("producer:{HARBOR}"),
+        "kind": "producer",
+        "attrs": {"aliases": ["../../etc/passwd", "github.com/caniko/rs-harbor"]}
+    });
+    let producer = serde_json::from_value(producer).unwrap();
+    graph.nodes.insert(format!("producer:{HARBOR}"), producer);
+    let cache = root.join("cache");
+    let base = format!("file://{}/remotes/", root.display());
+    let check = |target: &str, fetch: bool| {
+        let mut report = supply::consumers(&graph, HARBOR, Some(target));
+        supply::check_follows_with(root, &graph, &mut report, fetch, &cache, &base);
+        report
+    };
+    let unknown = [
+        ("ok", Some("unknown"), None),
+        ("stale", Some("unknown"), None),
+    ];
+    let dangling = [
+        ("ok", Some("satisfied"), None),
+        (
+            "stale",
+            Some("dangling"),
+            Some("dangling-follows: harbor-rs/git-hooks"),
+        ),
+    ];
+
+    // Read-only: nothing is fetched and no cache appears.
+    let report = check(&target, false);
+    assert_eq!(checks(&report), unknown);
+    let reason = report.follows_unknown.unwrap();
+    assert!(reason.contains("has no observed checkout"), "{reason}");
+    assert!(!cache.exists());
+
+    let report = check(&target, true);
+    assert_eq!(checks(&report), dangling);
+    assert_eq!(report.follows_unknown, None);
+
+    // The cache now answers the read-only path, but only for that commit.
+    assert_eq!(checks(&check(&target, false)), dangling);
+    assert_eq!(checks(&check(&later, false)), unknown);
+}

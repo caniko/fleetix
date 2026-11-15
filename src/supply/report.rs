@@ -158,6 +158,17 @@ pub struct ConsumerItem {
     pub locked_revs: Vec<String>,
     pub target: Option<String>,
     pub behind: bool,
+    /// Input names this repository's own `follows` reach through the input.
+    /// Absent for a transitive pin or a snapshot older than the observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows: Option<Vec<String>>,
+    /// `satisfied`, `dangling` or `unknown`, set by [`check_follows`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows_check: Option<&'static str>,
+    /// Why this consumer gets no work item, e.g.
+    /// `dangling-follows: harbor-rs/git-hooks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -168,6 +179,9 @@ pub struct ConsumersReport {
     pub producer: String,
     pub target: Option<String>,
     pub items: Vec<ConsumerItem>,
+    /// Why the producer's root inputs at the target could not be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows_unknown: Option<String>,
 }
 
 /// One repository to land on a target revision: the input of a direct,
@@ -235,6 +249,16 @@ pub fn consumers(graph: &Graph, producer: &str, target: Option<&str>) -> Consume
             behind: target.is_some_and(|target| !locked_revs.iter().any(|rev| rev == target)),
             locked_revs,
             target: target.map(str::to_string),
+            follows: node
+                .attrs
+                .get("follows")
+                .and_then(serde_json::Value::as_array)
+                .map(|names| {
+                    let names = names.iter().filter_map(serde_json::Value::as_str);
+                    names.map(str::to_string).collect()
+                }),
+            follows_check: None,
+            blocked: None,
         });
     }
     ConsumersReport {
@@ -242,7 +266,154 @@ pub fn consumers(graph: &Graph, producer: &str, target: Option<&str>) -> Consume
         producer,
         target: target.map(str::to_string),
         items,
+        follows_unknown: None,
     }
+}
+
+/// Check every behind direct consumer's `follows` through its producer input
+/// against the producer's root inputs at the report's target, read from the
+/// producer's checkout under `root` (fetching a missing revision when `fetch`
+/// is set). A producer without an observed checkout, such as a superproject
+/// component, is read from a bare cache repository beside the snapshot,
+/// `producers/<sha256(coordinate)>.git`, which only `fetch` fills, from
+/// `https://<coordinate>.git` and then each alias. A follows path the target
+/// cannot satisfy makes `nix flake lock` fail, so such a consumer is
+/// `blocked`. When the producer's lock cannot be read the check is `unknown`
+/// and blocks nothing.
+pub fn check_follows(root: &Path, graph: &Graph, report: &mut ConsumersReport, fetch: bool) {
+    let cache = store_path(root).with_file_name("producers");
+    check_follows_with(root, graph, report, fetch, &cache, "https://");
+}
+
+/// [`check_follows`] with the producer cache directory and the prefix that
+/// turns a coordinate into its remote URL, so tests can serve producers from
+/// local repositories.
+#[doc(hidden)]
+pub fn check_follows_with(
+    root: &Path,
+    graph: &Graph,
+    report: &mut ConsumersReport,
+    fetch: bool,
+    cache: &Path,
+    remote_base: &str,
+) {
+    let Some(target) = report.target.clone() else {
+        return;
+    };
+    let mut producer_inputs = None;
+    for item in &mut report.items {
+        if !item.behind || item.direct != Some(true) {
+            continue;
+        }
+        let (Some(input), Some(follows)) = (&item.input, &item.follows) else {
+            item.follows_check = Some("unknown");
+            continue;
+        };
+        if follows.is_empty() {
+            item.follows_check = Some("satisfied");
+            continue;
+        }
+        let inputs = producer_inputs.get_or_insert_with(|| {
+            let repository = graph.nodes.get(&format!("repo:{}", report.producer));
+            let path = repository
+                .and_then(|repository| repository.attrs.get("relativePath"))
+                .and_then(serde_json::Value::as_str);
+            match path {
+                Some(path) => {
+                    super::observe::root_inputs_at(&root.join(path), None, &target, fetch)
+                }
+                None => {
+                    let producer = &report.producer;
+                    cached_inputs(graph, producer, cache, remote_base, &target, fetch)
+                        .map_err(|error| format!("{producer} has no observed checkout; {error}"))
+                }
+            }
+        });
+        let inputs = match inputs {
+            Ok(inputs) => inputs,
+            Err(message) => {
+                report.follows_unknown = Some(message.clone());
+                item.follows_check = Some("unknown");
+                continue;
+            }
+        };
+        let dangling: Vec<_> = follows
+            .iter()
+            .filter(|name| !inputs.contains(*name))
+            .map(|name| format!("{input}/{name}"))
+            .collect();
+        if dangling.is_empty() {
+            item.follows_check = Some("satisfied");
+        } else {
+            item.follows_check = Some("dangling");
+            item.blocked = Some(format!("dangling-follows: {}", dangling.join(", ")));
+        }
+    }
+}
+
+/// The producer's root inputs at `target` from its cache repository under
+/// `cache`. Without `fetch` only what an earlier fetch left there is read.
+fn cached_inputs(
+    graph: &Graph,
+    producer: &str,
+    cache: &Path,
+    remote_base: &str,
+    target: &str,
+    fetch: bool,
+) -> Result<BTreeSet<String>, String> {
+    use super::observe::{init_bare, root_inputs_at};
+    // ponytail: one shallow commit per fetched target, never pruned. Add a
+    // `git gc --prune` if a cache ever grows past a few megabytes.
+    let directory = cache.join(format!("{}.git", hex_digest(producer.as_bytes())));
+    if !fetch {
+        return root_inputs_at(&directory, None, target, false);
+    }
+    let node = graph.nodes.get(&format!("producer:{producer}"));
+    let aliases = node
+        .and_then(|node| node.attrs.get("aliases"))
+        .and_then(serde_json::Value::as_array);
+    let aliases = aliases
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str);
+    let mut errors = Vec::new();
+    for coordinate in std::iter::once(producer).chain(aliases) {
+        let inputs = remote_url(remote_base, coordinate).and_then(|url| {
+            init_bare(&directory)?;
+            root_inputs_at(&directory, Some(&url), target, true)
+        });
+        match inputs {
+            Ok(inputs) => return Ok(inputs),
+            Err(error) => errors.push(error),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+/// The remote URL of a `host/owner/repo` coordinate. The coordinate comes
+/// from the graph and the URL becomes a git argument, so only that shape
+/// passes: three plain segments and a dotted host.
+fn remote_url(base: &str, coordinate: &str) -> Result<String, String> {
+    let segments: Vec<_> = coordinate.split('/').collect();
+    let plain = |segment: &&str| {
+        let allowed = |byte: u8| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte);
+        !segment.is_empty()
+            && *segment != "."
+            && !segment.contains("..")
+            && segment.bytes().all(allowed)
+    };
+    if segments.len() == 3 && segments.iter().all(plain) && segments[0].contains('.') {
+        Ok(format!("{base}{coordinate}.git"))
+    } else {
+        Err(format!(
+            "{coordinate:?} is not a host/owner/repo coordinate"
+        ))
+    }
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn attribute_of(node: &super::GraphNode, key: &str) -> Option<String> {
@@ -293,11 +464,7 @@ pub fn store_path(root: &Path) -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(".local/state"));
-    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
-    let digest = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let digest = hex_digest(root.as_os_str().as_encoded_bytes());
     state
         .join("fleetix/supply")
         .join(&digest[..16])
@@ -329,4 +496,32 @@ pub fn save_snapshot(root: &Path, graph: &Graph) -> miette::Result<()> {
         .map_err(|error| miette::miette!("serialize supply graph: {error}"))?;
     bytes.push(b'\n');
     crate::fsutil::atomic_write(&store_path(root), &bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_url;
+
+    #[test]
+    fn remote_urls_are_built_only_from_host_owner_repo_coordinates() {
+        assert_eq!(
+            remote_url("https://", "github.com/caniko/harbor-rs").unwrap(),
+            "https://github.com/caniko/harbor-rs.git"
+        );
+        for coordinate in [
+            "github.com/caniko",
+            "github.com/caniko/harbor-rs/extra",
+            "localhost/caniko/harbor-rs",
+            "github.com/../harbor-rs",
+            "github.com/caniko/a..b",
+            "github.com/./harbor-rs",
+            "github.com//harbor-rs",
+            "github.com/caniko/harbor rs",
+            "user@github.com/caniko/harbor-rs",
+            "github.com/caniko/harbor-rs?x",
+            "--upload-pack=x.y/caniko/harbor-rs",
+        ] {
+            assert!(remote_url("https://", coordinate).is_err(), "{coordinate}");
+        }
+    }
 }

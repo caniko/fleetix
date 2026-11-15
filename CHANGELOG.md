@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `supply::check_follows` refuses pins a consumer cannot lock. Observation
+  records, on each direct flake input, the input names the repository's own
+  `follows` reach through it (`follows`); the check compares them with the
+  producer's root inputs in the `flake.lock` at the target revision, read from
+  the producer's checkout. A behind direct consumer that follows a removed
+  input is `blocked` with `dangling-follows: <input>/<name>`; an unreadable
+  target is `unknown` and blocks nothing.
+- `fleetix_supply_consumers` reports `follows`, `followsCheck` and `blocked`
+  per item. `fleetix_supply_land` issues no work item for a blocked consumer
+  and returns it under `blocked`, shaped like a landing command's skipped item;
+  with only blocked consumers it runs nothing (`reason: "all-blocked"`). Land
+  fetches a target revision the producer's checkout lacks (60 s bound).
+- A producer without an observed checkout (a superproject component such as
+  harbor-rs) is checked through a bare cache repository beside the snapshot,
+  `producers/<sha256(coordinate)>.git`. Land fetches the target commit into it
+  from `https://<coordinate>.git` or an alias, shallow and blobless;
+  `fleetix_supply_consumers` reads the cache and never fetches.
+
+### Changed
+
+- `supply::ConsumerItem` gains `follows`, `follows_check` and `blocked`, and
+  `supply::ConsumersReport` gains `follows_unknown`. Code that builds these
+  structs by literal must set them. The `fleetix.supply-work-items.v1` file is
+  unchanged.
+
 ## [0.11.2] - 2026-11-14
 
 ### Added

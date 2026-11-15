@@ -2,7 +2,8 @@
 //!
 //! No network access and no Nix evaluation: every read is `git show` against
 //! the repository's default-branch tip, so an uncommitted or stashed lock file
-//! never enters the facts.
+//! never enters the facts. [`root_inputs_at`] is the one exception: asked to,
+//! it fetches a revision its repository lacks.
 
 use super::{
     Attrs, CONTRACT, Edge, FactError, FactsDocument, Node, Producer, normalize_coordinate,
@@ -11,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// One repository to observe: its coordinate and location relative to the
 /// workspace root supplied at query time.
@@ -181,6 +182,119 @@ fn show_file(directory: &Path, reference: &str, file: &str) -> Result<Option<Str
         .map_err(|error| format!("git show {spec}: {error}"))
 }
 
+/// How long [`root_inputs_at`] waits for one `git fetch`.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The root input names in the `flake.lock` committed at `revision` of the
+/// repository in `directory`. With `fetch`, a commit or lock blob the
+/// repository lacks is fetched first (objects only, no ref or `FETCH_HEAD`
+/// moves): from `origin` for a checkout, or shallow and blobless from
+/// `remote` for a producer cache. Without it nothing touches the network,
+/// partial clone or not. An error means the names are unknown, never that
+/// there are none.
+pub(super) fn root_inputs_at(
+    directory: &Path,
+    remote: Option<&str>,
+    revision: &str,
+    fetch: bool,
+) -> Result<BTreeSet<String>, String> {
+    // The revision becomes a git argument: only a full hex id may pass.
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{revision:?} is not a 40-character hex revision"));
+    }
+    // Reads must not fetch a promised object behind the policy and its bound.
+    let local = |arguments: &[&str]| {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(directory).args(arguments);
+        let output = command.env("GIT_NO_LAZY_FETCH", "1").output();
+        output.map_err(|error| format!("git -C {}: {error}", directory.display()))
+    };
+    let present = |object: &str| local(&["cat-file", "-e", object]).map(|out| out.status.success());
+    let commit = format!("{revision}^{{commit}}");
+    if !present(&commit)? {
+        if fetch {
+            fetch_object(directory, remote, revision)?;
+        }
+        if !present(&commit)? {
+            return Err(format!("{revision} is not in {}", directory.display()));
+        }
+    }
+    let spec = format!("{revision}:flake.lock");
+    let blob = local(&["rev-parse", "--verify", "--quiet", &spec])?;
+    if !blob.status.success() {
+        return Err(format!("no flake.lock at {revision}"));
+    }
+    let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    if fetch && !present(&blob)? {
+        fetch_object(directory, remote, &blob)?;
+    }
+    let output = local(&["cat-file", "blob", &blob])?;
+    if !output.status.success() {
+        return Err(format!("git show {spec}: {}", stderr(&output)));
+    }
+    let lock: Value =
+        serde_json::from_slice(&output.stdout).map_err(|error| format!("flake.lock: {error}"))?;
+    let inputs = lock
+        .pointer("/nodes/root/inputs")
+        .and_then(Value::as_object);
+    Ok(inputs.map_or_else(BTreeSet::new, |inputs| inputs.keys().cloned().collect()))
+}
+
+/// Fetch one object: from `origin`, or shallow and blobless from the URL
+/// `remote` (a wanted blob is sent whatever the filter).
+fn fetch_object(directory: &Path, remote: Option<&str>, object: &str) -> Result<(), String> {
+    let (remote, shallow): (&str, &[&str]) = match remote {
+        Some(url) => (url, &["--depth=1", "--filter=blob:none"]),
+        None => ("origin", &[]),
+    };
+    let describe = |detail: String| format!("git fetch {remote} {object}: {detail}");
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
+        .args(shallow)
+        .args([remote, object])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| describe(error.to_string()))?;
+    let deadline = Instant::now() + FETCH_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(describe(status.to_string())),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                // ponytail: kills git only; its transport helper ends on the
+                // closed pipe. Own the process group if a helper ever lingers.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(describe(format!("timed out after {FETCH_TIMEOUT:?}")));
+            }
+            Err(error) => return Err(describe(error.to_string())),
+        }
+    }
+}
+
+/// Create the bare repository a producer without a checkout is fetched into.
+pub(super) fn init_bare(directory: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let output = git(directory, &["init", "--quiet", "--bare"])?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "git init {}: {}",
+        directory.display(),
+        stderr(&output)
+    ))
+}
+
 fn git(directory: &Path, arguments: &[&str]) -> Result<Output, String> {
     Command::new("git")
         .arg("-C")
@@ -259,17 +373,18 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         } else {
             (format!("transitive:{producer}"), Value::Null, Value::Null)
         };
-        let node = usage(
-            coordinate,
-            format!("flake-input:{locator}"),
-            Attrs::from([
-                ("usageKind".to_string(), Value::String("flake-input".into())),
-                ("path".to_string(), Value::String("flake.lock".into())),
-                ("input".to_string(), input),
-                ("direct".to_string(), Value::Bool(direct)),
-                ("lockedRev".to_string(), locked),
-            ]),
-        );
+        let mut attrs = Attrs::from([
+            ("usageKind".to_string(), Value::String("flake-input".into())),
+            ("path".to_string(), Value::String("flake.lock".into())),
+            ("input".to_string(), input),
+            ("direct".to_string(), Value::Bool(direct)),
+            ("lockedRev".to_string(), locked),
+        ]);
+        if direct {
+            let follows = follows_through(nodes, &locator, key);
+            attrs.insert("follows".into(), follows.into());
+        }
+        let node = usage(coordinate, format!("flake-input:{locator}"), attrs);
         let pins: Vec<_> = revision
             .map(|revision| (producer, revision.to_string()))
             .into_iter()
@@ -277,6 +392,32 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         usages.push_usage(&repository, node, &pins);
     }
     Ok(usages)
+}
+
+/// The input names this repository's own `follows` reach through its direct
+/// input `input` (lock node `key`): the second segment of every follows path
+/// `[input, name, ..]` declared outside that input's subtree. Paths inside the
+/// subtree are the producer's own, rewritten under `input`, and are replaced
+/// whenever the input is relocked.
+fn follows_through(nodes: &serde_json::Map<String, Value>, input: &str, key: &str) -> Vec<String> {
+    let mut seen = BTreeSet::from(["root"]);
+    let mut queue = vec!["root"];
+    let mut names = BTreeSet::new();
+    while let Some(current) = queue.pop() {
+        let inputs = nodes.get(current).and_then(|node| node.get("inputs"));
+        for value in inputs.and_then(Value::as_object).into_iter().flatten() {
+            match value.1 {
+                Value::String(next) if next != key && seen.insert(next.as_str()) => {
+                    queue.push(next);
+                }
+                Value::Array(path) if path.len() > 1 && path[0].as_str() == Some(input) => {
+                    names.extend(path[1].as_str().map(str::to_string));
+                }
+                _ => {}
+            }
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// The root input name that names `key` directly, or the lock node key.

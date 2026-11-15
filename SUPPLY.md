@@ -117,6 +117,10 @@ MCP server read the same shape from an inventory document. Observation emits:
   `usage:<repo>#flake-input:transitive:<producer>`, with `direct: false`,
   null `input` and `lockedRev`, and one `pins` edge per revision. `build`
   folds producer aliases inside that locator too. Array-valued root inputs are `follows` and are not producers.
+  A direct input also carries `follows`: the input names the repository's own
+  follows declarations reach through it (`["git-hooks"]` for
+  `follows = "harbor-rs/git-hooks"`). Follows paths inside the input's own
+  subtree are the producer's and are left out;
   `path` inputs are never producers;
 - one usage per Cargo git dependency, `usage:<repo>#cargo-git:<package>`, with
   `path: "Cargo.lock"` and the same revision attribute;
@@ -143,11 +147,29 @@ target, behind}`. The producer may be an alias; it resolves to the canonical
 coordinate. `behind` is true when a target revision is given and the usage does
 not pin it. `fleetix_supply_consumers` exposes the same query over MCP.
 
+`check_follows(root, graph, &mut report, fetch)` then checks each behind direct
+consumer: every name in its `follows` must be a root input in the producer's
+`flake.lock` at the target, read with `git show <target>:flake.lock` from the
+producer's observed checkout. It sets `followsCheck` to `satisfied`, `dangling`
+or `unknown`, and on `dangling` sets `blocked` to
+`dangling-follows: <input>/<name>[, ...]`, because relocking that consumer
+fails with "follows a non-existent input". A target missing from the checkout
+is fetched from `origin` when `fetch` is set (objects only, 60 s bound). A
+producer with no observed checkout, such as a superproject component, is read
+from a bare cache repository beside the snapshot,
+`producers/<sha256(coordinate)>.git`: `fetch` fills it with the target commit
+(shallow, blobless, then the lock blob) from `https://<coordinate>.git`, trying
+each alias in turn when that fails, and only for a `host/owner/repo`
+coordinate; without `fetch` the cache answers only for commits it already
+holds. If the lock stays unreadable (no such revision, no `flake.lock`, no
+checkout and nothing cached) the check is `unknown`, blocks nothing, and the
+report's `followsUnknown` says why.
+
 `WorkItems` is the `fleetix.supply-work-items.v1` handoff from that query to an
 operator-configured landing command:
 `{contract, producer, target, items}` where each item is
 `{coordinate, relativePath, input, target}` for a direct consumer behind the
-target. `producer` and `target` are the resolved coordinate and revision. The
+target that `check_follows` did not block. `producer` and `target` are the resolved coordinate and revision. The
 library builds and serializes the document; writing the file and running the
 command belong to the caller (`fleetix_supply_land` stores it next to the
 snapshot). Fleetix assigns no meaning to the landing command's output.
