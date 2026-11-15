@@ -158,6 +158,17 @@ pub struct ConsumerItem {
     pub locked_revs: Vec<String>,
     pub target: Option<String>,
     pub behind: bool,
+    /// Input names this repository's own `follows` reach through the input.
+    /// Absent for a transitive pin or a snapshot older than the observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows: Option<Vec<String>>,
+    /// `satisfied`, `dangling` or `unknown`, set by [`check_follows`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows_check: Option<&'static str>,
+    /// Why this consumer gets no work item, e.g.
+    /// `dangling-follows: harbor-rs/git-hooks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -168,6 +179,9 @@ pub struct ConsumersReport {
     pub producer: String,
     pub target: Option<String>,
     pub items: Vec<ConsumerItem>,
+    /// Why the producer's root inputs at the target could not be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows_unknown: Option<String>,
 }
 
 /// One repository to land on a target revision: the input of a direct,
@@ -235,6 +249,16 @@ pub fn consumers(graph: &Graph, producer: &str, target: Option<&str>) -> Consume
             behind: target.is_some_and(|target| !locked_revs.iter().any(|rev| rev == target)),
             locked_revs,
             target: target.map(str::to_string),
+            follows: node
+                .attrs
+                .get("follows")
+                .and_then(serde_json::Value::as_array)
+                .map(|names| {
+                    let names = names.iter().filter_map(serde_json::Value::as_str);
+                    names.map(str::to_string).collect()
+                }),
+            follows_check: None,
+            blocked: None,
         });
     }
     ConsumersReport {
@@ -242,6 +266,60 @@ pub fn consumers(graph: &Graph, producer: &str, target: Option<&str>) -> Consume
         producer,
         target: target.map(str::to_string),
         items,
+        follows_unknown: None,
+    }
+}
+
+/// Check every behind direct consumer's `follows` through its producer input
+/// against the producer's root inputs at the report's target, read from the
+/// producer's checkout under `root` (fetching a missing revision when `fetch`
+/// is set). A follows path the target cannot satisfy makes `nix flake lock`
+/// fail, so such a consumer is `blocked`. When the producer's lock cannot be
+/// read the check is `unknown` and blocks nothing.
+pub fn check_follows(root: &Path, graph: &Graph, report: &mut ConsumersReport, fetch: bool) {
+    let Some(target) = report.target.clone() else {
+        return;
+    };
+    let mut producer_inputs = None;
+    for item in &mut report.items {
+        if !item.behind || item.direct != Some(true) {
+            continue;
+        }
+        let (Some(input), Some(follows)) = (&item.input, &item.follows) else {
+            item.follows_check = Some("unknown");
+            continue;
+        };
+        if follows.is_empty() {
+            item.follows_check = Some("satisfied");
+            continue;
+        }
+        let inputs = producer_inputs.get_or_insert_with(|| {
+            let repository = graph.nodes.get(&format!("repo:{}", report.producer));
+            let path = repository
+                .and_then(|repository| repository.attrs.get("relativePath"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("{} has no observed checkout", report.producer))?;
+            super::observe::root_inputs_at(&root.join(path), &target, fetch)
+        });
+        let inputs = match inputs {
+            Ok(inputs) => inputs,
+            Err(message) => {
+                report.follows_unknown = Some(message.clone());
+                item.follows_check = Some("unknown");
+                continue;
+            }
+        };
+        let dangling: Vec<_> = follows
+            .iter()
+            .filter(|name| !inputs.contains(*name))
+            .map(|name| format!("{input}/{name}"))
+            .collect();
+        if dangling.is_empty() {
+            item.follows_check = Some("satisfied");
+        } else {
+            item.follows_check = Some("dangling");
+            item.blocked = Some(format!("dangling-follows: {}", dangling.join(", ")));
+        }
     }
 }
 

@@ -107,11 +107,14 @@ catalog.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `fleetix_supply_consumers` | `producer`, optional `target` revision, optional `directOnly` | `fleetix.supply-consumers.v1`: repositories that pin the producer, their relative paths, locked revisions and whether each is behind the target |
+| `fleetix_supply_consumers` | `producer`, optional `target` revision, optional `directOnly` | `fleetix.supply-consumers.v1`: repositories that pin the producer, their relative paths, locked revisions, whether each is behind the target, and for a behind direct consumer `followsCheck` (`satisfied`, `dangling`, `unknown`) and a `blocked` reason |
 | `fleetix_supply_refresh` | Empty object | Observes the configured workspace, stores the snapshot, and returns its `fleetix.supply-diff.v1` change set |
 
 `fleetix_supply_consumers` reads the stored snapshot and performs one
-observation first when none exists. `fleetix_supply_refresh` always observes
+observation first when none exists. With a target it checks each behind direct
+consumer's `follows` against the producer's `flake.lock` at that revision
+([SUPPLY.md](SUPPLY.md#snapshots-and-consumers)); it never fetches, so a target
+the producer's checkout lacks reports `unknown`. `fleetix_supply_refresh` always observes
 and replaces the snapshot under
 `$XDG_STATE_HOME/fleetix/supply/<root-digest>/graph.json`. Observation reads
 committed lock files through `git`, never the network or a Nix evaluation. A
@@ -130,14 +133,21 @@ choose what runs. Destructive effects stay denied.
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `fleetix_supply_land` | `producer`, `target` (40-hex revision), optional `coordinates` | `workItems` path, the work items, `exitCode`, `success` and the command's `stdout` (parsed JSON when it parses) and `stderr`, each capped at 64 KiB |
+| `fleetix_supply_land` | `producer`, `target` (40-hex revision), optional `coordinates` | `workItems` path, the work items, `blocked` consumers, `followsUnknown`, `exitCode`, `success` and the command's `stdout` (parsed JSON when it parses) and `stderr`, each capped at 64 KiB |
 
 The handler observes the workspace and stores the snapshot first, then keeps
 direct consumers that are behind the target, one item per coordinate (a second
 direct input of the same producer lands on a later call),
 optionally restricted to the given consumer coordinates (an unknown coordinate
-is an error naming it). With nothing left it returns
-`{"items": [], "landed": false, "reason": "nothing-behind"}` and runs nothing.
+is an error naming it). A consumer whose `follows` the target cannot satisfy
+gets no work item: it is returned under `blocked` as
+`{coordinate, input, target, "phase": "skipped", "reason": "dangling-follows: harbor-rs/git-hooks"}`,
+the shape of a landing command's skipped item, and never holds up the others.
+For this check the handler fetches the target into the producer's checkout when
+it is missing; if the producer's lock stays unreadable nothing is blocked and
+`followsUnknown` carries the reason. With nothing left it returns
+`{"items": [], "landed": false, "reason": "nothing-behind"}` (or
+`"reason": "all-blocked"` plus `blocked`) and runs nothing.
 Otherwise it atomically writes a mode-0600
 `fleetix.supply-work-items.v1` file next to the snapshot, named
 `work-items-<nanos>-<pid>.json` so concurrent calls never share one, and runs

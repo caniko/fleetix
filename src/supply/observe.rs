@@ -2,7 +2,8 @@
 //!
 //! No network access and no Nix evaluation: every read is `git show` against
 //! the repository's default-branch tip, so an uncommitted or stashed lock file
-//! never enters the facts.
+//! never enters the facts. [`root_inputs_at`] is the one exception: asked to,
+//! it fetches a revision its checkout lacks.
 
 use super::{
     Attrs, CONTRACT, Edge, FactError, FactsDocument, Node, Producer, normalize_coordinate,
@@ -11,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// One repository to observe: its coordinate and location relative to the
 /// workspace root supplied at query time.
@@ -181,6 +182,75 @@ fn show_file(directory: &Path, reference: &str, file: &str) -> Result<Option<Str
         .map_err(|error| format!("git show {spec}: {error}"))
 }
 
+/// How long [`root_inputs_at`] waits for one `git fetch`.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The root input names in the `flake.lock` committed at `revision` of the
+/// checkout in `directory`. With `fetch`, a revision the checkout lacks is
+/// fetched from `origin` first (objects only, no ref or `FETCH_HEAD` moves).
+/// An error means the names are unknown, never that there are none.
+pub(super) fn root_inputs_at(
+    directory: &Path,
+    revision: &str,
+    fetch: bool,
+) -> Result<BTreeSet<String>, String> {
+    // The revision becomes a git argument: only a full hex id may pass.
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{revision:?} is not a 40-character hex revision"));
+    }
+    let commit = format!("{revision}^{{commit}}");
+    let present = || git(directory, &["cat-file", "-e", &commit]).map(|out| out.status.success());
+    if !present()? {
+        if fetch {
+            fetch_revision(directory, revision)?;
+        }
+        if !present()? {
+            return Err(format!("{revision} is not in {}", directory.display()));
+        }
+    }
+    let text = show_file(directory, revision, "flake.lock")?
+        .ok_or_else(|| format!("no flake.lock at {revision}"))?;
+    let lock: Value =
+        serde_json::from_str(&text).map_err(|error| format!("flake.lock: {error}"))?;
+    let inputs = lock
+        .pointer("/nodes/root/inputs")
+        .and_then(Value::as_object);
+    Ok(inputs.map_or_else(BTreeSet::new, |inputs| inputs.keys().cloned().collect()))
+}
+
+fn fetch_revision(directory: &Path, revision: &str) -> Result<(), String> {
+    let describe = |detail: String| format!("git fetch origin {revision}: {detail}");
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
+        .args(["origin", revision])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| describe(error.to_string()))?;
+    let deadline = Instant::now() + FETCH_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(describe(status.to_string())),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                // ponytail: kills git only; its transport helper ends on the
+                // closed pipe. Own the process group if a helper ever lingers.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(describe(format!("timed out after {FETCH_TIMEOUT:?}")));
+            }
+            Err(error) => return Err(describe(error.to_string())),
+        }
+    }
+}
+
 fn git(directory: &Path, arguments: &[&str]) -> Result<Output, String> {
     Command::new("git")
         .arg("-C")
@@ -259,17 +329,18 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         } else {
             (format!("transitive:{producer}"), Value::Null, Value::Null)
         };
-        let node = usage(
-            coordinate,
-            format!("flake-input:{locator}"),
-            Attrs::from([
-                ("usageKind".to_string(), Value::String("flake-input".into())),
-                ("path".to_string(), Value::String("flake.lock".into())),
-                ("input".to_string(), input),
-                ("direct".to_string(), Value::Bool(direct)),
-                ("lockedRev".to_string(), locked),
-            ]),
-        );
+        let mut attrs = Attrs::from([
+            ("usageKind".to_string(), Value::String("flake-input".into())),
+            ("path".to_string(), Value::String("flake.lock".into())),
+            ("input".to_string(), input),
+            ("direct".to_string(), Value::Bool(direct)),
+            ("lockedRev".to_string(), locked),
+        ]);
+        if direct {
+            let follows = follows_through(nodes, &locator, key);
+            attrs.insert("follows".into(), follows.into());
+        }
+        let node = usage(coordinate, format!("flake-input:{locator}"), attrs);
         let pins: Vec<_> = revision
             .map(|revision| (producer, revision.to_string()))
             .into_iter()
@@ -277,6 +348,32 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         usages.push_usage(&repository, node, &pins);
     }
     Ok(usages)
+}
+
+/// The input names this repository's own `follows` reach through its direct
+/// input `input` (lock node `key`): the second segment of every follows path
+/// `[input, name, ..]` declared outside that input's subtree. Paths inside the
+/// subtree are the producer's own, rewritten under `input`, and are replaced
+/// whenever the input is relocked.
+fn follows_through(nodes: &serde_json::Map<String, Value>, input: &str, key: &str) -> Vec<String> {
+    let mut seen = BTreeSet::from(["root"]);
+    let mut queue = vec!["root"];
+    let mut names = BTreeSet::new();
+    while let Some(current) = queue.pop() {
+        let inputs = nodes.get(current).and_then(|node| node.get("inputs"));
+        for value in inputs.and_then(Value::as_object).into_iter().flatten() {
+            match value.1 {
+                Value::String(next) if next != key && seen.insert(next.as_str()) => {
+                    queue.push(next);
+                }
+                Value::Array(path) if path.len() > 1 && path[0].as_str() == Some(input) => {
+                    names.extend(path[1].as_str().map(str::to_string));
+                }
+                _ => {}
+            }
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// The root input name that names `key` directly, or the lock node key.
