@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-16
+
 ### Added
 
 - `supply::check_follows` refuses pins a consumer cannot lock. Observation
@@ -33,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `supply::ConsumersReport` gains `follows_unknown`. Code that builds these
   structs by literal must set them. The `fleetix.supply-work-items.v1` file is
   unchanged.
+
+### Fixed
+
+- `rops::Source::from_env` leaves out a harness id the spool would refuse
+  (T3's `mcp:launch:…` thread ids) instead of failing the request.
 
 ## [0.11.2] - 2026-11-14
 
