@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-17
+
 ### Added
 
 - `rops::Op` and `rops::Request` carry `notes`, what each step does: one
