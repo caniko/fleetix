@@ -44,6 +44,9 @@ pub struct Op {
     /// RFC 3339 time the transaction was requested.
     pub created: String,
     pub commands: Vec<Vec<String>>,
+    /// Why each step runs, one note per command; empty when none were given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// The harness thread and session that queued a transaction, read from the
@@ -92,6 +95,8 @@ pub struct Request {
     pub title: String,
     pub reason: String,
     pub commands: Vec<Vec<String>>,
+    /// One note per command, or none.
+    pub notes: Vec<String>,
     pub requested_by: String,
 }
 
@@ -134,6 +139,7 @@ pub fn queue(spool: &Path, request: Request) -> Result<Op> {
         source: Source::from_env(),
         created: created.to_rfc3339(),
         commands: request.commands,
+        notes: request.notes,
     };
     let digest = sha2::Sha256::digest(
         serde_json::to_vec(&op)
@@ -209,6 +215,16 @@ pub fn validate(op: &Op) -> Result<()> {
         .wrap_err("invalid created timestamp")?;
     if op.commands.is_empty() || op.commands.len() > MAX_STEPS {
         return Err(miette!("a transaction needs 1-{MAX_STEPS} steps"));
+    }
+    if !op.notes.is_empty() && op.notes.len() != op.commands.len() {
+        return Err(miette!(
+            "{} step notes for {} steps: give one per step or none",
+            op.notes.len(),
+            op.commands.len()
+        ));
+    }
+    for note in &op.notes {
+        printable("note", note)?;
     }
     for (index, argv) in op.commands.iter().enumerate() {
         if argv.is_empty() || argv[0].is_empty() {
@@ -327,6 +343,7 @@ mod tests {
                 .iter()
                 .map(|argv| argv.iter().map(|word| word.to_string()).collect())
                 .collect(),
+            notes: Vec::new(),
             requested_by: "cli:test".into(),
         }
     }
@@ -404,6 +421,17 @@ mod tests {
         write(&forged);
         assert!(pending(spool.path(), None).unwrap().is_empty());
         forged.created = op.created.clone();
+        forged.notes = vec!["one".into(), "two".into()];
+        write(&forged);
+        assert!(pending(spool.path(), None).unwrap().is_empty());
+        forged.notes = vec!["x\x1b[2K".into()];
+        write(&forged);
+        assert!(pending(spool.path(), None).unwrap().is_empty());
+        // One printable note per step loads.
+        forged.notes = vec!["Check the unit first.".into()];
+        write(&forged);
+        assert_eq!(pending(spool.path(), None).unwrap(), vec![forged.clone()]);
+        forged.notes = Vec::new();
         forged.host = "../atlas".into();
         write(&forged);
         assert!(pending(spool.path(), None).unwrap().is_empty());
