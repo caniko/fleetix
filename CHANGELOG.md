@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the transaction spool is `fleetix::ops`, replacing
+  `fleetix::rops`: attended work the operator approves, not only root work.
+  `Op` and `Request` carry `steps`, each a `Step { argv, note, root }`, in
+  place of `commands` and `notes`. Every step needs a printable note, and
+  `root` is explicit; a step without it runs as the approving operator.
+  `Op::needs_root` tells the approver whether to ask for privilege at all.
+  The spool moves to `$XDG_STATE_HOME/canix/ops`. Old `rops` spool files are
+  not read.
+
 ## [0.13.0] - 2026-11-17
 
 ### Added

@@ -12,13 +12,13 @@ pub mod management;
 pub mod mcp;
 #[cfg(feature = "mcp-server")]
 pub mod mcp_server;
+pub mod ops;
 #[cfg(feature = "pkl")]
 pub mod pkl;
 #[cfg(feature = "pkl")]
 pub mod pkl_to_nix;
 pub mod publication;
 pub mod review_pin;
-pub mod rops;
 pub mod service_surfaces;
 pub mod status;
 pub mod supply;

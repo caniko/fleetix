@@ -1,5 +1,7 @@
-//! Root-transaction spool ("rops"): the file contract between a tool that
-//! queues a privileged transaction and the operator surface that approves it.
+//! Attended-transaction spool ("ops"): the file contract between a tool that
+//! queues work the operator must attend and the surface that approves and runs
+//! it. A step runs as the operator unless it is marked `root`; only a
+//! transaction with a root step needs privilege.
 //!
 //! A request is one JSON file, `<spool>/pending/<id>.json`. The approving tool
 //! moves it to `running/` before anything executes and writes the outcome to
@@ -30,7 +32,7 @@ pub const DONE: &str = "done";
 /// Watcher locks of requesters waiting for an outcome.
 pub const WATCH: &str = "watch";
 
-/// One queued root transaction, exactly as it is stored on disk.
+/// One queued transaction, exactly as it is stored on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Op {
@@ -43,10 +45,26 @@ pub struct Op {
     pub source: Option<Source>,
     /// RFC 3339 time the transaction was requested.
     pub created: String,
-    pub commands: Vec<Vec<String>>,
-    /// Why each step runs, one note per command; empty when none were given.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
+    pub steps: Vec<Step>,
+}
+
+/// One command of a transaction, run in order and stopping at the first failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Step {
+    /// The command as argv, never shell: see [`SHELL_OPERATORS`].
+    pub argv: Vec<String>,
+    /// What the step does, one plain sentence the operator reads before approving.
+    pub note: String,
+    /// Run as root; otherwise the step runs as the approving operator.
+    pub root: bool,
+}
+
+impl Op {
+    /// Whether approving this transaction needs privilege at all.
+    pub fn needs_root(&self) -> bool {
+        self.steps.iter().any(|step| step.root)
+    }
 }
 
 /// The harness thread and session that queued a transaction, read from the
@@ -94,14 +112,12 @@ pub struct Request {
     pub host: String,
     pub title: String,
     pub reason: String,
-    pub commands: Vec<Vec<String>>,
-    /// One note per command, or none.
-    pub notes: Vec<String>,
+    pub steps: Vec<Step>,
     pub requested_by: String,
 }
 
-/// The spool directory canix approvals use: `$XDG_STATE_HOME/canix/rops` when
-/// that variable is absolute, else `$HOME/.local/state/canix/rops`.
+/// The spool directory canix approvals use: `$XDG_STATE_HOME/canix/ops` when
+/// that variable is absolute, else `$HOME/.local/state/canix/ops`.
 pub fn default_spool_dir() -> PathBuf {
     state_dir(
         std::env::var("XDG_STATE_HOME").ok(),
@@ -113,10 +129,10 @@ fn state_dir(xdg_state_home: Option<String>, home: Option<String>) -> PathBuf {
     if let Some(dir) = xdg_state_home {
         let path = PathBuf::from(dir);
         if path.is_absolute() {
-            return path.join("canix").join("rops");
+            return path.join("canix").join("ops");
         }
     }
-    PathBuf::from(home.unwrap_or_default()).join(".local/state/canix/rops")
+    PathBuf::from(home.unwrap_or_default()).join(".local/state/canix/ops")
 }
 
 /// `channel:user`, the requester identity stored with a transaction.
@@ -138,8 +154,7 @@ pub fn queue(spool: &Path, request: Request) -> Result<Op> {
         requested_by: request.requested_by,
         source: Source::from_env(),
         created: created.to_rfc3339(),
-        commands: request.commands,
-        notes: request.notes,
+        steps: request.steps,
     };
     let digest = sha2::Sha256::digest(
         serde_json::to_vec(&op)
@@ -213,20 +228,14 @@ pub fn validate(op: &Op) -> Result<()> {
     chrono::DateTime::parse_from_rfc3339(&op.created)
         .into_diagnostic()
         .wrap_err("invalid created timestamp")?;
-    if op.commands.is_empty() || op.commands.len() > MAX_STEPS {
+    if op.steps.is_empty() || op.steps.len() > MAX_STEPS {
         return Err(miette!("a transaction needs 1-{MAX_STEPS} steps"));
     }
-    if !op.notes.is_empty() && op.notes.len() != op.commands.len() {
-        return Err(miette!(
-            "{} step notes for {} steps: give one per step or none",
-            op.notes.len(),
-            op.commands.len()
-        ));
-    }
-    for note in &op.notes {
+    for (index, Step { argv, note, .. }) in op.steps.iter().enumerate() {
+        if note.trim().is_empty() {
+            return Err(miette!("step {}: every step needs a note", index + 1));
+        }
         printable("note", note)?;
-    }
-    for (index, argv) in op.commands.iter().enumerate() {
         if argv.is_empty() || argv[0].is_empty() {
             return Err(miette!("empty step"));
         }
@@ -278,7 +287,7 @@ pub fn load(path: &Path) -> Result<Op> {
 /// spool content would otherwise send to the operator's terminal.
 fn ignored(path: &Path, error: &miette::Report) -> String {
     let chain: Vec<String> = error.chain().map(ToString::to_string).collect();
-    format!("rops: ignoring {:?}: {:?}", path, chain.join(": "))
+    format!("ops: ignoring {:?}: {:?}", path, chain.join(": "))
 }
 
 /// Pending transactions, oldest first. Invalid files are reported and never
@@ -332,18 +341,21 @@ mod tests {
     use super::*;
 
     /// A real spool file, verbatim.
-    const REAL: &str = r#"{"id":"20261114T134329-d3d258","host":"atlas","title":"Restart the backup unit","reason":"The timer changed and the unit must reload it.","requested_by":"mcp:claude-code","source":{"t3Thread":"32c7f3c7-04c7-4353-8092-6eb2aa6b7121","claudeSession":"76d1ad97-dc94-4465-9b8e-8df4c99427e4"},"created":"2026-11-14T13:43:29.908777650+00:00","commands":[["rm","-rf","--one-file-system","/data/scratch/tmp/regicide-b020"]]}"#;
+    const REAL: &str = r#"{"id":"20261114T134329-d3d258","host":"atlas","title":"Restart the backup unit","reason":"The timer changed and the unit must reload it.","requested_by":"mcp:claude-code","source":{"t3Thread":"32c7f3c7-04c7-4353-8092-6eb2aa6b7121","claudeSession":"76d1ad97-dc94-4465-9b8e-8df4c99427e4"},"created":"2026-11-14T13:43:29.908777650+00:00","steps":[{"argv":["rm","-rf","--one-file-system","/data/scratch/tmp/regicide-b020"],"note":"Remove the stale scratch tree.","root":true},{"argv":["nix","store","gc"],"note":"Collect the freed store paths.","root":false}]}"#;
 
-    fn request(commands: &[&[&str]]) -> Request {
+    fn request(argvs: &[&[&str]]) -> Request {
         Request {
             host: "atlas".into(),
             title: "Start the base backup".into(),
             reason: String::new(),
-            commands: commands
+            steps: argvs
                 .iter()
-                .map(|argv| argv.iter().map(|word| word.to_string()).collect())
+                .map(|argv| Step {
+                    argv: argv.iter().map(|word| word.to_string()).collect(),
+                    note: "Do the step.".into(),
+                    root: true,
+                })
                 .collect(),
-            notes: Vec::new(),
             requested_by: "cli:test".into(),
         }
     }
@@ -366,6 +378,7 @@ mod tests {
         let op = load(&dir.join("20261114T134329-d3d258.json")).unwrap();
         assert_eq!(op.host, "atlas");
         assert_eq!(op.requested_by, "mcp:claude-code");
+        assert!(op.needs_root() && !op.steps[1].root);
         assert_eq!(
             op.source.as_ref().unwrap().describe(),
             "T3 thread 32c7f3c7-04c7-4353-8092-6eb2aa6b7121, Claude session 76d1ad97-dc94-4465-9b8e-8df4c99427e4"
@@ -421,17 +434,27 @@ mod tests {
         write(&forged);
         assert!(pending(spool.path(), None).unwrap().is_empty());
         forged.created = op.created.clone();
-        forged.notes = vec!["one".into(), "two".into()];
+        // Every step carries a printable note.
+        forged.steps[0].note = " ".into();
         write(&forged);
         assert!(pending(spool.path(), None).unwrap().is_empty());
-        forged.notes = vec!["x\x1b[2K".into()];
+        forged.steps[0].note = "x\x1b[2K".into();
         write(&forged);
         assert!(pending(spool.path(), None).unwrap().is_empty());
-        // One printable note per step loads.
-        forged.notes = vec!["Check the unit first.".into()];
+        forged.steps[0].note = "Check the unit first.".into();
+        forged.steps[0].root = false;
         write(&forged);
         assert_eq!(pending(spool.path(), None).unwrap(), vec![forged.clone()]);
-        forged.notes = Vec::new();
+        assert!(!forged.needs_root());
+        // `root` is explicit: a step without it never loads as either.
+        std::fs::write(
+            &path,
+            serde_json::to_string(&forged)
+                .unwrap()
+                .replace(",\"root\":false", ""),
+        )
+        .unwrap();
+        assert!(pending(spool.path(), None).unwrap().is_empty());
         forged.host = "../atlas".into();
         write(&forged);
         assert!(pending(spool.path(), None).unwrap().is_empty());
@@ -475,19 +498,19 @@ mod tests {
     }
 
     #[test]
-    fn spool_dir_is_canix_state_dir_plus_rops() {
+    fn spool_dir_is_canix_state_dir_plus_ops() {
         assert_eq!(
             state_dir(Some("/var/state".into()), Some("/home/x".into())),
-            PathBuf::from("/var/state/canix/rops")
+            PathBuf::from("/var/state/canix/ops")
         );
         // A relative XDG_STATE_HOME is ignored, as in the canix state dir.
         assert_eq!(
             state_dir(Some("state".into()), Some("/home/x".into())),
-            PathBuf::from("/home/x/.local/state/canix/rops")
+            PathBuf::from("/home/x/.local/state/canix/ops")
         );
         assert_eq!(
             state_dir(None, None),
-            PathBuf::from(".local/state/canix/rops")
+            PathBuf::from(".local/state/canix/ops")
         );
         let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
         assert_eq!(requester("cli"), format!("cli:{user}"));
