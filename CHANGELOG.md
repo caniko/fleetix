@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-17
+
+### Added
+
+- `rops::Op` and `rops::Request` carry `notes`, what each step does: one
+  printable note per command, or none. Spool files without notes load as
+  before and are written without the field. Code that builds either struct by
+  literal must set it.
+
 ## [0.12.0] - 2026-11-16
 
 ### Added
