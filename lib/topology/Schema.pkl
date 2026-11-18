@@ -6,6 +6,8 @@ class Link {
   port: UInt16 = 0
   endpointSubdomain: String? = null
   exemptFromProxy: Boolean = false
+  /// Non-host clients such as phones; always clients, never servers.
+  devices: Mapping<String, LinkBinding> = new {}
 }
 
 class LinkBinding {

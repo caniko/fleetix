@@ -2,7 +2,8 @@ use crate::topology::{
     DnsPublication, DynamicHost, Endpoint, EndpointBind, HttpAccess, HttpSite, Link, LinkBinding,
     LinkRole, Topology, VpnProfile,
 };
-use std::net::IpAddr;
+use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr};
 
 /// Accessor methods on Topology — derived from the link schema.
 impl Topology {
@@ -88,6 +89,12 @@ impl Topology {
                     .filter(|binding| binding.role == LinkRole::Client)
                     .map(|binding| (host_name.as_str(), binding))
             })
+            .chain(self.links.get(name).into_iter().flat_map(|link| {
+                link.devices
+                    .iter()
+                    .filter(|(_, binding)| binding.role == LinkRole::Client)
+                    .map(|(name, binding)| (name.as_str(), binding))
+            }))
             .collect()
     }
 
@@ -98,7 +105,16 @@ impl Topology {
             .iter()
             .filter(|(host_name, _)| Some(host_name.as_str()) != server_host)
             .filter_map(|(host_name, host)| {
-                let binding = host.links.get(name)?;
+                host.links
+                    .get(name)
+                    .map(|binding| (host_name.as_str(), binding))
+            })
+            .chain(self.links.get(name).into_iter().flat_map(|link| {
+                link.devices
+                    .iter()
+                    .map(|(name, binding)| (name.as_str(), binding))
+            }))
+            .filter_map(|(host_name, binding)| {
                 let address = binding.address.clone();
                 Some(PeerEntry {
                     hostname: host_name,
@@ -108,6 +124,49 @@ impl Topology {
                 })
             })
             .collect()
+    }
+
+    /// Lowest unused IPv4 host address on a link, excluding network and broadcast.
+    pub fn next_free_link_address(&self, link: &str) -> Option<String> {
+        let definition = self.links.get(link)?;
+        // ponytail: IPv4 only; add IPv6 allocation when a consumer needs it.
+        let (IpAddr::V4(address), prefix) = crate::validate::parse_cidr(&definition.subnet)? else {
+            return None;
+        };
+        let mask = u32::MAX.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
+        let network = u32::from(address) & mask;
+        let broadcast = network | !mask;
+        let used: HashSet<Ipv4Addr> = self
+            .hosts
+            .values()
+            .filter_map(|host| host.links.get(link))
+            .chain(definition.devices.values())
+            .filter_map(|binding| binding.address.parse().ok())
+            .collect();
+        (network.saturating_add(1)..broadcast)
+            .map(Ipv4Addr::from)
+            .find(|address| !used.contains(address))
+            .map(|address| address.to_string())
+    }
+
+    /// Render a device's wg-quick configuration using the supplied public endpoint host.
+    pub fn link_device_wg_config(
+        &self,
+        link: &str,
+        device: &str,
+        private_key: &str,
+        endpoint_host: &str,
+        dns: Option<&str>,
+    ) -> Option<String> {
+        let definition = self.links.get(link)?;
+        let address = &definition.devices.get(device)?.address;
+        let prefix = address_prefix_len(address)?;
+        let public_key = self.link_server(link)?.public_key.as_deref()?;
+        let dns = dns.map(|dns| format!("DNS = {dns}\n")).unwrap_or_default();
+        Some(format!(
+            "[Interface]\nPrivateKey = {private_key}\nAddress = {address}/{prefix}\n{dns}\n[Peer]\nPublicKey = {public_key}\nEndpoint = {endpoint_host}:{}\nAllowedIPs = {}\nPersistentKeepalive = 25\n",
+            definition.port, definition.subnet
+        ))
     }
 
     /// Best SSH address for a host: LAN, WireGuard, then direct-link.
@@ -694,6 +753,147 @@ mod tests {
     }
 
     #[test]
+    fn allocates_and_renders_link_device_configs() {
+        let mut topo: Topology = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 2,
+            "links": {"wg-home": {"subnet": "10.0.0.0/24", "port": 54321,
+                "devices": {"phone": {"address": "10.0.0.3", "publicKey": "phone-key"}}}},
+            "hosts": {
+                "server": {"system": "x86_64-linux", "links": {"wg-home": {"address": "10.0.0.1", "role": "server", "publicKey": "server-key"}}},
+                "client": {"system": "x86_64-linux", "links": {"wg-home": {"address": "10.0.0.2", "publicKey": "client-key"}}}
+            },
+            "domains": {}, "services": {}
+        })).unwrap();
+        assert_eq!(
+            topo.next_free_link_address("wg-home").as_deref(),
+            Some("10.0.0.4")
+        );
+        assert_eq!(topo.next_free_link_address("missing"), None);
+        let expected = "[Interface]\nPrivateKey = secret\nAddress = 10.0.0.3/32\n\n[Peer]\nPublicKey = server-key\nEndpoint = vpn.example:54321\nAllowedIPs = 10.0.0.0/24\nPersistentKeepalive = 25\n";
+        assert_eq!(
+            topo.link_device_wg_config("wg-home", "phone", "secret", "vpn.example", None)
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            topo.link_device_wg_config(
+                "wg-home",
+                "phone",
+                "secret",
+                "vpn.example",
+                Some("1.1.1.1")
+            ),
+            Some(expected.replace(
+                "Address = 10.0.0.3/32\n",
+                "Address = 10.0.0.3/32\nDNS = 1.1.1.1\n"
+            ))
+        );
+        assert_eq!(
+            topo.link_device_wg_config("wg-home", "missing", "secret", "vpn.example", None),
+            None
+        );
+        topo.links.get_mut("wg-home").unwrap().subnet = "10.0.0.0/30".into();
+        assert_eq!(topo.next_free_link_address("wg-home"), None);
+        for subnet in ["invalid", "2001:db8::/64", "10.0.0.0/31", "10.0.0.1/32"] {
+            topo.links.get_mut("wg-home").unwrap().subnet = subnet.into();
+            assert_eq!(topo.next_free_link_address("wg-home"), None);
+        }
+        topo.hosts
+            .get_mut("server")
+            .unwrap()
+            .links
+            .get_mut("wg-home")
+            .unwrap()
+            .public_key = None;
+        assert_eq!(
+            topo.link_device_wg_config("wg-home", "phone", "secret", "vpn.example", None),
+            None
+        );
+    }
+
+    #[test]
+    fn link_devices_are_validated_and_included_as_peers() {
+        let mut topo: Topology = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 2,
+            "links": {"wg-home": {"subnet": "10.0.0.0/24", "port": 54321,
+                "devices": {"phone": {"address": "10.0.0.20", "publicKey": "phone-key"}}}},
+            "hosts": {
+                "server": {"system": "x86_64-linux", "links": {"wg-home": {"address": "10.0.0.1", "role": "server", "publicKey": "server-key"}}},
+                "client": {"system": "x86_64-linux", "links": {"wg-home": {"address": "10.0.0.2", "publicKey": "client-key"}}}
+            },
+            "domains": {}, "services": {}
+        })).unwrap();
+        assert!(crate::validate::validate(&topo).is_ok());
+        let peers = topo.link_peers("wg-home");
+        assert_eq!(
+            peers.iter().map(|p| p.hostname).collect::<Vec<_>>(),
+            ["client", "phone"]
+        );
+        assert_eq!(peers[1].allowed_ips, ["10.0.0.20/32"]);
+        assert_eq!(peers[1].public_key, "phone-key");
+        assert_eq!(topo.link_clients("wg-home").len(), 2);
+
+        let device = topo
+            .links
+            .get_mut("wg-home")
+            .unwrap()
+            .devices
+            .get_mut("phone")
+            .unwrap();
+        device.address = "10.0.0.2".into();
+        device.role = LinkRole::Server;
+        device.public_key = Some(" ".into());
+        let device = topo
+            .links
+            .get_mut("wg-home")
+            .unwrap()
+            .devices
+            .shift_remove("phone")
+            .unwrap();
+        topo.links
+            .get_mut("wg-home")
+            .unwrap()
+            .devices
+            .insert("client".into(), device);
+        let report = crate::validate::validate(&topo);
+        for (code, path) in [
+            (
+                "link.duplicate_address",
+                "links.wg-home.devices.client.address",
+            ),
+            ("link.device_name_collision", "links.wg-home.devices.client"),
+            (
+                "link.device_invalid_role",
+                "links.wg-home.devices.client.role",
+            ),
+            (
+                "link.device_missing_public_key",
+                "links.wg-home.devices.client.publicKey",
+            ),
+        ] {
+            assert!(
+                report
+                    .errors()
+                    .any(|issue| issue.code == code && issue.path.as_deref() == Some(path)),
+                "missing {code}: {report:?}"
+            );
+        }
+        topo.links
+            .get_mut("wg-home")
+            .unwrap()
+            .devices
+            .get_mut("client")
+            .unwrap()
+            .address = "10.124.0.1".into();
+        assert!(
+            crate::validate::validate(&topo)
+                .errors()
+                .any(|issue| issue.code == "link.address_outside_subnet"
+                    && issue.path.as_deref() == Some("links.wg-home.devices.client.address"))
+        );
+    }
+
+    #[test]
     fn rejects_ambiguous_link_servers() {
         let mut topo = test_topology();
         topo.links.insert(
@@ -703,6 +903,7 @@ mod tests {
                 port: 54321,
                 endpoint_subdomain: None,
                 exempt_from_proxy: false,
+                devices: IndexMap::new(),
             },
         );
         topo.hosts
