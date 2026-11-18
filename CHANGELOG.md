@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Breaking:** `Link.devices` lists non-host clients (such as phones) that
+  join a link as WireGuard peers. Validation requires them to be clients with
+  a public key, a unique address in the subnet and a name no host uses.
+- `Topology::next_free_link_address` and `Topology::link_device_wg_config`
+  allocate a device address and render its wg-quick configuration.
+
 ## [0.14.0] - 2026-11-17
 
 ### Changed

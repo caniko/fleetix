@@ -167,17 +167,65 @@ pub fn validate(topology: &Topology) -> ValidationReport {
         }
 
         let mut addresses = HashSet::new();
-        for (host_name, host) in &topology.hosts {
-            let Some(binding) = host.links.get(link_name) else {
-                continue;
-            };
+        for (host_name, binding, base, is_device) in topology
+            .hosts
+            .iter()
+            .filter_map(|(name, host)| {
+                host.links.get(link_name).map(|binding| {
+                    (
+                        name,
+                        binding,
+                        format!("hosts.{name}.links.{link_name}"),
+                        false,
+                    )
+                })
+            })
+            .chain(link.devices.iter().map(|(name, binding)| {
+                (
+                    name,
+                    binding,
+                    format!("links.{link_name}.devices.{name}"),
+                    true,
+                )
+            }))
+        {
+            let participant = if is_device { "device" } else { "host" };
+            if is_device && topology.hosts.contains_key(host_name) {
+                report.error(
+                    "link.device_name_collision",
+                    Some(base.clone()),
+                    Some(host_name.clone()),
+                    format!("device '{host_name}' on link '{link_name}' collides with a host name"),
+                );
+            }
+            if is_device && binding.role != LinkRole::Client {
+                report.error(
+                    "link.device_invalid_role",
+                    Some(format!("{base}.role")),
+                    None,
+                    format!("device '{host_name}' on link '{link_name}' must be a client"),
+                );
+            }
+            if is_device
+                && binding
+                    .public_key
+                    .as_deref()
+                    .is_none_or(|key| key.trim().is_empty())
+            {
+                report.error(
+                    "link.device_missing_public_key",
+                    Some(format!("{base}.publicKey")),
+                    None,
+                    format!("device '{host_name}' on link '{link_name}' must declare publicKey"),
+                );
+            }
             if !addresses.insert(binding.address.as_str()) {
                 report.error(
                     "link.duplicate_address",
-                    Some(format!("hosts.{host_name}.links.{link_name}.address")),
+                    Some(format!("{base}.address")),
                     Some(binding.address.clone()),
                     format!(
-                        "link '{link_name}' has duplicate address '{}' (host '{host_name}')",
+                        "link '{link_name}' has duplicate address '{}' ({participant} '{host_name}')",
                         binding.address
                     ),
                 );
@@ -187,25 +235,25 @@ pub fn validate(topology: &Topology) -> ValidationReport {
                     Ok(address) if address_in_subnet(address, network, prefix) => {}
                     Ok(_) => report.error(
                         "link.address_outside_subnet",
-                        Some(format!("hosts.{host_name}.links.{link_name}.address")),
+                        Some(format!("{base}.address")),
                         Some(binding.address.clone()),
                         format!(
-                            "host '{host_name}' address '{}' is outside link '{link_name}' subnet '{}'",
+                            "{participant} '{host_name}' address '{}' is outside link '{link_name}' subnet '{}'",
                             binding.address, link.subnet
                         ),
                     ),
                     Err(_) => report.error(
                         "link.invalid_address",
-                        Some(format!("hosts.{host_name}.links.{link_name}.address")),
+                        Some(format!("{base}.address")),
                         Some(binding.address.clone()),
                         format!(
-                            "host '{host_name}' on link '{link_name}' has invalid address '{}'",
+                            "{participant} '{host_name}' on link '{link_name}' has invalid address '{}'",
                             binding.address
                         ),
                     ),
                 }
             }
-            if binding.role == LinkRole::Server && binding.public_key.is_none() {
+            if !is_device && binding.role == LinkRole::Server && binding.public_key.is_none() {
                 report.error(
                     "link.server_missing_public_key",
                     Some(format!("hosts.{host_name}.links.{link_name}.publicKey")),
@@ -2485,6 +2533,7 @@ mod tests {
                     port: 51820,
                     endpoint_subdomain: None,
                     exempt_from_proxy: false,
+                    devices: IndexMap::new(),
                 },
             );
         }

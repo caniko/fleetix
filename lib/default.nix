@@ -546,7 +546,22 @@ in rec {
               publicKey = binding.publicKey or "";
               allowedIPs = ["${binding.address}/${toString (addressPrefix binding.address)}"];
             })
-            clientNames;
+            clientNames
+            ++ builtins.map (name: let
+              binding = link.devices.${name};
+            in
+              # The sidecar never runs the Rust validator, so guard the WireGuard essentials here.
+              if (binding.role or "client") != "client" || !(builtins.isString (binding.publicKey or null)) || builtins.match "[[:space:]]*" binding.publicKey != null || topology.hosts ? ${name}
+              then throw "fleetix links: device '${name}' on link '${linkName}' must be a client with a publicKey and a name no host uses"
+              else {
+                inherit name;
+                inherit (binding) publicKey;
+                allowedIPs = ["${binding.address}/${toString (addressPrefix binding.address)}"];
+              }) (
+              if serverName == null
+              then []
+              else builtins.attrNames (link.devices or {})
+            );
         })
       (topology.links or {});
     in

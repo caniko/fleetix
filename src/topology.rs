@@ -34,6 +34,8 @@ pub struct Link {
     pub endpoint_subdomain: Option<String>,
     #[serde(default)]
     pub exempt_from_proxy: bool,
+    #[serde(default)]
+    pub devices: IndexMap<String, LinkBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
