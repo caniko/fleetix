@@ -513,15 +513,10 @@ fn utf8(path: &Path) -> Result<&str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn script(directory: &Path, name: &str, body: &str) -> String {
         let path = directory.join(name);
-        // Publish a closed, fsynced executable rather than racing another
-        // parallel fixture's fork while the script is still open for writing.
-        crate::fsutil::atomic_write(&path, format!("#!/bin/sh\nset -eu\n{body}\n").as_bytes())
-            .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::fsutil::install_executable(&path, &format!("#!/bin/sh\nset -eu\n{body}\n"));
         path.to_str().unwrap().to_owned()
     }
 

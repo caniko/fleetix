@@ -33,3 +33,27 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
         .map_err(|error| miette!("sync output directory {}: {error}", parent.display()))?;
     Ok(())
 }
+
+/// Publish a test executable without this process ever holding it open for
+/// writing: a parallel test's fork would inherit that descriptor and make the
+/// exec fail with ETXTBSY ("Text file busy"). The source is a plain file this
+/// process never executes; `install` writes the executable in its own process.
+#[cfg(all(
+    test,
+    any(
+        all(unix, feature = "deployment-runtime"),
+        feature = "service-surfaces-runtime"
+    )
+))]
+pub(crate) fn install_executable(path: &Path, contents: &str) {
+    let source = path.with_extension("source");
+    std::fs::write(&source, contents).unwrap();
+    let status = std::process::Command::new("install")
+        .args(["-m", "755"])
+        .arg(&source)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "install {}", path.display());
+    std::fs::remove_file(&source).unwrap();
+}
