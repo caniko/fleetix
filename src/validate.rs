@@ -1576,6 +1576,63 @@ fn validate_host_hardware(topology: &Topology, report: &mut ValidationReport) {
                 );
             }
         }
+
+        let host_devices: Vec<String> = [
+            host.gpu.render.as_ref().map(|r| r.render_node.as_str()),
+            host.gpu.media.as_ref().map(|m| m.render_node.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(crate::gpu::render_node_address)
+        .map(str::to_ascii_lowercase)
+        .collect();
+        let mut seen = HashSet::new();
+        for (name, entry) in &host.gpu.passthrough {
+            let path = format!("hosts.{host_name}.gpu.passthrough.{name}");
+            let lower_hex = |s: &str| !s.bytes().any(|c| c.is_ascii_uppercase());
+            let id_valid = entry.id.len() == 9
+                && entry.id.as_bytes()[4] == b':'
+                && entry
+                    .id
+                    .bytes()
+                    .enumerate()
+                    .all(|(i, c)| i == 4 || c.is_ascii_hexdigit());
+            let name_valid = name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-');
+            if !name_valid
+                || !crate::gpu::pci_address(&entry.address)
+                || !id_valid
+                || !lower_hex(&entry.address)
+                || !lower_hex(&entry.id)
+                || !valid_gpu_vendor(&entry.vendor)
+            {
+                report.error(
+                    "host.invalid_gpu_passthrough",
+                    Some(path),
+                    Some(entry.address.clone()),
+                    format!("host '{host_name}' GPU passthrough '{name}' needs a [a-z][a-z0-9-]* name, lower-case PCI address and vendor:device ID, and a known vendor"),
+                );
+            } else if host_devices.contains(&entry.address) {
+                report.error(
+                    "host.gpu_passthrough_is_host_device",
+                    Some(path),
+                    Some(entry.address.clone()),
+                    format!("host '{host_name}' GPU passthrough '{name}' is the host's render or media device"),
+                );
+            } else if !seen.insert(entry.address.as_str()) {
+                report.error(
+                    "host.duplicate_gpu_passthrough",
+                    Some(path),
+                    Some(entry.address.clone()),
+                    format!(
+                        "host '{host_name}' GPU passthrough address {} is declared twice",
+                        entry.address
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -2438,6 +2495,44 @@ mod tests {
                 report.issues
             );
         }
+    }
+
+    #[test]
+    fn validates_gpu_passthrough() {
+        let codes = |gpu: serde_json::Value| {
+            let mut topology = v2_topology();
+            let host =
+                serde_json::from_value(json!({ "system": "x86_64-linux", "gpu": gpu })).unwrap();
+            topology.hosts.insert("spoke".to_string(), host);
+            validate(&topology)
+                .issues
+                .into_iter()
+                .filter(|issue| issue.code.contains("gpu_passthrough"))
+                .map(|issue| issue.code)
+                .collect::<Vec<_>>()
+        };
+        let igpu =
+            json!({ "address": "0000:7d:00.0", "id": "1002:13c0", "vendor": "amd", "rom": "vfct" });
+        assert!(codes(json!({ "igpu": "amd", "passthrough": { "igpu": igpu } })).is_empty());
+        assert_eq!(
+            codes(
+                json!({ "passthrough": { "Bad": igpu, "b": { "address": "0000:7D:00.0", "id": "1002:13c0", "vendor": "amd" } } })
+            ),
+            [
+                "host.invalid_gpu_passthrough",
+                "host.invalid_gpu_passthrough"
+            ]
+        );
+        assert_eq!(
+            codes(json!({ "passthrough": { "a": igpu, "b": igpu } })),
+            ["host.duplicate_gpu_passthrough"]
+        );
+        assert_eq!(
+            codes(
+                json!({ "render": { "renderNode": "/dev/dri/by-path/pci-0000:7D:00.0-render" }, "passthrough": { "a": igpu } })
+            ),
+            ["host.gpu_passthrough_is_host_device"]
+        );
     }
 
     #[test]

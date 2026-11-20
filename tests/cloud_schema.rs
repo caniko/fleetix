@@ -58,3 +58,35 @@ deployment = new S.Deployment {
     assert_eq!(topology.publication_address_intents()[0].ipv4, "192.0.2.10");
     assert!(topology.publication_address_intents()[0].ipv6.is_none());
 }
+
+#[test]
+fn gpu_passthrough_loads_through_the_embedded_evaluator() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Schema.pkl"),
+        include_str!("../lib/topology/Schema.pkl"),
+    )
+    .unwrap();
+    let source = dir.path().join("Topology.pkl");
+    std::fs::write(&source, r#"
+import "Schema.pkl" as S
+schemaVersion = 2
+links = new {}
+domains = new {}
+services = new {}
+hosts = new {
+  ["desktop"] = new S.Host {
+    system = "x86_64-linux"
+    gpu = new S.Gpu {
+      igpu = "amd"
+      passthrough { ["igpu"] = new S.GpuPassthrough { address = "0000:7d:00.0"; id = "1002:13c0"; vendor = "amd"; rom = "vfct" } }
+    }
+  }
+}
+"#).unwrap();
+    let topology: Topology = fleetix::pkl::load_sync(&source).unwrap();
+    assert!(validate(&topology).is_ok());
+    let igpu = &topology.hosts["desktop"].gpu.passthrough["igpu"];
+    assert_eq!(igpu.rom, fleetix::topology::GpuPassthroughRom::Vfct);
+    assert!(!igpu.repeatable);
+}

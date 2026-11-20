@@ -14,7 +14,41 @@ let
     compute.backend = "rocm";
   };
   rejects = record: !(builtins.tryEval (builtins.deepSeq (gpu.routes record) true)).success;
+  igpu = {
+    address = "0000:7d:00.0";
+    id = "1002:13c0";
+    vendor = "amd";
+    rom = "vfct";
+  };
 in
+  assert (gpu.routes {passthrough.igpu = igpu;}).passthrough
+  == {
+    igpu = igpu // {repeatable = false;};
+  };
+  assert (gpu.routes {passthrough.igpu = removeAttrs igpu ["rom"];}).passthrough.igpu.rom == "device";
+  assert rejects {passthrough.Bad = igpu;};
+  assert rejects {passthrough.igpu = igpu // {id = "1002";};};
+  assert rejects {passthrough.igpu = igpu // {rom = "flash";};};
+  assert rejects {
+    passthrough = {
+      a = igpu;
+      b = igpu;
+    };
+  };
+  assert rejects {
+    render.renderNode = "/dev/dri/by-path/pci-0000:7D:00.0-render";
+    passthrough.igpu = igpu;
+  };
+  assert rejects {
+    igpu = "amd";
+    media = {
+      vendor = "amd";
+      renderNode = "/dev/dri/by-path/pci-0000:7d:00.0-render";
+      libvaDriver = "radeonsi";
+    };
+    passthrough.igpu = igpu;
+  };
+  assert gpu.noGpu.passthrough == {};
   assert rejects {igpu = "unknown";};
   assert rejects {render.renderNode = "/dev/dri/renderD128";};
   assert rejects {

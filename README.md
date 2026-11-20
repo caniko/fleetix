@@ -132,6 +132,24 @@ Omitting `compute` preserves existing consumer policy. This is a requested
 stack, not proof of runtime device availability; package selection and hardware
 verification belong to the consuming application/configuration.
 
+`gpu.passthrough` reserves GPUs for VFIO guests, keyed by a `[a-z][a-z0-9-]*`
+name:
+
+```pkl
+passthrough {
+  ["igpu"] { address = "0000:7d:00.0"; id = "1002:13c0"; vendor = "amd"; rom = "vfct" }
+}
+```
+
+Consumers bind each device to vfio-pci at boot and hand it to a VM; the host
+never drives it. `rom = "vfct"` tells the guest's VMM to supply the VBIOS from
+the host ACPI VFCT table (AMD APUs); the default `"device"` leaves it to the
+device's own ROM. `repeatable = true` records that a second VM start in one host
+boot has been proven to work; until then consumers should refuse it. Validation
+rejects duplicate addresses and the host's own render or media device.
+`forHost(...).passthrough` projects the entries with defaults filled, `{}` when
+absent.
+
 ## Pkl Helpers
 
 Rust consumers can add `fleetix = { version = "0.6", default-features = false, features = ["pkl"] }`
