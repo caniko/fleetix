@@ -295,7 +295,17 @@ mod tests {
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!lock(&shared.join("lock")).unwrap_err().busy);
         drop(first);
-        assert!(lock_anchor(&path).is_ok());
+        // A parallel test's fork can briefly inherit the lock descriptor until
+        // its child execs; the lock is free once that copy closes.
+        let mut free = false;
+        for _ in 0..200 {
+            if lock_anchor(&path).is_ok() {
+                free = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(free);
         assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
     }
 }

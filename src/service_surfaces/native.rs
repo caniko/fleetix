@@ -1039,12 +1039,10 @@ mod tests {
         let harness_path = std::env::var("PATH").expect("test harness PATH");
         let quoted_path = harness_path.replace('\'', "'\\''");
         let body = body.strip_prefix("#!/bin/sh\n").unwrap_or(body);
-        fs::write(
+        crate::fsutil::install_executable(
             path,
-            format!("#!/bin/sh\nexport PATH='{quoted_path}'\n{body}"),
-        )
-        .unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            &format!("#!/bin/sh\nexport PATH='{quoted_path}'\n{body}"),
+        );
     }
 
     fn fixture_policy(root: &Path) -> Policy {
@@ -1804,7 +1802,7 @@ mod tests {
 mod activation_precheck_tests {
     use super::*;
     use crate::service_surfaces::{Containers, Tools};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::DirBuilderExt;
 
     #[test]
     fn activation_refuses_before_link_change_when_container_config_is_missing() {
@@ -1815,12 +1813,10 @@ mod activation_precheck_tests {
         fs::DirBuilder::new().mode(0o700).create(&bin).unwrap();
         let systemctl = bin.join("systemctl");
         let log = root.path().join("systemctl.log");
-        fs::write(
+        crate::fsutil::install_executable(
             &systemctl,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
-        )
-        .unwrap();
-        fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+            &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+        );
         let policy = Policy {
             version: 1,
             host: "atlas".into(),
