@@ -123,7 +123,7 @@ class Gpu {
   render: GpuRender? = null
   // GPUs reserved for VFIO passthrough, keyed by name. Addresses are unique and
   // never the host's render or media device.
-  passthrough: Mapping<GpuPassthroughName, GpuPassthrough>(toMap().values.isDistinctBy((it) -> it.address)) = new {}
+  passthrough: Mapping<GpuPassthroughName, GpuPassthrough>(toMap().values.map((it) -> it.address).toSet().length == length) = new {}
 }
 
 // A GPU bound to vfio-pci at boot for guests; the host never drives it.

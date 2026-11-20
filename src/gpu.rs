@@ -14,7 +14,7 @@ pub fn pci_selector(node: &str) -> Option<String> {
 }
 
 /// The PCI address embedded in an exact stable render-node alias, as written.
-pub fn render_node_address(node: &str) -> Option<&str> {
+pub(crate) fn render_node_address(node: &str) -> Option<&str> {
     let pci = node
         .strip_prefix("/dev/dri/by-path/pci-")?
         .strip_suffix("-render")?;
@@ -22,7 +22,7 @@ pub fn render_node_address(node: &str) -> Option<&str> {
 }
 
 /// Whether `pci` is a `dddd:bb:dd.f` PCI function address (hex of either case).
-pub fn pci_address(pci: &str) -> bool {
+pub(crate) fn pci_address(pci: &str) -> bool {
     let b = pci.as_bytes();
     b.len() == 12
         && b[4] == b':'
