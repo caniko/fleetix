@@ -38,7 +38,13 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
 /// writing: a parallel test's fork would inherit that descriptor and make the
 /// exec fail with ETXTBSY ("Text file busy"). The source is a plain file this
 /// process never executes; `install` writes the executable in its own process.
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        all(unix, feature = "deployment-runtime"),
+        feature = "service-surfaces-runtime"
+    )
+))]
 pub(crate) fn install_executable(path: &Path, contents: &str) {
     let source = path.with_extension("source");
     std::fs::write(&source, contents).unwrap();
