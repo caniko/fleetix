@@ -10,6 +10,9 @@
     "rocm": "amd",
     "cuda": "nvidia"
   },
+  "pciAddressPattern": "[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]",
+  "pciIdPattern": "[0-9a-f]{4}:[0-9a-f]{4}",
+  "passthroughNamePattern": "[a-z][a-z0-9-]*",
   "cases": [
     {
       "node": "/dev/dri/by-path/pci-0000:03:00.0-render",

@@ -291,6 +291,36 @@ pub struct Gpu {
     /// Optional default game/3D route, independent of VA-API media decoding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render: Option<GpuRender>,
+    /// GPUs reserved for VFIO passthrough, keyed by name.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub passthrough: IndexMap<String, GpuPassthrough>,
+}
+
+/// A GPU bound to vfio-pci at boot for guests; the host never drives it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GpuPassthrough {
+    /// PCI function address, `dddd:bb:dd.f` in lower-case hex.
+    pub address: String,
+    /// PCI `vendor:device` ID in lower-case hex.
+    pub id: String,
+    pub vendor: String,
+    #[serde(default)]
+    pub rom: GpuPassthroughRom,
+    /// True only once a second VM start in the same host boot is proven to work.
+    #[serde(default)]
+    pub repeatable: bool,
+}
+
+/// Where the guest finds the VBIOS.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuPassthroughRom {
+    /// The device's own ROM BAR or VRAM copy.
+    #[default]
+    Device,
+    /// The host ACPI VFCT table (AMD APUs).
+    Vfct,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

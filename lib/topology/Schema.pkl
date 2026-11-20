@@ -89,7 +89,18 @@ const gpuComputeVendors = new Mapping {
   ["rocm"] = "amd"
   ["cuda"] = "nvidia"
 }
+const gpuPciAddressPattern = #"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]"#
+const gpuPciIdPattern = #"[0-9a-f]{4}:[0-9a-f]{4}"#
+const gpuPassthroughNamePattern = #"[a-z][a-z0-9-]*"#
 typealias StableRenderNode = String(matches(Regex(gpuRenderNodePattern)))
+// PCI function address, domain:bus:device.function, lower-case hex.
+typealias PciAddress = String(matches(Regex(gpuPciAddressPattern)))
+// PCI vendor:device ID, lower-case hex.
+typealias PciId = String(matches(Regex(gpuPciIdPattern)))
+typealias GpuPassthroughName = String(matches(Regex(gpuPassthroughNamePattern)))
+// Where the guest finds the VBIOS: the device's own ROM BAR/VRAM copy, or the
+// host ACPI VFCT table (AMD APUs).
+typealias GpuPassthroughRom = "device"|"vfct"
 typealias GpuVendor = String(gpuVendors.contains(this))
 typealias GpuComputeBackend = String(gpuComputeVendors.containsKey(this))
 
@@ -110,6 +121,19 @@ class Gpu {
   media: GpuMedia? = null
   compute: GpuCompute? = null
   render: GpuRender? = null
+  // GPUs reserved for VFIO passthrough, keyed by name. Addresses are unique and
+  // never the host's render or media device.
+  passthrough: Mapping<GpuPassthroughName, GpuPassthrough>(toMap().values.isDistinctBy((it) -> it.address)) = new {}
+}
+
+// A GPU bound to vfio-pci at boot for guests; the host never drives it.
+class GpuPassthrough {
+  address: PciAddress
+  id: PciId
+  vendor: GpuVendor
+  rom: GpuPassthroughRom = "device"
+  // True only once a second VM start in the same host boot is proven to work.
+  repeatable: Boolean = false
 }
 
 // Default game/3D render route, independent of media decoding and compute.

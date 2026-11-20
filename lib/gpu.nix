@@ -18,6 +18,33 @@ let
       if compute == null
       then null
       else compute.backend or null;
+    matches = pattern: value: builtins.isString value && builtins.match pattern value != null;
+    lower = builtins.replaceStrings ["A" "B" "C" "D" "E" "F"] ["a" "b" "c" "d" "e" "f"];
+    # PCI addresses of the host's own render/media devices, never passed through.
+    hostAddresses = map (route: lower (builtins.head (builtins.match "/dev/dri/by-path/pci-(.*)-render" route.renderNode))) (
+      builtins.filter (route: route != null && validRenderNode (route.renderNode or null)) [render media]
+    );
+    passthrough = builtins.mapAttrs (name: entry: let
+      projected = {
+        inherit (entry) address id vendor;
+        rom = entry.rom or "device";
+        repeatable = entry.repeatable or false;
+      };
+    in
+      if
+        matches contract.passthroughNamePattern name
+        && matches contract.pciAddressPattern (entry.address or null)
+        && matches contract.pciIdPattern (entry.id or null)
+        && builtins.elem (entry.vendor or null) vendors
+        && builtins.elem projected.rom ["device" "vfct"]
+        && builtins.isBool projected.repeatable
+      then
+        if builtins.elem entry.address hostAddresses
+        then throw "GPU passthrough ${name}: ${entry.address} is the host's render or media device"
+        else projected
+      else throw "GPU passthrough ${name}: expected a lower-case PCI address and vendor:device ID, a known vendor and rom device or vfct") (gpu.passthrough or {});
+    passthroughAddresses = map (entry: entry.address) (builtins.attrValues passthrough);
+    passthroughDistinct = builtins.all (address: builtins.length (builtins.filter (other: other == address) passthroughAddresses) == 1) passthroughAddresses;
   in
     assert inventoryValid; {
       render =
@@ -59,6 +86,10 @@ let
         else if primary != computeVendors.${backend}
         then throw "GPU compute: ${backend} requires a ${computeVendors.${backend}} primary GPU (dGPU, otherwise iGPU)"
         else {inherit backend;};
+      passthrough =
+        if passthroughDistinct
+        then passthrough
+        else throw "GPU passthrough: each PCI address may be declared once";
     };
   normalize = gpuData: let
     igpu = gpuData.igpu or null;
@@ -73,7 +104,7 @@ let
     builtins.seq selected {
       inherit igpu dgpu main;
       deviceType = gpuData.deviceType or null;
-      inherit (selected) compute;
+      inherit (selected) compute passthrough;
       render =
         if selected.render.enable
         then {inherit (selected.render) renderNode;}

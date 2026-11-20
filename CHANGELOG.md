@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Gpu.passthrough` reserves GPUs for VFIO guests (`GpuPassthrough`: PCI
+  address, `vendor:device` ID, vendor, VBIOS source `device`/`vfct`,
+  `repeatable`). Pkl, Rust validation and `lib.gpu.forHost` reject duplicate
+  addresses, bad names and the host's own render or media device; the Nix
+  projection exposes `passthrough` (`{}` when absent). Rust `Gpu` gains a
+  defaulted `passthrough` map; `gpu::render_node_address` and
+  `gpu::pci_address` are exported.
+
 ## [0.15.0] - 2026-11-18
 
 ### Added
