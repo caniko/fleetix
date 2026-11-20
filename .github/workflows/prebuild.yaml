@@ -31,7 +31,7 @@ concurrency:
 jobs:
   build:
     needs: [changes]
-    if: ${{ needs.changes.outputs.code == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -121,6 +121,7 @@ jobs:
         env:
           ATTIC_TOKEN: ${{ secrets.attic_token || secrets.ATTIC_TOKEN }}
           HARBOR_ATTIC_MANIFEST: attic-paths.txt
+          HARBOR_ATTIC_BUILT_PATHS: "1"
         run: |
           for attempt in 1 2 3; do
             nix run '.#push-flake-inputs' && exit 0
@@ -164,7 +165,7 @@ jobs:
             case "$1" in
               */*) return 1 ;;
               README.md) return 1 ;;
-              *.md) return 0 ;;
+              ?*.md) return 0 ;;
               *) return 1 ;;
             esac
           }
@@ -182,7 +183,7 @@ jobs:
             esac
           fi
           # A missing or unreachable base, or an empty diff, has nothing to classify.
-          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null && changed=$(git diff --name-only "$base" HEAD --) && [ -n "$changed" ]; then
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null && changed=$(git diff --no-renames --name-only "$base" HEAD --) && [ -n "$changed" ]; then
             code=false
             while IFS= read -r path; do
               classify "$path" || { code=true; break; }

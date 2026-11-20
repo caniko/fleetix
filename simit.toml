@@ -99,5 +99,5 @@ token_secret = "ATTIC_TOKEN"
 
 [[ci.required_gates]]
 id = "generated-parity"
-run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/4b9b0a7d66861f96b4b347852792a3982b519023 -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
+run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/04f109b7f79aff6c9d3a4a58ff6ec8ba0602fbbb -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
 timeout_minutes = 30
