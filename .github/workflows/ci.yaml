@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: caniko/simit/.github/actions/nix-setup@751ec29e4752c31f3c989d11f193482c177dd687
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -137,7 +137,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: caniko/simit/.github/actions/nix-setup@751ec29e4752c31f3c989d11f193482c177dd687
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -150,7 +150,7 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
       - name: Required gate generated-parity
-        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/04f109b7f79aff6c9d3a4a58ff6ec8ba0602fbbb -- init ci --platform github --ci-provider actions --runtime nix --check --diff
+        run: bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/751ec29e4752c31f3c989d11f193482c177dd687 -- init ci --platform github --ci-provider actions --runtime nix --check --diff
 
   changes:
     name: Classify changed paths
