@@ -12,6 +12,7 @@ with_msrv = true
 with_audit = true
 with_docs = true
 runtime = "nix"
+nix_setup_action_ref = "751ec29e4752c31f3c989d11f193482c177dd687"
 platform = "github"
 provider = "actions"
 publish_crates = true
@@ -99,5 +100,5 @@ token_secret = "ATTIC_TOKEN"
 
 [[ci.required_gates]]
 id = "generated-parity"
-run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/04f109b7f79aff6c9d3a4a58ff6ec8ba0602fbbb -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
+run = "bash scripts/qualify-hosted-source.sh && nix run --max-jobs 1 --cores 2 github:caniko/simit/751ec29e4752c31f3c989d11f193482c177dd687 -- init ci --platform github --ci-provider actions --runtime nix --check --diff"
 timeout_minutes = 30
