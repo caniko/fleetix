@@ -37,7 +37,7 @@ fn mcp_populates_empty_json_and_then_updates_only_owned_entries() {
     let desired = antigravity_manifest(&path, servers.clone());
     assert_eq!(
         reconcile(&desired, &state, false).unwrap().changed,
-        [path.clone()]
+        std::slice::from_ref(&path)
     );
     let mut output: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(output, json!({"mcpServers": servers}));
