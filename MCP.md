@@ -43,9 +43,9 @@ before rendering. Millisecond timeouts become seconds for Codex and Hermes.
 Unsupported timeouts or working directories fail evaluation; explicitly override
 them to `null` if the client's default is acceptable.
 
-Dialects: OpenCode V2, Codex, Claude Code, OMP, Gemini CLI, Kiro, Copilot CLI,
-Zed and Hermes. Clients without a persistent disable field (Claude, Gemini,
-Copilot, Hermes) omit disabled servers, preserving the no-connection policy.
+Dialects: OpenCode V2, Codex, Claude Code, OMP, Gemini CLI, Antigravity, Kiro,
+Copilot CLI, Zed and Hermes. Clients without a persistent disable field
+(Claude, Gemini, Antigravity, Copilot, Hermes) omit disabled servers.
 
 Secrets stay outside the store:
 
@@ -80,6 +80,11 @@ require native/export delivery. Pure consumers use `inputs.fleetix.lib.mcp.rende
 { harness; servers; }` for documents or `renderServers` for server maps. Pure
 rendering accepts literal environment strings; file wrapping needs Home Manager.
 
+[Antigravity CLI](https://antigravity.google/docs/cli/gcli-migration/) defaults to
+`~/.gemini/config/mcp_config.json`. For a T3 Code ACP profile, set
+`fleetix.mcp.harnesses.antigravity.configPath` to the profile's absolute
+`config/mcp_config.json` path and use `delivery = "merge"`.
+
 A client sharing a dialect needs a harness entry with `dialect`, `root`,
 `configPath`, `format` and `delivery`. A new dialect belongs in `lib/mcp/` with
 fixtures in `tests/mcp.nix`; server declarations need no changes. Catalogue data
@@ -103,6 +108,8 @@ and argument prefix.
 
 All destinations are parsed and conflicts checked before writes. A persistent
 kernel lock serializes the writer; atomic replacements preserve permissions.
+A zero-byte JSON placeholder is treated as an empty object; malformed non-empty
+JSON is rejected.
 A journal accepts pre/post-write values after interruption. Unrelated JSON
 values and TOML settings/comments survive; unchanged files retain their bytes.
 Symlinks are refused. Observed concurrent client edits abort; clients do not share

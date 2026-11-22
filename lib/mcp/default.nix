@@ -110,6 +110,8 @@
           else {httpUrl = s.url;}
         )
         // http // ms
+      else if dialect == "antigravity"
+      then common // http
       else if dialect == "kiro"
       then common // http // {disabled = !s.enabled;}
       else if dialect == "copilot"
@@ -157,7 +159,7 @@ in rec {
     dialect ? harness,
   }: let
     selected = select {inherit harness servers;};
-    visible = lib.filterAttrs (_: server: server.enabled || !(builtins.elem dialect ["claude" "gemini" "copilot" "hermes"])) selected;
+    visible = lib.filterAttrs (_: server: server.enabled || !(builtins.elem dialect ["claude" "gemini" "antigravity" "copilot" "hermes"])) selected;
   in
     lib.mapAttrs (renderServer dialect) visible;
   render = {

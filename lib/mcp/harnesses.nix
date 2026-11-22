@@ -57,6 +57,17 @@
         "gemini"
       ];
     };
+    antigravity = {
+      __pkl_class = "Harness";
+      format = "json";
+      path = "$HOME/.gemini/config/mcp_config.json";
+      root = [
+        "mcpServers"
+      ];
+      commands = [
+        "agy"
+      ];
+    };
     kiro = {
       __pkl_class = "Harness";
       format = "json";

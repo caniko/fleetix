@@ -22,6 +22,11 @@
             omp.enable = true;
             codex.enable = true;
             zed.enable = true;
+            antigravity = {
+              enable = true;
+              delivery = "merge";
+              configPath = "/home/tester/t3-profile/config/mcp_config.json";
+            };
           };
           topologyServer = {
             enable = true;
@@ -45,6 +50,7 @@
     ];
   };
   cfg = home.config;
+  targets = lib.listToAttrs (map (target: lib.nameValuePair target.name target) cfg.fleetix.mcp.manifest.targets);
 in
   assert builtins.all (a: a.assertion) cfg.assertions;
   assert cfg.programs.opencode.settings.mcp.servers.drawing.disabled;
@@ -56,7 +62,11 @@ in
   assert cfg.fleetix.mcp.servers.fleetix.args == ["mcp-serve" "/etc/fleet/Topology.pkl"];
   assert lib.hasSuffix "/bin/hello" cfg.fleetix.mcp.servers.fleetix.command;
   assert lib.hasInfix "pkl" cfg.fleetix.mcp.servers.fleetix.env.PATH;
-  assert builtins.length cfg.fleetix.mcp.manifest.targets == 1;
-  assert (builtins.head cfg.fleetix.mcp.manifest.targets).name == "codex";
+  assert builtins.attrNames targets == ["antigravity" "codex"];
+  assert targets.antigravity.path == "/home/tester/t3-profile/config/mcp_config.json";
+  assert targets.antigravity.format == "json";
+  assert targets.antigravity.root == ["mcpServers"];
+  assert targets.antigravity.commands == ["agy"];
+  assert targets.antigravity.servers.graph == {url = "http://localhost:8781/mcp";};
   assert builtins.hasAttr "fleetixMcp" cfg.home.activation;
   assert builtins.hasAttr "/home/tester/.omp/agent/mcp.json" cfg.home.file; true
