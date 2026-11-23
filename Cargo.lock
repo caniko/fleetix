@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "fleetix"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chrono",
  "clap",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "fleetix-sidecar"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "clap",
  "miette",
