@@ -173,6 +173,43 @@ pub enum Command {
     /// Query merged supply facts (see SUPPLY.md).
     #[command(subcommand)]
     Supply(SupplyCommand),
+    /// Validate and bootstrap Google OAuth client credentials.
+    #[command(subcommand)]
+    Oauth(OauthCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OauthCommand {
+    /// Google OAuth client JSON validation and GCP Drive project bootstrap.
+    #[command(subcommand)]
+    GoogleClient(GoogleClientCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GoogleClientCommand {
+    /// Validate a Google OAuth client JSON file without printing its secret.
+    Validate {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Bootstrap a Google Cloud project and enable Drive APIs through gcloud.
+    Bootstrap {
+        /// Target Google Cloud project ID (6-30 lowercase letters, digits, hyphens).
+        #[arg(long)]
+        project: String,
+        /// Human-readable display name used if the project is created.
+        #[arg(long)]
+        name: Option<String>,
+        /// Fail instead of invoking `gcloud auth login` when unauthenticated.
+        #[arg(long)]
+        no_login: bool,
+        /// Override the `gcloud` executable path.
+        #[arg(long, default_value = "gcloud")]
+        gcloud: PathBuf,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -420,6 +457,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         }
         Command::Trust(subcommand) => run_trust(subcommand).await?,
         Command::Supply(subcommand) => run_supply(subcommand).await?,
+        Command::Oauth(subcommand) => run_oauth(subcommand)?,
         Command::Validate {
             path,
             format,
@@ -1380,6 +1418,90 @@ async fn export_topology(
     )
 }
 
+fn run_oauth(subcommand: OauthCommand) -> Result<(), CliError> {
+    match subcommand {
+        OauthCommand::GoogleClient(cmd) => match cmd {
+            GoogleClientCommand::Validate { path, format } => {
+                let client =
+                    crate::oauth_client::GoogleOAuthClient::from_file(&path).map_err(|error| {
+                        let code = match error {
+                            crate::oauth_client::OAuthClientError::Io(_) => EXIT_IO,
+                            _ => EXIT_VALIDATION,
+                        };
+                        CliError::new(code, error.to_string())
+                    })?;
+                let summary = client.summary();
+                if format == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&summary).map_err(|error| CliError::new(
+                            EXIT_EVALUATION,
+                            format!("serialize OAuth client summary: {error}")
+                        ))?
+                    );
+                } else {
+                    println!("clientId: {}", summary.client_id);
+                    if let Some(project_id) = &summary.project_id {
+                        println!("projectId: {project_id}");
+                    }
+                    println!("tokenUri: {}", summary.token_uri);
+                }
+                Ok(())
+            }
+            GoogleClientCommand::Bootstrap {
+                project,
+                name,
+                no_login,
+                gcloud,
+                format,
+            } => {
+                let display_name = name.unwrap_or_else(|| project.clone());
+                let mut config =
+                    crate::oauth_client::GcpDriveBootstrapConfig::new(project, display_name);
+                config.gcloud_bin = gcloud;
+                config.interactive_login = !no_login;
+                let report =
+                    crate::oauth_client::bootstrap_gcp_drive_project(&config).map_err(|error| {
+                        let code = match error {
+                            crate::oauth_client::OAuthClientError::Validation(_) => EXIT_VALIDATION,
+                            crate::oauth_client::OAuthClientError::Io(_) => EXIT_IO,
+                            _ => EXIT_EVALUATION,
+                        };
+                        CliError::new(code, error.to_string())
+                    })?;
+                if format == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| CliError::new(
+                            EXIT_EVALUATION,
+                            format!("serialize GCP bootstrap report: {error}")
+                        ))?
+                    );
+                } else {
+                    println!("account: {}", report.account);
+                    println!(
+                        "project: {} ({})",
+                        report.project_id,
+                        if report.project_created {
+                            "created"
+                        } else {
+                            "existing"
+                        }
+                    );
+                    println!("enabledApis: {}", report.enabled_apis.join(", "));
+                    println!("audienceUrl: {}", report.console_urls.audience_url);
+                    println!(
+                        "createOAuthClientUrl: {}",
+                        report.console_urls.create_oauth_client_url
+                    );
+                    println!("credentialsUrl: {}", report.console_urls.credentials_url);
+                }
+                Ok(())
+            }
+        },
+    }
+}
+
 pub async fn main_exit(cli: Cli) -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -1546,6 +1668,45 @@ mod tests {
                 review_existing: true,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn oauth_google_client_cli_parses() {
+        let validate = Cli::try_parse_from([
+            "fleetix",
+            "oauth",
+            "google-client",
+            "validate",
+            "/tmp/client.json",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            validate.command,
+            Command::Oauth(OauthCommand::GoogleClient(GoogleClientCommand::Validate {
+                format: OutputFormat::Json,
+                ..
+            }))
+        ));
+
+        let bootstrap = Cli::try_parse_from([
+            "fleetix",
+            "oauth",
+            "google-client",
+            "bootstrap",
+            "--project",
+            "sample-drive-backup",
+            "--no-login",
+        ])
+        .unwrap();
+        assert!(matches!(
+            bootstrap.command,
+            Command::Oauth(OauthCommand::GoogleClient(GoogleClientCommand::Bootstrap {
+                no_login: true,
+                ..
+            }))
         ));
     }
 }

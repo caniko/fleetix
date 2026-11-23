@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-23
+
 ### Added
 
+- `fleetix::oauth_client` provides Google OAuth 2.0 client credential
+  validation, canonicalization (`{"installed": ...}`), Bitwarden (`rbw`) raw
+  item parsing and retrieval, prioritized resolution across explicit files,
+  encrypted stores (`SecretDecryptor`/`SecretEncryptor`), and `rbw`, private
+  `0600` materialization wiped on drop, `gcloud`-backed GCP project and Drive
+  API bootstrap (`bootstrap_gcp_drive_project`), and automated download
+  discovery/capture with secure plaintext removal. Exposes
+  `fleetix oauth google-client validate` and `bootstrap` under the `cli`
+  feature.
 - `Gpu.passthrough` reserves GPUs for VFIO guests (`GpuPassthrough`: PCI
   address, `vendor:device` ID, vendor, VBIOS source `device`/`vfct`,
   `repeatable`). Pkl, Rust validation and `lib.gpu.forHost` reject duplicate

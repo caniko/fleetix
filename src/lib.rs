@@ -12,6 +12,7 @@ pub mod management;
 pub mod mcp;
 #[cfg(feature = "mcp-server")]
 pub mod mcp_server;
+pub mod oauth_client;
 pub mod ops;
 #[cfg(feature = "pkl")]
 pub mod pkl;
