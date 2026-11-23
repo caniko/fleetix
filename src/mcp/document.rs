@@ -57,7 +57,7 @@ impl Document {
     pub(super) fn parse(format: &Format, bytes: Option<&[u8]>) -> Result<Self> {
         let text = std::str::from_utf8(bytes.unwrap_or(b"")).into_diagnostic()?;
         Ok(match format {
-            Format::Json => Self::Json(if bytes.is_none() {
+            Format::Json => Self::Json(if text.is_empty() {
                 serde_json::json!({})
             } else {
                 serde_json::from_str(text).into_diagnostic()?

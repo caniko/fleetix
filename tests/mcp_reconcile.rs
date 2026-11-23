@@ -11,6 +11,72 @@ fn manifest(path: &std::path::Path, servers: serde_json::Value) -> Manifest {
     })).unwrap()
 }
 
+fn antigravity_manifest(path: &std::path::Path, servers: serde_json::Value) -> Manifest {
+    serde_json::from_value(json!({
+        "version": 1,
+        "targets": [{"name": "antigravity", "path": path, "format": "json", "root": ["mcpServers"], "servers": servers}]
+    })).unwrap()
+}
+
+#[test]
+fn mcp_populates_empty_json_and_then_updates_only_owned_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_config.json");
+    let state = dir.path().join("state.json");
+    fs::write(&path, b"").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    }
+
+    let mut servers = json!({
+        "graph": {"url": "http://localhost/mcp"},
+        "retired": {"command": "/bin/retired"}
+    });
+    let desired = antigravity_manifest(&path, servers.clone());
+    assert_eq!(
+        reconcile(&desired, &state, false).unwrap().changed,
+        std::slice::from_ref(&path)
+    );
+    let mut output: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(output, json!({"mcpServers": servers}));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    output["mcpServers"]["manual"] = json!({"command": "/bin/manual"});
+    output["keep"] = json!(true);
+    fs::write(&path, output.to_string()).unwrap();
+    servers["graph"]["url"] = json!("https://example.test/mcp");
+    servers.as_object_mut().unwrap().remove("retired");
+    let desired = antigravity_manifest(&path, servers.clone());
+    reconcile(&desired, &state, false).unwrap();
+
+    servers["manual"] = json!({"command": "/bin/manual"});
+    let output: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(output, json!({"mcpServers": servers, "keep": true}));
+}
+
+#[test]
+fn mcp_rejects_nonempty_malformed_json_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_config.json");
+    let state = dir.path().join("state.json");
+    let desired = antigravity_manifest(&path, json!({"graph": {"command": "/bin/graph"}}));
+    for invalid in ["{\"mcpServers\":", " \n"] {
+        fs::write(&path, invalid).unwrap();
+        assert!(reconcile(&desired, &state, false).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        assert!(!state.exists());
+    }
+}
+
 #[test]
 fn mcp_reconciles_only_owned_entries_and_preserves_toml_comments() {
     let dir = tempfile::tempdir().unwrap();

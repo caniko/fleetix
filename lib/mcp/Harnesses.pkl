@@ -30,6 +30,10 @@ harnesses: Mapping<String, Harness> = new Mapping {
     path = "$HOME/.gemini/settings.json"
     commands = new Listing { "gemini" }
   }
+  ["antigravity"] = new Harness {
+    path = "$HOME/.gemini/config/mcp_config.json"
+    commands = new Listing { "agy" }
+  }
   ["kiro"] = new Harness {
     path = "$HOME/.kiro/settings/mcp.json"
     commands = new Listing { "kiro-cli" }

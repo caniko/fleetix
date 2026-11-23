@@ -17,6 +17,12 @@
       command = "/bin/private-mcp";
       harnesses = ["codex"];
     };
+    profile = {
+      command = "/bin/profile-mcp";
+      args = ["--stdio"];
+      env.DISPLAY = ":0";
+      harnesses = ["antigravity"];
+    };
   };
   render = harness: mcp.render {inherit harness servers;};
   rejects = server:
@@ -51,6 +57,21 @@ in
   assert (render "codex").mcp_servers.private.command == "/bin/private-mcp";
   assert !((render "claude").mcpServers ? drawing);
   assert (render "gemini").mcpServers.graph.httpUrl == "http://127.0.0.1:8781/mcp";
+  assert mcp.catalogue.antigravity.path == "$HOME/.gemini/config/mcp_config.json";
+  assert render "antigravity"
+  == {
+    mcpServers = {
+      profile = {
+        command = "/bin/profile-mcp";
+        args = ["--stdio"];
+        env.DISPLAY = ":0";
+      };
+      graph = {
+        url = "http://127.0.0.1:8781/mcp";
+        headers.Accept = "application/json";
+      };
+    };
+  };
   assert (render "kiro").mcpServers.drawing.disabled;
   assert (render "copilot").mcpServers.graph.tools == ["*"];
   assert (render "zed").context_servers.graph.url == "http://127.0.0.1:8781/mcp";
