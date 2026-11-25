@@ -68,3 +68,29 @@ ordinary unit restart; no drain, fence token, snapshot or offline handover exist
 An activation fence records its deadline and expires, so a dead owner cannot block
 dispatch forever; the owning attempt refreshes it while still held. Retirement
 archives survive only while their root release is outstanding.
+
+## Generic auto-healing primitives (`fleetix::healing` and `fleetix::ops`)
+
+Generic supervision and self-healing primitives live in `fleetix::healing`
+(usable with `default-features = false` and zero fleet-specific assumptions):
+
+- `healing::liveness`: PID-reuse-safe and reboot-safe `(pid, start_ticks, boot_id)`
+  verification with raw-byte Linux `/proc/<pid>/stat` parsing that fails closed
+  (`Liveness::Indeterminate`) when `/proc` cannot be verified.
+- `healing::watchdog`: multi-signal stall detector (`output_bytes`, `mtime`,
+  `cpu_ticks`, `io_bytes`, `live_processes` across process trees or cgroup v2)
+  with bounded kernel `wchan` and `cmdline` diagnostics.
+- `healing::coalesce`: order-preserving keyed last-writer-wins batching that
+  collapses stacked updates to the same key, preserves sibling keys in
+  multi-key items, excludes obsolete superseded items from solo fallback, and
+  enforces anti-starvation deferral caps.
+- `healing::retry`: bounded exponential-backoff retry and quarantine state
+  machine separating `Transient`, `Stalled`, and `Terminal` failures.
+- `healing::reconcile`: fail-closed stranded-work classifier (auto-healing
+  finished workers, unstarted non-mutating runs, interrupted drops, and stalled
+  non-mutating workers while requiring operator reconciliation whenever an
+  external mutation was dispatched without a verified outcome) plus bounded
+  interactive-priority yield fairness (`YieldTracker`).
+- `fleetix::ops`: spool inspection (`running`, `phase_exists`, `summarize`) and
+  safe recovery (`requeue`, `complete_dropping`), exposed via `fleetix ops inspect`
+  and `fleetix ops heal`.

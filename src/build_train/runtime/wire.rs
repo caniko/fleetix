@@ -1,6 +1,6 @@
 //! Bound serialization as well as socket delivery. Full failures stay in the journal.
 use super::{MAX_FRAME, Reply};
-use crate::build_train::{Fence, Goal, Graph, Outcome, Request};
+use crate::build_train::{Fence, Goal, Graph, HealReport, Outcome, Request};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -75,6 +75,8 @@ struct ReplyFrame<'a> {
     running: usize,
     error: Option<String>,
     outputs: &'a BTreeMap<Goal, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    healed: Option<&'a HealReport>,
 }
 
 pub(super) fn encode(result: &Reply) -> Result<Vec<u8>, String> {
@@ -89,6 +91,7 @@ pub(super) fn encode(result: &Reply) -> Result<Vec<u8>, String> {
         running: result.running,
         error: result.error.as_deref().map(detail),
         outputs: &result.outputs,
+        healed: result.healed.as_deref(),
     };
     let mut raw = match serialize(&frame, MAX_FRAME as usize - 1) {
         Ok(raw) => raw,
@@ -98,6 +101,7 @@ pub(super) fn encode(result: &Reply) -> Result<Vec<u8>, String> {
             let outputs = BTreeMap::new();
             let fallback = ReplyFrame {
                 outputs: &outputs,
+                healed: None,
                 // A historical fence can itself exceed the frame budget. Its
                 // exact identity remains in the journal; never truncate a token
                 // or claim the absence of a durable fence through this error.

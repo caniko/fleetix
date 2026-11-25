@@ -176,9 +176,46 @@ longer holds the fence is already released, so a retried release succeeds.
 
 A fence records its deadline (`fenceSeconds`, default 3600). Every scheduling
 tick and startup drops an expired fence and dispatch resumes, so a dead owner
-cannot block builders forever. The owning attempt refreshes the deadline while
-it still holds the fence; another attempt is refused (`builder fenced by …`).
-Choose a deadline above the expected drain and activation window.
+cannot block builders forever. Cancelling a drained fence owner also releases
+its fence immediately. The owning attempt refreshes the deadline while it still
+holds the fence; another attempt is refused (`builder fenced by …`). Choose a
+deadline above the expected drain and activation window.
+
+## Auto-healing
+
+The coordinator runs a periodic self-healing sweep (and exposes
+`fleetix build-train heal --connection PATH` / `Command::Heal` for on-demand
+sweeps with a structured `HealReport`):
+
+- **Superseded activation pruning (`autoCancelSuperseded`, default `true` in the NixOS module):**
+  pending activating requests superseded by a newer activating request for the
+  same target are automatically cancelled so obsolete closures do not consume
+  builder capacity.
+- **Abandoned held-request expiry (`heldTtlSeconds`, default `1800`):**
+  unadmitted (`Register`) requests whose caller vanished without calling `Admit`
+  are automatically cancelled so they cannot exhaust `queueLimit` or hold GC
+  roots forever.
+- **Terminal request auto-retirement (`terminalTtlSeconds`, default `3600`):**
+  terminal (`Ready`, `Failed`, `Cancelled`) requests that neither own an active
+  fence nor running work are automatically retired and their request/output GC
+  roots pruned.
+- **Orphaned & shutdown worker cancellation (`cancelOrphanedWorkers`, default `true`):**
+  when a running dispatch loses all live interested requests (or the coordinator
+  receives `SIGTERM`/`SIGINT`), the native backend cancels its worker process
+  group (`SIGINT` → `SIGKILL` drain via `nix-manager-core`) and returns the
+  interrupted node to `Pending` without poisoning shared nodes as `Failed`.
+- **Coordinator worker deadline (`workerMaxSeconds`, optional):** enforces a
+  coordinator-side ceiling per dispatch even for non-native backends.
+- **Non-wedging planner timeouts:** a timed-out planner retains its per-attempt
+  `Retry`/`Retire` safety lock until exit without starving unrelated
+  registrations behind it.
+- **Systemd liveness watchdog (`watchdogSeconds`, default `120`):** the
+  coordinator emits `READY=1`, periodic `WATCHDOG=1`, and `STOPPING=1` over
+  `$NOTIFY_SOCKET` so systemd automatically restarts a wedged coordinator.
+
+All `HealingConfig` knobs are operational lifecycle settings, omitted from
+service JSON when disabled, and do not alter the version-2 `policy_identity`
+digest.
 
 The coordinator is crash-only. The journal is a cache of scheduling state bound
 to one policy, not recovery evidence: Nix already deduplicates store outputs.

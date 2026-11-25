@@ -277,6 +277,7 @@ impl Server {
             planning_workers: 1,
             planning_timeout_seconds: 10,
             fence_seconds: 3600,
+            healing: HealingConfig::default(),
         };
         let backend = Arc::new(TestBackend::default());
         let mut server = Self {
@@ -1644,6 +1645,7 @@ fn drain_deadline_bounds_a_stalled_status_reply_and_reports_its_fence() {
                 running,
                 error: None,
                 outputs: BTreeMap::new(),
+                healed: None,
             })
             .unwrap();
             wire.push(b'\n');
@@ -2008,4 +2010,340 @@ fn client_policy_mismatch_is_typed_but_transport_failure_is_not() {
     };
     let error = absent.call(Command::Inspect).unwrap_err();
     assert!(!is_policy_changed(&error), "{error}");
+}
+
+#[derive(Default)]
+struct CancellableBackend {
+    valid: Mutex<BTreeSet<Goal>>,
+    started: Mutex<Vec<String>>,
+    cancelled: Mutex<Vec<String>>,
+    block_goals: Mutex<BTreeSet<String>>,
+}
+
+impl Backend for CancellableBackend {
+    fn plan(&self, request: &Request) -> Result<Graph, String> {
+        let mut graph = Graph::new();
+        for root in &request.roots {
+            graph.insert(
+                root.clone(),
+                Definition {
+                    output_path: format!("/store/{}", root.derivation),
+                    dependencies: BTreeSet::new(),
+                    operation: Operation::Build,
+                },
+            );
+        }
+        Ok(graph)
+    }
+
+    fn retain(&self, _: &Request, _: &Graph) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn valid(&self, goal: &Goal, _: &Definition) -> Result<bool, String> {
+        Ok(self.valid.lock().unwrap().contains(goal))
+    }
+
+    fn realise(&self, _: &Dispatch) -> Result<(), String> {
+        unreachable!("runtime should call realise_cancellable")
+    }
+
+    fn realise_cancellable(&self, dispatch: &Dispatch, cancel: &AtomicBool) -> Result<(), String> {
+        self.started
+            .lock()
+            .unwrap()
+            .push(dispatch.goal.derivation.clone());
+        while self
+            .block_goals
+            .lock()
+            .unwrap()
+            .contains(&dispatch.goal.derivation)
+        {
+            if cancel.load(Ordering::SeqCst) {
+                self.cancelled
+                    .lock()
+                    .unwrap()
+                    .push(dispatch.goal.derivation.clone());
+                return Err("cancelled by coordinator".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.valid.lock().unwrap().insert(dispatch.goal.clone());
+        Ok(())
+    }
+}
+
+#[test]
+fn auto_cancel_superseded_cancels_orphaned_worker_without_poisoning_and_completes_newer() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = Config {
+        socket: temp.path().join("runtime/coordinator.sock"),
+        state_dir: temp.path().join("state"),
+        policy: "heal-policy".into(),
+        workers: 1,
+        queue_limit: 8,
+        aging_seconds: 60,
+        planning_workers: 1,
+        planning_timeout_seconds: 10,
+        fence_seconds: 3600,
+        healing: HealingConfig {
+            auto_cancel_superseded: true,
+            cancel_orphaned_workers: true,
+            heal_interval_seconds: 1,
+            ..HealingConfig::default()
+        },
+    };
+    let backend = Arc::new(CancellableBackend::default());
+    backend.block_goals.lock().unwrap().insert("old-drv".into());
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker = std::thread::spawn({
+        let config = config.clone();
+        let backend = Arc::clone(&backend);
+        let stop = Arc::clone(&stop);
+        move || serve(config, backend, stop)
+    });
+    let client = Client {
+        socket: config.socket.clone(),
+        policy: config.policy.clone(),
+    };
+    eventually(|| client.call(Command::Inspect).is_ok());
+
+    let mut old = request("old", "atlas");
+    old.roots = BTreeSet::from([goal("old-drv")]);
+    client.call(Command::Submit(old)).unwrap();
+    eventually(|| backend.started.lock().unwrap().as_slice() == ["old-drv"]);
+
+    // Submitting a newer activation for the same target supersedes `old` and
+    // cancels its orphaned running worker so `new-drv` runs immediately.
+    let mut newer = request("new", "atlas");
+    newer.roots = BTreeSet::from([goal("new-drv")]);
+    client.call(Command::Submit(newer)).unwrap();
+
+    eventually(|| {
+        client.call(Command::Status("new".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+    assert_eq!(
+        client.call(Command::Status("old".into())).unwrap().outcome,
+        Some(Outcome::Cancelled)
+    );
+    assert_eq!(backend.cancelled.lock().unwrap().as_slice(), ["old-drv"]);
+
+    // The cancelled node was returned to Pending, never poisoned as Failed:
+    // a fresh request wanting `old-drv` succeeds once unblocked.
+    backend.block_goals.lock().unwrap().remove("old-drv");
+    let mut fresh = request("fresh", "murph");
+    fresh.roots = BTreeSet::from([goal("old-drv")]);
+    client.call(Command::Submit(fresh)).unwrap();
+    eventually(|| {
+        client
+            .call(Command::Status("fresh".into()))
+            .unwrap()
+            .outcome
+            == Some(Outcome::Ready)
+    });
+
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap().unwrap();
+}
+
+#[test]
+fn heal_command_reaps_abandoned_held_and_expired_terminal_requests() {
+    let mut server = Server::start();
+    server.shutdown();
+    server.config.healing = HealingConfig {
+        held_ttl_seconds: 1,
+        terminal_ttl_seconds: 1,
+        heal_interval_seconds: 60,
+        ..HealingConfig::default()
+    };
+    server.restart();
+    let client = server.client();
+
+    // Register a held request that is never admitted.
+    client
+        .call(Command::Register(request("abandoned", "murph")))
+        .unwrap();
+    // Backdate updated_at in journal by restarting with an aged timestamp.
+    server.shutdown();
+    let journal_path = server.config.state_dir.join("train.json");
+    let mut state: Train =
+        serde_json::from_reader(std::fs::File::open(&journal_path).unwrap()).unwrap();
+    state.touch_request("abandoned", unix_now().saturating_sub(10));
+    std::fs::write(&journal_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    server.restart();
+
+    // First heal expires the abandoned held request -> Cancelled.
+    let reply = client.call(Command::Heal).unwrap();
+    let report = reply.healed.expect("missing heal report");
+    assert_eq!(report.expired_held, vec!["abandoned"]);
+    assert_eq!(
+        client
+            .call(Command::Status("abandoned".into()))
+            .unwrap()
+            .outcome,
+        Some(Outcome::Cancelled)
+    );
+
+    // Backdate the now-terminal request and heal again -> auto-retired and roots pruned.
+    server.shutdown();
+    let mut state: Train =
+        serde_json::from_reader(std::fs::File::open(&journal_path).unwrap()).unwrap();
+    state.touch_request("abandoned", unix_now().saturating_sub(10));
+    std::fs::write(&journal_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    server.restart();
+
+    let reply = client.call(Command::Heal).unwrap();
+    let report = reply.healed.expect("missing heal report");
+    assert_eq!(report.retired_terminal, vec!["abandoned"]);
+    assert!(client.call(Command::Status("abandoned".into())).is_err());
+    assert!(
+        server
+            .backend
+            .released_requests
+            .lock()
+            .unwrap()
+            .contains(&"abandoned".to_owned())
+    );
+}
+
+#[test]
+fn coordinator_worker_deadline_and_clean_shutdown_cancel_hung_workers() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = Config {
+        socket: temp.path().join("runtime/coordinator.sock"),
+        state_dir: temp.path().join("state"),
+        policy: "deadline-policy".into(),
+        workers: 1,
+        queue_limit: 8,
+        aging_seconds: 60,
+        planning_workers: 1,
+        planning_timeout_seconds: 10,
+        fence_seconds: 3600,
+        healing: HealingConfig {
+            worker_max_seconds: 1,
+            heal_interval_seconds: 1,
+            ..HealingConfig::default()
+        },
+    };
+    let backend = Arc::new(CancellableBackend::default());
+    backend.block_goals.lock().unwrap().insert("hung".into());
+    backend
+        .block_goals
+        .lock()
+        .unwrap()
+        .insert("shutdown-hung".into());
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker = std::thread::spawn({
+        let config = config.clone();
+        let backend = Arc::clone(&backend);
+        let stop = Arc::clone(&stop);
+        move || serve(config, backend, stop)
+    });
+    let client = Client {
+        socket: config.socket.clone(),
+        policy: config.policy.clone(),
+    };
+    eventually(|| client.call(Command::Inspect).is_ok());
+
+    // 1. Worker deadline terminates hung dispatch cleanly and fails request.
+    let mut hung = request("hung-req", "atlas");
+    hung.roots = BTreeSet::from([goal("hung")]);
+    client.call(Command::Submit(hung)).unwrap();
+    eventually(|| {
+        matches!(
+            client
+                .call(Command::Status("hung-req".into()))
+                .unwrap()
+                .outcome,
+            Some(Outcome::Failed(ref msg)) if msg.contains("deadline exceeded")
+        )
+    });
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap().unwrap();
+
+    // 2. Clean shutdown cancels an in-flight hung worker immediately instead of
+    //    blocking until TimeoutStopSec, and leaves it Pending on disk. Use a
+    //    coordinator without a short worker deadline so slow CI scheduling
+    //    never races deadline failure against clean shutdown.
+    let shutdown_temp = tempfile::tempdir().unwrap();
+    let shutdown_config = Config {
+        socket: shutdown_temp.path().join("runtime/coordinator.sock"),
+        state_dir: shutdown_temp.path().join("state"),
+        healing: HealingConfig::default(),
+        ..config
+    };
+    let shutdown_stop = Arc::new(AtomicBool::new(false));
+    let shutdown_worker = std::thread::spawn({
+        let config = shutdown_config.clone();
+        let backend = Arc::clone(&backend);
+        let stop = Arc::clone(&shutdown_stop);
+        move || serve(config, backend, stop)
+    });
+    let shutdown_client = Client {
+        socket: shutdown_config.socket.clone(),
+        policy: shutdown_config.policy.clone(),
+    };
+    eventually(|| shutdown_client.call(Command::Inspect).is_ok());
+
+    let mut stopping = request("stop-req", "murph");
+    stopping.roots = BTreeSet::from([goal("shutdown-hung")]);
+    shutdown_client.call(Command::Submit(stopping)).unwrap();
+    eventually(|| {
+        backend
+            .started
+            .lock()
+            .unwrap()
+            .contains(&"shutdown-hung".to_owned())
+    });
+
+    let before = Instant::now();
+    shutdown_stop.store(true, Ordering::Relaxed);
+    shutdown_worker.join().unwrap().unwrap();
+    assert!(before.elapsed() < Duration::from_secs(5));
+
+    let state: Train = serde_json::from_reader(
+        std::fs::File::open(shutdown_config.state_dir.join("train.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        state.nodes[&goal("shutdown-hung")].state,
+        NodeState::Pending
+    );
+}
+
+#[test]
+fn timed_out_planner_does_not_starve_unrelated_registrations() {
+    let mut server = Server::start();
+    server.shutdown();
+    server.config.planning_timeout_seconds = 1;
+    server.backend.block_plan.store(true, Ordering::Relaxed);
+    *server.backend.plan_released.lock().unwrap() = false;
+    server.restart();
+    let client = server.client();
+
+    let joining = client.clone();
+    let hung = std::thread::spawn(move || joining.call(Command::Register(request("m", "murph"))));
+    eventually(|| server.backend.plan_entered.load(Ordering::Relaxed));
+    assert!(hung.join().unwrap().unwrap_err().contains("deadline"));
+
+    // While murph's timed-out planner is still draining, an unrelated request
+    // for atlas still plans and registers cleanly instead of wedging forever.
+    client
+        .call(Command::Register(request("a", "atlas")))
+        .unwrap();
+    assert_eq!(
+        client.call(Command::Status("a".into())).unwrap().outcome,
+        Some(Outcome::Pending)
+    );
+    client.call(Command::Admit("a".into())).unwrap();
+    *server.backend.released.lock().unwrap() = true;
+    server.backend.gate.notify_all();
+    eventually(|| {
+        client.call(Command::Status("a".into())).unwrap().outcome == Some(Outcome::Ready)
+    });
+
+    // Release the hung planner so shutdown drains cleanly.
+    *server.backend.plan_released.lock().unwrap() = true;
+    server.backend.plan_gate.notify_all();
+    server.shutdown();
 }

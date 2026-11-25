@@ -60,9 +60,16 @@ in
   assert service.serviceConfig.TimeoutStopSec == 21630;
   assert service.serviceConfig.MemoryMax == "1G";
   assert service.serviceConfig.KillMode == "control-group";
+  assert service.serviceConfig.NotifyAccess == "main";
+  assert service.serviceConfig.WatchdogSec == 120;
   assert service.restartIfChanged && service.stopIfChanged;
   assert service.serviceConfig.ExecStart == "${lib.getExe pkgs.hello} build-train serve --config ${config.environment.etc."fleetix-train/service.json".source}";
   assert contract.coordinator.fence_seconds == 3600;
+  assert contract.coordinator.healing.held_ttl_seconds == 1800;
+  assert contract.coordinator.healing.terminal_ttl_seconds == 3600;
+  assert contract.coordinator.healing.auto_cancel_superseded == true;
+  assert contract.coordinator.healing.cancel_orphaned_workers == true;
+  assert contract.coordinator.healing.worker_max_seconds == 0;
   assert connection.builder == "builder";
   assert connection.socket == "/run/fleetix-train/coordinator.sock";
   assert connection.gc_roots == "/nix/var/nix/gcroots/per-user/operator/fleetix-train";

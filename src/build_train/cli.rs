@@ -97,6 +97,11 @@ pub enum TrainCommand {
         #[arg(long)]
         token: String,
     },
+    /// Run an immediate auto-healing sweep (expire fences, reap abandoned requests, prune roots).
+    Heal {
+        #[arg(long)]
+        connection: PathBuf,
+    },
 }
 
 #[derive(Serialize)]
@@ -209,6 +214,7 @@ pub fn execute(command: TrainCommand) -> Result<Execution, String> {
         TrainCommand::ReleaseFence { connection, token } => {
             call(&connection, Command::ReleaseFence(token))
         }
+        TrainCommand::Heal { connection } => call(&connection, Command::Heal),
     }
 }
 

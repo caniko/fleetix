@@ -176,6 +176,29 @@ pub enum Command {
     /// Validate and bootstrap Google OAuth client credentials.
     #[command(subcommand)]
     Oauth(OauthCommand),
+    /// Inspect and safely auto-heal generic attended-operation spools.
+    #[command(subcommand)]
+    Ops(OpsCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OpsCommand {
+    /// Summarize queue depths, oldest ages, and malformed entries in a spool.
+    Inspect {
+        /// Spool root directory (defaults to the operator's ops spool).
+        #[arg(long)]
+        spool: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
+    /// Safely heal provably safe spool residue (interrupted drops) without touching live or mutating work.
+    Heal {
+        /// Spool root directory (defaults to the operator's ops spool).
+        #[arg(long)]
+        spool: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "human")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -458,6 +481,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Trust(subcommand) => run_trust(subcommand).await?,
         Command::Supply(subcommand) => run_supply(subcommand).await?,
         Command::Oauth(subcommand) => run_oauth(subcommand)?,
+        Command::Ops(subcommand) => run_ops(subcommand)?,
         Command::Validate {
             path,
             format,
@@ -659,6 +683,81 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
             )
             .await?;
             println!("Wrote {}", output.display());
+        }
+    }
+    Ok(())
+}
+
+fn run_ops(subcommand: OpsCommand) -> Result<(), CliError> {
+    match subcommand {
+        OpsCommand::Inspect { spool, format } => {
+            let root = spool.unwrap_or_else(crate::ops::default_spool_dir);
+            let summary = crate::ops::summarize(&root, chrono::Utc::now())
+                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&summary).map_err(|error| {
+                        CliError::new(EXIT_EVALUATION, format!("serialize spool summary: {error}"))
+                    })?
+                );
+            } else {
+                println!(
+                    "Spool {}: pending={} running={} dropping={} done={} malformed={}",
+                    root.display(),
+                    summary.pending,
+                    summary.running,
+                    summary.dropping,
+                    summary.done,
+                    summary.malformed.len()
+                );
+                if let Some(age) = summary.oldest_pending_age_seconds {
+                    println!("  oldest pending age: {age}s");
+                }
+                if let Some(age) = summary.oldest_running_age_seconds {
+                    println!("  oldest running age: {age}s");
+                }
+                for bad in &summary.malformed {
+                    eprintln!("  MALFORMED: {bad}");
+                }
+            }
+        }
+        OpsCommand::Heal { spool, format } => {
+            let root = spool.unwrap_or_else(crate::ops::default_spool_dir);
+            let completed_drops = crate::ops::complete_dropping(&root)
+                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
+            let summary = crate::ops::summarize(&root, chrono::Utc::now())
+                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct OpsHealOutput {
+                spool: PathBuf,
+                completed_drops: Vec<String>,
+                summary: crate::ops::SpoolSummary,
+            }
+            let output = OpsHealOutput {
+                spool: root,
+                completed_drops,
+                summary,
+            };
+            if format == OutputFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&output).map_err(|error| {
+                        CliError::new(EXIT_EVALUATION, format!("serialize heal report: {error}"))
+                    })?
+                );
+            } else {
+                println!(
+                    "Healed {}: completed_drops={} pending={} running={} dropping={} done={}",
+                    output.spool.display(),
+                    output.completed_drops.len(),
+                    output.summary.pending,
+                    output.summary.running,
+                    output.summary.dropping,
+                    output.summary.done
+                );
+            }
         }
     }
     Ok(())

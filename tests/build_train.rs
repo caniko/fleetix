@@ -650,3 +650,67 @@ fn required_restore_goal_never_falls_through_to_source_compilation() {
         assert!(matches!(train.outcome("m").unwrap(), Outcome::Failed(_)));
     }
 }
+
+#[test]
+fn auto_healing_cancels_superseded_expires_held_retires_terminal_and_requeues_cancelled() {
+    let mut train = Train::new("p".into(), 10);
+    train
+        .submit(
+            request("old", "atlas", "old"),
+            graph(&[("old", &["shared"]), ("shared", &[])]),
+            100,
+        )
+        .unwrap();
+    train
+        .submit(
+            request("new", "atlas", "new"),
+            graph(&[("new", &["shared"]), ("shared", &[])]),
+            105,
+        )
+        .unwrap();
+    assert!(train.is_superseded("old"));
+    assert!(!train.is_superseded("new"));
+
+    // Only pending superseded activations are auto-cancelled; newer stays pending.
+    let superseded = train.cancel_superseded(105);
+    assert_eq!(superseded, vec!["old"]);
+    assert_eq!(train.outcome("old").unwrap(), Outcome::Cancelled);
+    assert_eq!(train.outcome("new").unwrap(), Outcome::Pending);
+    assert!(!train.has_live_interest(&goal("old")));
+    assert!(train.has_live_interest(&goal("shared")));
+
+    // Held (unadmitted) request expires cleanly after held_ttl_seconds.
+    train
+        .register(request("held", "murph", "m"), false)
+        .unwrap();
+    train.touch_request("held", 100);
+    assert!(train.expire_held(199, 100).is_empty());
+    assert_eq!(train.expire_held(200, 100), vec!["held"]);
+    assert_eq!(train.outcome("held").unwrap(), Outcome::Cancelled);
+
+    // Terminal requests past terminal_ttl_seconds become eligible for auto-retirement.
+    assert!(train.expired_terminal(250, 100).contains(&"old".to_owned()));
+    assert!(
+        !train
+            .expired_terminal(250, 100)
+            .contains(&"held".to_owned())
+    );
+    assert!(
+        train
+            .expired_terminal(300, 100)
+            .contains(&"held".to_owned())
+    );
+
+    // Coordinator cancellation returns a running node to Pending without poisoning.
+    let shared = train.dispatch(106).unwrap().unwrap();
+    assert_eq!(shared.goal, goal("shared"));
+    assert!(train.requeue_cancelled(&shared));
+    assert_eq!(train.nodes[&goal("shared")].state, NodeState::Pending);
+    assert_eq!(train.outcome("new").unwrap(), Outcome::Pending);
+
+    // Cancelling a drained fence owner releases its fence immediately.
+    train.fence("new", 400, 3600).unwrap();
+    assert!(train.fence.is_some());
+    train.cancel("new").unwrap();
+    assert!(train.fence.is_none());
+}
