@@ -34,17 +34,38 @@
     cfg.memoryMax
   ];
   policy = builtins.hashString "sha256" (builtins.toJSON identity);
-  coordinator = {
-    inherit policy;
-    socket = "/run/${cfg.runtimeDirectory}/coordinator.sock";
-    state_dir = "/var/lib/${cfg.stateDirectory}";
-    inherit (cfg) workers;
-    queue_limit = cfg.queueLimit;
-    aging_seconds = cfg.agingSeconds;
-    planning_workers = cfg.planningWorkers;
-    planning_timeout_seconds = cfg.planningTimeoutSeconds;
-    fence_seconds = cfg.fenceSeconds;
+  healingEnabled =
+    (cfg.heldTtlSeconds or 0)
+    > 0
+    || (cfg.terminalTtlSeconds or 0) > 0
+    || (cfg.autoCancelSuperseded or false)
+    || (cfg.cancelOrphanedWorkers or false)
+    || (cfg.workerMaxSeconds or 0) > 0;
+  healing = {
+    held_ttl_seconds = cfg.heldTtlSeconds or 0;
+    terminal_ttl_seconds = cfg.terminalTtlSeconds or 0;
+    auto_cancel_superseded = cfg.autoCancelSuperseded or false;
+    cancel_orphaned_workers = cfg.cancelOrphanedWorkers or false;
+    worker_max_seconds = cfg.workerMaxSeconds or 0;
   };
+  watchdogSec = cfg.watchdogSeconds or 0;
+  coordinator =
+    {
+      inherit policy;
+      socket = "/run/${cfg.runtimeDirectory}/coordinator.sock";
+      state_dir = "/var/lib/${cfg.stateDirectory}";
+      inherit (cfg) workers;
+      queue_limit = cfg.queueLimit;
+      aging_seconds = cfg.agingSeconds;
+      planning_workers = cfg.planningWorkers;
+      planning_timeout_seconds = cfg.planningTimeoutSeconds;
+      fence_seconds = cfg.fenceSeconds;
+    }
+    // (
+      if healingEnabled
+      then {inherit healing;}
+      else {}
+    );
   serviceConfig = pkgs.writeText "fleetix-train-service.json" (builtins.toJSON {
     inherit native coordinator;
     inherit (cfg) builder;
@@ -62,17 +83,26 @@
   stateDirectoryName = lib.removePrefix "/var/lib/" coordinator.state_dir;
   unit = {
     description = "Fleetix dependency-aware shared construction";
-    serviceConfig = {
-      ExecStart = "${lib.getExe cfg.package} build-train serve --config ${serviceConfig}";
-      UMask = "0077";
-      Restart = "on-failure";
-      RestartSec = 5;
-      KillMode = "control-group";
-      TimeoutStopSec = lib.max native.timeout_seconds coordinator.planning_timeout_seconds + 30;
-      MemoryMax = cfg.memoryMax;
-      NoNewPrivileges = true;
-      PrivateTmp = true;
-    };
+    serviceConfig =
+      {
+        ExecStart = "${lib.getExe cfg.package} build-train serve --config ${serviceConfig}";
+        UMask = "0077";
+        Restart = "on-failure";
+        RestartSec = 5;
+        KillMode = "control-group";
+        TimeoutStopSec = lib.max native.timeout_seconds coordinator.planning_timeout_seconds + 30;
+        MemoryMax = cfg.memoryMax;
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+      }
+      // (
+        if watchdogSec > 0
+        then {
+          NotifyAccess = "main";
+          WatchdogSec = watchdogSec;
+        }
+        else {}
+      );
   };
 in {
   imports = [
@@ -160,6 +190,36 @@ in {
       type = lib.types.str;
       default = "1G";
       description = "Coordinator-side memory ceiling; Nix daemon builders retain external host admission.";
+    };
+    heldTtlSeconds = lib.mkOption {
+      type = lib.types.ints.between 0 86400;
+      default = 1800;
+      description = "Auto-cancel abandoned unadmitted (held) requests after this many seconds (0 disables).";
+    };
+    terminalTtlSeconds = lib.mkOption {
+      type = lib.types.ints.between 0 604800;
+      default = 3600;
+      description = "Auto-retire terminal requests and prune their GC roots after this many seconds (0 disables).";
+    };
+    autoCancelSuperseded = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Automatically cancel pending activating requests once a newer activating request arrives for the same target.";
+    };
+    cancelOrphanedWorkers = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Automatically cancel running workers whose outputs have no remaining live interested requests.";
+    };
+    workerMaxSeconds = lib.mkOption {
+      type = lib.types.ints.between 0 86400;
+      default = 0;
+      description = "Optional coordinator-side hard deadline per worker dispatch in seconds (0 defers to workerTimeoutSeconds).";
+    };
+    watchdogSeconds = lib.mkOption {
+      type = lib.types.ints.between 0 3600;
+      default = 120;
+      description = "Systemd WatchdogSec liveness window for auto-restarting a wedged coordinator (0 disables).";
     };
   };
   config = lib.mkIf cfg.enable {

@@ -424,6 +424,11 @@ impl Backend for NixBackend {
             .realise(&native_node(&dispatch.goal, &dispatch.definition))
             .map_err(|e| e.to_string())
     }
+    fn realise_cancellable(&self, dispatch: &Dispatch, cancel: &AtomicBool) -> Result<(), String> {
+        self.0
+            .realise_cancellable(&native_node(&dispatch.goal, &dispatch.definition), cancel)
+            .map_err(|e| e.to_string())
+    }
     fn prune(&self, train: &Train) -> Result<(), String> {
         let outputs: std::collections::BTreeSet<_> = train
             .nodes

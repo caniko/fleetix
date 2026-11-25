@@ -5,6 +5,7 @@ pub mod deployment;
 pub mod forge;
 mod fsutil;
 pub mod gpu;
+pub mod healing;
 #[cfg(feature = "health")]
 pub mod health;
 pub mod management;

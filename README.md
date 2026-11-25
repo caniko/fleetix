@@ -304,6 +304,31 @@ fleetix supply graph --facts facts.json --facts overlay.json
 fleetix supply budget --facts facts.json --facts overlay.json --topology Topology.pkl
 ```
 
+## Auto-healing
+
+`fleetix::healing` provides generic, fleet-agnostic self-recovery primitives
+with no extra Cargo dependencies (available even with `default-features =
+false`):
+
+- `ProcessIdentity` and `evaluate_liveness` verify PID liveness via
+  `(pid, start_ticks, boot_id)` and fail closed when `/proc` is unreadable.
+- `StallWatchdog`, `observe_process_tree`, `observe_cgroup`, and
+  `diagnose_stuck_pids` detect silent hangs by progress (logs, CPU ticks, I/O)
+  and capture kernel `wchan` + cmdline diagnostics.
+- `coalesce_keyed` collapses stacked last-writer-wins updates to the same key
+  while keeping multi-key batches and causal ordering intact.
+- `RetryPolicy`/`RetryState` add bounded exponential backoff and circuit-breaker
+  quarantine; `classify_stranded` and `YieldTracker` enforce fail-closed
+  stranded-run recovery and bounded interactive-priority yielding.
+- `sd_notify` emits systemd `READY=1`, `WATCHDOG=1`, and `STOPPING=1` datagrams
+  over `$NOTIFY_SOCKET`.
+
+`fleetix ops inspect` and `fleetix ops heal` summarize attended-operation
+spools and complete provably safe interrupted drops without touching live or
+mutating work. See [shared native construction](BUILD_TRAIN.md) for the
+coordinator's periodic auto-healing sweep, cooperative worker cancellation, and
+systemd watchdog options in `nixosModules.build-train`.
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at

@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fleetix::healing` provides generic, fleet-agnostic auto-healing primitives
+  available with `default-features = false`:
+  - `ProcessIdentity`, `ProcStat`, `Liveness`, `DeadReason`,
+    `parse_proc_stat_bytes`, `read_proc_stat`, `evaluate_liveness`,
+    `wait_channel`, `cmdline_summary`, and `descendant_pids` for PID-reuse-safe,
+    reboot-aware, fail-closed Linux process liveness and stall diagnostics.
+  - `WatchdogPolicy`, `ProgressSample`, `StallWatchdog`, `WatchdogVerdict`,
+    `observe_files`, `observe_process_tree`, `observe_cgroup`,
+    `cgroup_live_pids`, and `diagnose_stuck_pids` for progress-based stall
+    detection.
+  - `KeyedItem`, `CoalescePolicy`, `CoalescePlan`, and `coalesce_keyed` for
+    last-writer-wins collapsing of stacked keyed requests while preserving
+    multi-key siblings and causal ordering.
+  - `RetryPolicy`, `RetryState`, `FailureKind`, and `RetryDecision` for bounded
+    exponential backoff and circuit-breaker quarantine.
+  - `StrandedObservation`, `RecoveryAction`, `classify_stranded`, `YieldPolicy`,
+    `YieldDecision`, and `YieldTracker` for fail-closed stranded-run
+    reconciliation and bounded interactive-priority fairness.
+  - Zero-dependency `sd_notify` helper for systemd `READY=1`/`WATCHDOG=1`/
+    `STOPPING=1` notifications.
+- `fleetix::ops` gains `DROPPING`, `running`, `phase_exists`, atomic
+  idempotent `requeue`, `complete_dropping`, `SpoolSummary`, and `summarize`.
+  The `fleetix` CLI gains `fleetix ops inspect` and `fleetix ops heal`.
+- `fleetix::build_train` gains opt-in coordinator self-healing:
+  - `HealReport` and pure scheduler helpers (`cancel_superseded`,
+    `expire_held`, `expired_terminal`, `has_live_interest`,
+    `requeue_cancelled`), plus automatic release of a drained fence when its
+    owner cancels.
+  - `runtime::HealingConfig`, `Command::Heal`, `fleetix build-train heal`,
+    cooperative worker cancellation via `Backend::realise_cancellable`
+    (wired to `nix-manager-core 0.4.9`'s `Native::realise_cancellable`),
+    clean cancellation of orphaned/timed-out/shutting-down workers without
+    poisoning shared derivations, non-wedging timed-out planners, and periodic
+    systemd `WATCHDOG=1` heartbeats.
+  - `nixosModules.build-train` adds `heldTtlSeconds` (default `1800`),
+    `terminalTtlSeconds` (default `3600`), `autoCancelSuperseded` (default
+    `true`), `cancelOrphanedWorkers` (default `true`), `workerMaxSeconds`
+    (default `0`), and `watchdogSeconds` (default `120`, setting
+    `NotifyAccess = "main"` and `WatchdogSec`).
+
+### Changed
+
+- `build_train::RequestRecord` gains defaulted `updated_at`,
+  `build_train::runtime::Config` gains defaulted `healing` (omitted from JSON
+  when disabled), and `build_train::runtime::Reply` gains defaulted
+  `healed: Option<Box<HealReport>>`. Code that constructs these structs by
+  literal must set the new fields. Existing persisted journals and v2 policy
+  contracts stay backward compatible.
+- Optional `build-train-native` dependency `nix-manager-core` updated from
+  `0.4.2` to `0.4.9` for cooperative build cancellation.
+
 ## [0.16.0] - 2026-11-23
 
 ### Added

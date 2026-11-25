@@ -27,6 +27,8 @@ pub const SHELL_OPERATORS: &[&str] = &[
 pub const PENDING: &str = "pending";
 /// Approved and handed to the approver; never replayed automatically.
 pub const RUNNING: &str = "running";
+/// Transition state for an in-progress drop; safe to complete after a crash.
+pub const DROPPING: &str = "dropping";
 /// Outcome records, with the output requesters read back.
 pub const DONE: &str = "done";
 /// Watcher locks of requesters waiting for an outcome.
@@ -293,7 +295,16 @@ fn ignored(path: &Path, error: &miette::Report) -> String {
 /// Pending transactions, oldest first. Invalid files are reported and never
 /// run: they stay on disk for the operator to inspect.
 pub fn pending(spool: &Path, host: Option<&str>) -> Result<Vec<Op>> {
-    let dir = spool.join(PENDING);
+    list_phase(spool, PENDING, host)
+}
+
+/// Running transactions, oldest first. Invalid files are reported and skipped.
+pub fn running(spool: &Path, host: Option<&str>) -> Result<Vec<Op>> {
+    list_phase(spool, RUNNING, host)
+}
+
+fn list_phase(spool: &Path, phase: &str, host: Option<&str>) -> Result<Vec<Op>> {
+    let dir = spool.join(phase);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -321,6 +332,209 @@ pub fn pending(spool: &Path, host: Option<&str>) -> Result<Vec<Op>> {
     }
     ops.sort_by(|a, b| (&a.created, &a.id).cmp(&(&b.created, &b.id)));
     Ok(ops)
+}
+
+/// Whether `spool/<state>/<id>.json` currently exists.
+pub fn phase_exists(spool: &Path, state: &str, id: &str) -> Result<bool> {
+    spool_path(spool, state, id)?
+        .try_exists()
+        .into_diagnostic()
+        .wrap_err_with(|| format!("check {state}/{id}"))
+}
+
+/// Move a non-terminal transaction back from `running/` to `pending/`.
+///
+/// Refuses to requeue if a `done/` record already exists so settled work is
+/// never replayed. Returns `Ok(false)` when the `running/` file is already
+/// absent (idempotent).
+pub fn requeue(spool: &Path, id: &str) -> Result<bool> {
+    if phase_exists(spool, DONE, id)? {
+        return Err(miette!("cannot requeue {id}: done record already exists"));
+    }
+    let from = spool_path(spool, RUNNING, id)?;
+    if !from
+        .try_exists()
+        .into_diagnostic()
+        .wrap_err_with(|| format!("check {}", from.display()))?
+    {
+        return Ok(false);
+    }
+    // Validate the payload before placing it back into pending/.
+    let _ = load(&from)?;
+    let pending_dir = spool.join(PENDING);
+    std::fs::create_dir_all(&pending_dir)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("create {}", pending_dir.display()))?;
+    let to = spool_path(spool, PENDING, id)?;
+    if to
+        .try_exists()
+        .into_diagnostic()
+        .wrap_err_with(|| format!("check {}", to.display()))?
+    {
+        return Err(miette!(
+            "cannot requeue {id}: pending record already exists"
+        ));
+    }
+    std::fs::rename(&from, &to)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("move {} to {}", from.display(), to.display()))?;
+    #[cfg(unix)]
+    {
+        for dir in [pending_dir, spool.join(RUNNING)] {
+            if let Ok(handle) = std::fs::File::open(&dir) {
+                let _ = handle.sync_all();
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Complete interrupted drops left in `dropping/` by removing valid `.json`
+/// payloads whose `done/` record is absent or already written.
+///
+/// Returns the sorted list of recovered transaction IDs.
+pub fn complete_dropping(spool: &Path) -> Result<Vec<String>> {
+    let dir = spool.join(DROPPING);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error)
+                .into_diagnostic()
+                .wrap_err_with(|| format!("read {}", dir.display()));
+        }
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let path = entry
+            .into_diagnostic()
+            .wrap_err_with(|| format!("read {}", dir.display()))?
+            .path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| valid_id(stem))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        match std::fs::remove_file(&path) {
+            Ok(()) => ids.push(id),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("remove {}", path.display()));
+            }
+        }
+    }
+    #[cfg(unix)]
+    if !ids.is_empty() {
+        if let Ok(handle) = std::fs::File::open(&dir) {
+            let _ = handle.sync_all();
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+/// Generic health summary of an ops/train spool directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpoolSummary {
+    pub pending: usize,
+    pub running: usize,
+    pub dropping: usize,
+    pub done: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub malformed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_pending_age_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_running_age_seconds: Option<u64>,
+}
+
+/// Inspect a spool's queue counts, ages, and malformed entries without mutating it.
+pub fn summarize(spool: &Path, now: chrono::DateTime<chrono::Utc>) -> Result<SpoolSummary> {
+    let mut summary = SpoolSummary::default();
+    let scan_ops =
+        |phase: &str, malformed: &mut Vec<String>, oldest_age: &mut Option<u64>| -> Result<usize> {
+            let dir = spool.join(phase);
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+                Err(error) => {
+                    return Err(error)
+                        .into_diagnostic()
+                        .wrap_err_with(|| format!("read {}", dir.display()));
+                }
+            };
+            let mut count = 0usize;
+            for entry in entries {
+                let path = entry
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("read {}", dir.display()))?
+                    .path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                match load(&path) {
+                    Ok(op) => {
+                        count += 1;
+                        if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&op.created) {
+                            let age = now
+                                .signed_duration_since(created.with_timezone(&chrono::Utc))
+                                .num_seconds()
+                                .max(0) as u64;
+                            *oldest_age = Some(oldest_age.map_or(age, |prev| prev.max(age)));
+                        }
+                    }
+                    Err(error) => malformed.push(ignored(&path, &error)),
+                }
+            }
+            Ok(count)
+        };
+
+    summary.pending = scan_ops(
+        PENDING,
+        &mut summary.malformed,
+        &mut summary.oldest_pending_age_seconds,
+    )?;
+    summary.running = scan_ops(
+        RUNNING,
+        &mut summary.malformed,
+        &mut summary.oldest_running_age_seconds,
+    )?;
+    let count_json = |phase: &str| -> Result<usize> {
+        let dir = spool.join(phase);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => {
+                return Err(error)
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("read {}", dir.display()));
+            }
+        };
+        let mut count = 0usize;
+        for entry in entries {
+            let path = entry
+                .into_diagnostic()
+                .wrap_err_with(|| format!("read {}", dir.display()))?
+                .path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                count += 1;
+            }
+        }
+        Ok(count)
+    };
+    summary.dropping = count_json(DROPPING)?;
+    summary.done = count_json(DONE)?;
+    summary.malformed.sort();
+    Ok(summary)
 }
 
 impl From<&Op> for crate::status::PendingOp {

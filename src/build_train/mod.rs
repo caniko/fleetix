@@ -101,6 +101,40 @@ pub struct RequestRecord {
     /// another request explicitly retries a shared failed goal.
     #[serde(default)]
     pub preparation_error: Option<String>,
+    /// Unix timestamp of the last lifecycle transition for TTL auto-reaping.
+    /// `0` in pre-0.17 journals is initialized to startup time on reconcile.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub updated_at: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Summary of actions taken during an automatic or on-demand healing sweep.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealReport {
+    pub expired_fences: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled_superseded: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expired_held: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_terminal: Vec<String>,
+    pub cancelled_orphan_dispatches: usize,
+    pub timed_out_dispatches: usize,
+}
+
+impl HealReport {
+    pub fn is_empty(&self) -> bool {
+        self.expired_fences == 0
+            && self.cancelled_superseded.is_empty()
+            && self.expired_held.is_empty()
+            && self.retired_terminal.is_empty()
+            && self.cancelled_orphan_dispatches == 0
+            && self.timed_out_dispatches == 0
+    }
 }
 
 fn prepared_by_default() -> bool {
@@ -210,6 +244,7 @@ impl Train {
                 admitted,
                 prepared: false,
                 preparation_error: None,
+                updated_at: 0,
             },
         );
         self.sequence = sequence;
@@ -277,6 +312,7 @@ impl Train {
             .ok_or("missing prepared request")?;
         record.prepared = true;
         record.preparation_error = None;
+        record.updated_at = now;
         Ok(())
     }
 
@@ -345,6 +381,17 @@ impl Train {
             .get_mut(attempt)
             .ok_or("unknown request")?
             .cancelled = true;
+        // If this attempt already holds the activation fence and no workers are
+        // running, release the fence immediately so cancelling an activation
+        // does not leave dispatch frozen until fence expiry.
+        if self.drained()
+            && self
+                .fence
+                .as_ref()
+                .is_some_and(|fence| fence.attempt == attempt)
+        {
+            self.fence = None;
+        }
         Ok(())
     }
 
@@ -684,6 +731,153 @@ impl Train {
             return Err("construction is not ready".into());
         }
         Ok(())
+    }
+
+    /// Record a lifecycle timestamp on a request for TTL auto-reaping.
+    pub fn touch_request(&mut self, attempt: &str, now: u64) {
+        if let Some(record) = self.requests.get_mut(attempt) {
+            record.updated_at = now;
+        }
+    }
+
+    /// Stamp legacy v2 journal records that have `updated_at == 0` so they do
+    /// not immediately expire on upgrade.
+    pub fn touch_missing_timestamps(&mut self, now: u64) {
+        for record in self.requests.values_mut() {
+            if record.updated_at == 0 {
+                record.updated_at = now;
+            }
+        }
+    }
+
+    /// Whether an activating request has been superseded by a newer activating
+    /// request for the same target.
+    pub fn is_superseded(&self, attempt: &str) -> bool {
+        let Some(record) = self.requests.get(attempt) else {
+            return false;
+        };
+        record.request.activates
+            && self
+                .latest_activation
+                .get(&record.request.target)
+                .map(String::as_str)
+                != Some(attempt)
+    }
+
+    /// Auto-cancel pending activating requests that are already superseded by a
+    /// newer activating request for the same target. Already-ready requests are
+    /// left intact for retirement.
+    pub fn cancel_superseded(&mut self, now: u64) -> Vec<String> {
+        let superseded: Vec<String> = self
+            .requests
+            .keys()
+            .filter(|id| self.is_superseded(id) && self.outcome(id).ok() == Some(Outcome::Pending))
+            .cloned()
+            .collect();
+        for id in &superseded {
+            let _ = self.cancel(id);
+            self.touch_request(id, now);
+        }
+        superseded
+    }
+
+    /// Auto-cancel abandoned held (`!admitted && !cancelled`) requests whose
+    /// caller never admitted them within `ttl_seconds`.
+    pub fn expire_held(&mut self, now: u64, ttl_seconds: u64) -> Vec<String> {
+        if ttl_seconds == 0 {
+            return Vec::new();
+        }
+        let expired: Vec<String> = self
+            .requests
+            .iter()
+            .filter(|(id, record)| {
+                !record.admitted
+                    && !record.cancelled
+                    && record.updated_at > 0
+                    && now.saturating_sub(record.updated_at) >= ttl_seconds
+                    && self.outcome(id).ok() == Some(Outcome::Pending)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            let _ = self.cancel(id);
+            self.touch_request(id, now);
+        }
+        expired
+    }
+
+    /// List terminal (`Ready`, `Failed`, `Cancelled`) requests older than
+    /// `ttl_seconds` that neither own the active fence nor have running nodes,
+    /// so the coordinator can auto-retire them and prune their GC roots.
+    pub fn expired_terminal(&self, now: u64, ttl_seconds: u64) -> Vec<String> {
+        if ttl_seconds == 0 {
+            return Vec::new();
+        }
+        self.requests
+            .iter()
+            .filter(|(id, record)| {
+                record.updated_at > 0
+                    && now.saturating_sub(record.updated_at) >= ttl_seconds
+                    && self
+                        .fence
+                        .as_ref()
+                        .is_none_or(|fence| fence.attempt != **id)
+                    && self
+                        .outcome(id)
+                        .ok()
+                        .is_some_and(|outcome| outcome != Outcome::Pending)
+                    && self.retained_graph(id).ok().is_some_and(|graph| {
+                        !graph
+                            .keys()
+                            .any(|goal| matches!(self.nodes[goal].state, NodeState::Running { .. }))
+                    })
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Whether at least one admitted, prepared, pending request still needs
+    /// `goal` (or any sibling output of the same derivation for a build).
+    pub fn has_live_interest(&self, goal: &Goal) -> bool {
+        let is_build = self
+            .nodes
+            .get(goal)
+            .is_some_and(|node| node.definition.operation == Operation::Build);
+        for (id, record) in &self.requests {
+            if !record.admitted || !record.prepared || record.cancelled {
+                continue;
+            }
+            if self.outcome(id).ok() != Some(Outcome::Pending) {
+                continue;
+            }
+            let needed = self.needed(&record.request.roots);
+            if needed.contains(goal)
+                || (is_build
+                    && needed
+                        .iter()
+                        .any(|candidate| candidate.derivation == goal.derivation))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Return a running dispatch back to `Pending` when cancelled by the
+    /// coordinator (shutdown or orphaned-work cancellation), avoiding poisoning
+    /// shared nodes with `NodeState::Failed`.
+    pub fn requeue_cancelled(&mut self, dispatch: &Dispatch) -> bool {
+        if let Some(node) = self.nodes.get_mut(&dispatch.goal) {
+            if node.state
+                == (NodeState::Running {
+                    serial: dispatch.serial,
+                })
+            {
+                node.state = NodeState::Pending;
+                return true;
+            }
+        }
+        false
     }
 }
 

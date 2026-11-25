@@ -55,6 +55,13 @@ pub trait Backend: Send + Sync + 'static {
     }
     fn valid(&self, goal: &Goal, definition: &Definition) -> Result<bool, String>;
     fn realise(&self, dispatch: &Dispatch) -> Result<(), String>;
+    /// Cooperative cancellable realization. Backends that own child process
+    /// groups override this so shutdown, orphaned-work pruning, and worker
+    /// deadlines terminate hung builds promptly instead of waiting hours.
+    fn realise_cancellable(&self, dispatch: &Dispatch, cancel: &AtomicBool) -> Result<(), String> {
+        let _ = cancel;
+        self.realise(dispatch)
+    }
     /// Release only this request's roots; other owners must retain their own pins.
     /// Backends without request-scoped roots conservatively retain them.
     fn release(&self, _request: &Request, _graph: &Graph) -> Result<(), String> {
@@ -65,6 +72,67 @@ pub trait Backend: Send + Sync + 'static {
     /// their owners.
     fn prune(&self, _train: &Train) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// Optional lifecycle auto-healing settings for the build-train coordinator.
+///
+/// Zero/false values disable each individual guard so existing tests and
+/// v2 service contracts retain exact historical behavior until opted in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealingConfig {
+    /// Auto-cancel abandoned unadmitted (held) requests after this many seconds (`0` disables).
+    #[serde(default)]
+    pub held_ttl_seconds: u64,
+    /// Auto-retire terminal requests and prune their GC roots after this many seconds (`0` disables).
+    #[serde(default)]
+    pub terminal_ttl_seconds: u64,
+    /// Automatically cancel pending activating requests superseded by a newer
+    /// activating request for the same target.
+    #[serde(default)]
+    pub auto_cancel_superseded: bool,
+    /// Automatically cancel running workers whose outputs no longer have any
+    /// live interested request.
+    #[serde(default)]
+    pub cancel_orphaned_workers: bool,
+    /// Optional coordinator-side hard deadline per worker dispatch (`0` disables).
+    #[serde(default)]
+    pub worker_max_seconds: u64,
+    /// How often the coordinator runs background healing sweeps (`0` defaults to 5 s).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub heal_interval_seconds: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+impl HealingConfig {
+    /// Whether every auto-healing knob is at its disabled default.
+    pub fn is_disabled(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Common-sense production auto-healing defaults for deployed coordinators.
+    pub const fn recommended() -> Self {
+        Self {
+            held_ttl_seconds: 1800,
+            terminal_ttl_seconds: 3600,
+            auto_cancel_superseded: true,
+            cancel_orphaned_workers: true,
+            worker_max_seconds: 0,
+            heal_interval_seconds: 5,
+        }
+    }
+
+    fn sweep_interval(&self) -> Duration {
+        let secs = if self.heal_interval_seconds == 0 {
+            5
+        } else {
+            self.heal_interval_seconds
+        };
+        Duration::from_secs(secs)
     }
 }
 
@@ -87,6 +155,9 @@ pub struct Config {
     /// Activation fence lifetime. An expired fence no longer closes dispatch.
     #[serde(default = "default_fence_seconds")]
     pub fence_seconds: u64,
+    /// Optional automatic self-healing policy (omitted from JSON when disabled).
+    #[serde(default, skip_serializing_if = "HealingConfig::is_disabled")]
+    pub healing: HealingConfig,
 }
 
 fn default_planning_workers() -> usize {
@@ -118,6 +189,7 @@ pub enum Command {
     ReleaseFence(String),
     AuthorizeActivation(String),
     Inspect,
+    Heal,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -137,6 +209,8 @@ pub struct Reply {
     pub running: usize,
     pub error: Option<String>,
     pub outputs: BTreeMap<Goal, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healed: Option<Box<HealReport>>,
 }
 
 /// Stateless library client. Every reconnect validates protocol and policy.
@@ -728,6 +802,7 @@ pub fn serve(
         }
     }
     train.reconcile(&valid);
+    train.touch_missing_timestamps(now());
     save(&config, &train)?;
     backend.prune(&train)?;
     if config.socket.exists() {
@@ -745,6 +820,7 @@ pub fn serve(
     fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o600))
         .map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let _ = crate::healing::sd_notify("READY=1");
     let (completed_tx, completed_rx) =
         mpsc::channel::<(Dispatch, Result<(), String>, BTreeSet<Goal>)>();
     let (planned_tx, planned_rx) = mpsc::channel::<(String, Preparation)>();
@@ -752,11 +828,48 @@ pub fn serve(
     let mut waiters: BTreeMap<String, Vec<UnixStream>> = BTreeMap::new();
     let mut incoming = Vec::<ipc::Incoming>::new();
     let mut outgoing = Vec::<ipc::Outgoing>::new();
-    let mut workers = Vec::new();
+    let mut workers: Vec<ActiveWorker> = Vec::new();
+    let mut last_heal = std::time::Instant::now();
+    let mut last_watchdog = std::time::Instant::now();
+    let mut shutdown_signalled = false;
     while !stop.load(Ordering::Relaxed) || train.running() != 0 || !planners.is_empty() {
+        if last_watchdog.elapsed() >= Duration::from_secs(15) {
+            let _ = crate::healing::sd_notify("WATCHDOG=1");
+            last_watchdog = std::time::Instant::now();
+        }
+        if stop.load(Ordering::Relaxed) && !shutdown_signalled {
+            shutdown_signalled = true;
+            let _ = crate::healing::sd_notify("STOPPING=1");
+            for worker in &mut workers {
+                worker.cancel.store(true, Ordering::SeqCst);
+                worker.cancelled_by_coordinator = true;
+            }
+        }
         // A fence must never outlive its owner's deadline and block dispatch.
         if train.expire_fence(now()) {
             save(&config, &train)?;
+        }
+        if !stop.load(Ordering::Relaxed) && last_heal.elapsed() >= config.healing.sweep_interval() {
+            let _ = heal_train(
+                &config,
+                &mut train,
+                backend.as_ref(),
+                &planners,
+                &mut workers,
+            )?;
+            last_heal = std::time::Instant::now();
+        }
+        if !stop.load(Ordering::Relaxed) && config.healing.worker_max_seconds > 0 {
+            let limit = Duration::from_secs(config.healing.worker_max_seconds);
+            for worker in &mut workers {
+                if !worker.cancelled_by_coordinator
+                    && !worker.timed_out_by_coordinator
+                    && worker.started.elapsed() >= limit
+                {
+                    worker.cancel.store(true, Ordering::SeqCst);
+                    worker.timed_out_by_coordinator = true;
+                }
+            }
         }
         while let Ok((attempt, receipt)) = planned_rx.try_recv() {
             let planner = planners.remove(&attempt).ok_or("unknown planner receipt")?;
@@ -798,16 +911,16 @@ pub fn serve(
                         Ok(())
                     }),
                     Preparation::Retained(result) => result.and_then(|()| {
-                        next.requests
-                            .get_mut(&attempt)
-                            .ok_or("missing request")?
-                            .prepared = true;
+                        let record = next.requests.get_mut(&attempt).ok_or("missing request")?;
+                        record.prepared = true;
+                        record.updated_at = now();
                         Ok(())
                     }),
                 };
                 if let Err(error) = result {
                     next = train.clone();
                     next.preparation_failed(&attempt, error)?;
+                    next.touch_request(&attempt, now());
                 }
                 if !planners.contains_key(&attempt) {
                     save(&config, &next)?;
@@ -827,6 +940,7 @@ pub fn serve(
                     attempt,
                     "graph preparation deadline exceeded; retry after the planner exits".into(),
                 )?;
+                train.touch_request(attempt, now());
                 save(&config, &train)?;
                 flush_waiters(&config, &train, &mut waiters, &mut outgoing, attempt)?;
             }
@@ -834,10 +948,50 @@ pub fn serve(
         // Journal a turn's completions once: the journal holds every graph, so a
         // save per completion stalls the loop past client IO deadlines.
         let (mut completed, mut failed) = (false, false);
+        let pending_before: BTreeSet<String> = if config.healing.terminal_ttl_seconds > 0 {
+            train
+                .requests
+                .keys()
+                .filter(|id| train.outcome(id).ok() == Some(Outcome::Pending))
+                .cloned()
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         while let Ok((dispatch, result, valid)) = completed_rx.try_recv() {
             completed = true;
-            failed |= result.is_err();
-            train.finish(&dispatch, result);
+            let worker_state = workers
+                .iter()
+                .position(|w| {
+                    w.dispatch.goal == dispatch.goal && w.dispatch.serial == dispatch.serial
+                })
+                .map(|index| workers.remove(index));
+            let (cancelled_by_coordinator, timed_out_by_coordinator) = match worker_state {
+                Some(worker) => {
+                    let _ = worker.handle.join();
+                    (
+                        worker.cancelled_by_coordinator,
+                        worker.timed_out_by_coordinator,
+                    )
+                }
+                None => (false, false),
+            };
+            if result.is_err() && cancelled_by_coordinator && !valid.contains(&dispatch.goal) {
+                // Coordinator-initiated teardown (shutdown or orphaned work)
+                // returns the node to Pending rather than poisoning shared work.
+                train.requeue_cancelled(&dispatch);
+            } else {
+                let final_result = if timed_out_by_coordinator {
+                    match result {
+                        Ok(()) => Ok(()),
+                        Err(err) => Err(format!("coordinator worker deadline exceeded: {err}")),
+                    }
+                } else {
+                    result
+                };
+                failed |= final_result.is_err();
+                train.finish(&dispatch, final_result);
+            }
             // One native builder may have produced multiple selected outputs.
             // Store evidence, rather than the worker's exit code, satisfies them.
             for goal in valid {
@@ -847,6 +1001,18 @@ pub fn serve(
             }
         }
         if completed {
+            if !pending_before.is_empty() {
+                let ts = now();
+                for id in pending_before {
+                    if train
+                        .outcome(&id)
+                        .ok()
+                        .is_some_and(|outcome| outcome != Outcome::Pending)
+                    {
+                        train.touch_request(&id, ts);
+                    }
+                }
+            }
             save(&config, &train)?;
         }
         if failed {
@@ -854,7 +1020,7 @@ pub fn serve(
             // outputs; nothing else checks them until their own dispatch.
             backend.prune(&train)?;
         }
-        workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
+        workers.retain(|worker| !worker.handle.is_finished());
         outgoing.retain_mut(ipc::Outgoing::pending);
         waiters.retain(|_, streams| {
             streams.retain(ipc::connected);
@@ -898,6 +1064,18 @@ pub fn serve(
                                 "incompatible coordinator execution policy; a foreign journal is discarded at startup".into(),
                             );
                         }
+                        if matches!(envelope.command, Command::Heal) {
+                            let report = heal_train(
+                                &config,
+                                &mut train,
+                                backend.as_ref(),
+                                &planners,
+                                &mut workers,
+                            )?;
+                            let mut response = reply(&config, &train, None, None);
+                            response.healed = Some(Box::new(report));
+                            return Ok((response, None));
+                        }
                         let subject = match &envelope.command {
                             Command::Submit(request) | Command::Register(request) => {
                                 Some(request.attempt.clone())
@@ -916,8 +1094,25 @@ pub fn serve(
                         }) {
                             return Err("too many waiting registration clients".into());
                         }
-                        apply(&config, &mut train, backend.as_ref(), envelope.command)
-                            .map(|result| (result, subject))
+                        let is_cancel = matches!(envelope.command, Command::Cancel(_));
+                        let is_intake = matches!(
+                            envelope.command,
+                            Command::Submit(_) | Command::Register(_)
+                        );
+                        let applied =
+                            apply(&config, &mut train, backend.as_ref(), envelope.command)?;
+                        if is_intake && config.healing.auto_cancel_superseded {
+                            let cancelled = train.cancel_superseded(now());
+                            if !cancelled.is_empty() {
+                                save(&config, &train)?;
+                                if config.healing.cancel_orphaned_workers {
+                                    cancel_orphaned_workers(&train, &mut workers);
+                                }
+                            }
+                        } else if is_cancel && config.healing.cancel_orphaned_workers {
+                            cancel_orphaned_workers(&train, &mut workers);
+                        }
+                        Ok((applied, subject))
                     });
                 let mut endpoint = Some(connection.stream);
                 let reply = match result {
@@ -941,6 +1136,7 @@ pub fn serve(
                         running: train.running(),
                         error: Some(error),
                         outputs: BTreeMap::new(),
+                        healed: None,
                     },
                 };
                 if let Some(stream) = endpoint {
@@ -954,7 +1150,19 @@ pub fn serve(
                     flush_waiters(&config, &train, &mut waiters, &mut outgoing, &attempt)?;
                 }
             }
-            while planners.len() < config.planning_workers {
+            // A timed-out planner stays in `planners` to block premature Retry/Retire
+            // of its own attempt, but must not permanently starve unrelated requests.
+            let planner_cap = config
+                .planning_workers
+                .saturating_mul(2)
+                .max(config.planning_workers);
+            while planners
+                .values()
+                .filter(|planner| !planner.timed_out)
+                .count()
+                < config.planning_workers
+                && planners.len() < planner_cap
+            {
                 let attempt = train
                     .requests
                     .iter()
@@ -1000,6 +1208,8 @@ pub fn serve(
                 save(&config, &train)?; // Receipt exists before any worker starts.
                 let backend = Arc::clone(&backend);
                 let tx = completed_tx.clone();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let worker_cancel = Arc::clone(&cancel);
                 let siblings: Graph = train
                     .nodes
                     .iter()
@@ -1007,12 +1217,13 @@ pub fn serve(
                     .map(|(goal, node)| (goal.clone(), node.definition.clone()))
                     .collect();
                 let reserved = reservation(&train, &dispatch.goal, &dispatch.definition);
-                workers.push(thread::spawn(move || {
+                let tracked_dispatch = dispatch.clone();
+                let handle = thread::spawn(move || {
                     let (result, valid) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut result = backend
-                                .reserve(&reserved)
-                                .and_then(|()| backend.realise(&dispatch));
+                            let mut result = backend.reserve(&reserved).and_then(|()| {
+                                backend.realise_cancellable(&dispatch, &worker_cancel)
+                            });
                             let mut valid = BTreeSet::new();
                             for (goal, definition) in siblings {
                                 match backend.valid(&goal, &definition) {
@@ -1034,7 +1245,15 @@ pub fn serve(
                             (Err("backend worker panicked".into()), BTreeSet::new())
                         });
                     let _ = tx.send((dispatch, result, valid));
-                }));
+                });
+                workers.push(ActiveWorker {
+                    dispatch: tracked_dispatch,
+                    handle,
+                    cancel,
+                    started: std::time::Instant::now(),
+                    cancelled_by_coordinator: false,
+                    timed_out_by_coordinator: false,
+                });
             }
         }
         thread::sleep(Duration::from_millis(10));
@@ -1047,7 +1266,7 @@ pub fn serve(
         thread::sleep(Duration::from_millis(10));
     }
     for worker in workers {
-        let _ = worker.join();
+        let _ = worker.handle.join();
     }
     // The lease anchor is deliberately retained.
     fs::remove_file(&config.socket).map_err(|e| e.to_string())?;
@@ -1057,6 +1276,93 @@ pub fn serve(
     FileExt::unlock(&socket_lease).map_err(|e| e.to_string())?;
     FileExt::unlock(&lease).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+struct ActiveWorker {
+    dispatch: Dispatch,
+    handle: thread::JoinHandle<()>,
+    cancel: Arc<AtomicBool>,
+    started: std::time::Instant,
+    cancelled_by_coordinator: bool,
+    timed_out_by_coordinator: bool,
+}
+
+fn cancel_orphaned_workers(train: &Train, workers: &mut [ActiveWorker]) -> usize {
+    let mut cancelled = 0;
+    for worker in workers.iter_mut() {
+        if !worker.cancelled_by_coordinator
+            && !worker.timed_out_by_coordinator
+            && !train.has_live_interest(&worker.dispatch.goal)
+        {
+            worker.cancel.store(true, Ordering::SeqCst);
+            worker.cancelled_by_coordinator = true;
+            cancelled += 1;
+        }
+    }
+    cancelled
+}
+
+fn heal_train(
+    config: &Config,
+    train: &mut Train,
+    backend: &dyn Backend,
+    planners: &BTreeMap<String, Planner>,
+    workers: &mut [ActiveWorker],
+) -> Result<HealReport, String> {
+    let ts = now();
+    let mut report = HealReport::default();
+    let mut mutated = false;
+
+    if train.expire_fence(ts) {
+        report.expired_fences += 1;
+        mutated = true;
+    }
+    if config.healing.auto_cancel_superseded {
+        let cancelled = train.cancel_superseded(ts);
+        if !cancelled.is_empty() {
+            report.cancelled_superseded = cancelled;
+            mutated = true;
+        }
+    }
+    if config.healing.held_ttl_seconds > 0 {
+        let expired = train.expire_held(ts, config.healing.held_ttl_seconds);
+        if !expired.is_empty() {
+            report.expired_held = expired;
+            mutated = true;
+        }
+    }
+    if mutated {
+        save(config, train)?;
+    }
+    if config.healing.terminal_ttl_seconds > 0 {
+        let to_retire: Vec<String> = train
+            .expired_terminal(ts, config.healing.terminal_ttl_seconds)
+            .into_iter()
+            .filter(|id| !planners.contains_key(id))
+            .collect();
+        for id in to_retire {
+            if retire(config, train, backend, &id).is_ok() {
+                report.retired_terminal.push(id);
+            }
+        }
+    }
+    if config.healing.cancel_orphaned_workers {
+        report.cancelled_orphan_dispatches = cancel_orphaned_workers(train, workers);
+    }
+    if config.healing.worker_max_seconds > 0 {
+        let limit = Duration::from_secs(config.healing.worker_max_seconds);
+        for worker in workers.iter_mut() {
+            if !worker.cancelled_by_coordinator
+                && !worker.timed_out_by_coordinator
+                && worker.started.elapsed() >= limit
+            {
+                worker.cancel.store(true, Ordering::SeqCst);
+                worker.timed_out_by_coordinator = true;
+                report.timed_out_dispatches += 1;
+            }
+        }
+    }
+    Ok(report)
 }
 
 fn now() -> u64 {
@@ -1129,6 +1435,7 @@ fn apply(
                 }
                 backend.validate_request(&request)?;
                 next.register(request.clone(), !held)?;
+                next.touch_request(&request.attempt, now());
                 // Intake owns source/derivation roots too. Validate and journal
                 // its immutable identity before retention can create any root;
                 // a partial retention failure remains a known terminal request.
@@ -1136,6 +1443,7 @@ fn apply(
                 *train = next.clone();
                 if let Err(error) = backend.retain(&request, &Graph::new()) {
                     next.preparation_failed(&request.attempt, error.clone())?;
+                    next.touch_request(&request.attempt, now());
                     save(config, &next)?;
                     *train = next;
                     return Err(error);
@@ -1150,7 +1458,10 @@ fn apply(
             outcome = Some(next.outcome(&request.attempt)?);
         }
         Command::Status(attempt) => outcome = Some(next.outcome(&attempt)?),
-        Command::Admit(attempt) => next.admit(&attempt)?,
+        Command::Admit(attempt) => {
+            next.admit(&attempt)?;
+            next.touch_request(&attempt, now());
+        }
         Command::Retry(attempt) => {
             if next.outcome(&attempt)? != Outcome::Pending
                 && active_requests(&next)? >= config.queue_limit
@@ -1162,9 +1473,11 @@ fn apply(
                 &next.retained_graph(&attempt)?,
             )?;
             next.retry(&attempt)?;
+            next.touch_request(&attempt, now());
         }
         Command::Cancel(attempt) => {
             next.cancel(&attempt)?;
+            next.touch_request(&attempt, now());
             outcome = Some(next.outcome(&attempt)?);
         }
         Command::Fence(attempt) => {
@@ -1173,7 +1486,7 @@ fn apply(
         Command::ReleaseFence(token) => next.release_fence(&token)?,
         Command::AuthorizeActivation(attempt) => next.authorize_activation(&attempt)?,
         Command::Inspect => {}
-        Command::Retire(_) => unreachable!("handled before mutation"),
+        Command::Retire(_) | Command::Heal => unreachable!("handled before mutation"),
     }
     save(config, &next)?;
     *train = next;
@@ -1220,5 +1533,6 @@ fn reply(config: &Config, train: &Train, outcome: Option<Outcome>, subject: Opti
         running: train.running(),
         error: None,
         outputs,
+        healed: None,
     }
 }
