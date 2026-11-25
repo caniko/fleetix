@@ -78,10 +78,27 @@ fn ops_spool_requeue_complete_dropping_and_summarize() {
 #[test]
 #[cfg(target_os = "linux")]
 fn process_identity_detects_exited_child_and_watchdog_observes_real_tree() {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    // Wait for a readiness byte from shell builtins (`printf` + `read`) so the
+    // child has completed `execve`, never invokes a second `execve`, and stays
+    // parked on its stdin pipe until dropped or killed.
     let mut child = std::process::Command::new("/bin/sh")
-        .args(["-c", "sleep 30"])
+        .args(["-c", "printf 'ready\\n'; read _"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
+    let mut ready = [0u8; 6];
+    child
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut ready)
+        .unwrap();
+    assert_eq!(&ready, b"ready\n");
+
     let pid = child.id();
     let identity = ProcessIdentity::capture(pid).unwrap();
     assert_eq!(identity.check(), Liveness::Alive);
@@ -102,6 +119,7 @@ fn process_identity_detects_exited_child_and_watchdog_observes_real_tree() {
     let sample2 = watchdog::observe_process_tree(pid, &[log.as_path()]);
     assert!(sample2.advanced_from(&sample1));
 
+    drop(child.stdin.take());
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(identity.check(), Liveness::Dead(DeadReason::NotFound));

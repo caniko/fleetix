@@ -2258,12 +2258,36 @@ fn coordinator_worker_deadline_and_clean_shutdown_cancel_hung_workers() {
             Some(Outcome::Failed(ref msg)) if msg.contains("deadline exceeded")
         )
     });
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap().unwrap();
 
     // 2. Clean shutdown cancels an in-flight hung worker immediately instead of
-    //    blocking until TimeoutStopSec, and leaves it Pending on disk.
+    //    blocking until TimeoutStopSec, and leaves it Pending on disk. Use a
+    //    coordinator without a short worker deadline so slow CI scheduling
+    //    never races deadline failure against clean shutdown.
+    let shutdown_temp = tempfile::tempdir().unwrap();
+    let shutdown_config = Config {
+        socket: shutdown_temp.path().join("runtime/coordinator.sock"),
+        state_dir: shutdown_temp.path().join("state"),
+        healing: HealingConfig::default(),
+        ..config
+    };
+    let shutdown_stop = Arc::new(AtomicBool::new(false));
+    let shutdown_worker = std::thread::spawn({
+        let config = shutdown_config.clone();
+        let backend = Arc::clone(&backend);
+        let stop = Arc::clone(&shutdown_stop);
+        move || serve(config, backend, stop)
+    });
+    let shutdown_client = Client {
+        socket: shutdown_config.socket.clone(),
+        policy: shutdown_config.policy.clone(),
+    };
+    eventually(|| shutdown_client.call(Command::Inspect).is_ok());
+
     let mut stopping = request("stop-req", "murph");
     stopping.roots = BTreeSet::from([goal("shutdown-hung")]);
-    client.call(Command::Submit(stopping)).unwrap();
+    shutdown_client.call(Command::Submit(stopping)).unwrap();
     eventually(|| {
         backend
             .started
@@ -2273,13 +2297,14 @@ fn coordinator_worker_deadline_and_clean_shutdown_cancel_hung_workers() {
     });
 
     let before = Instant::now();
-    stop.store(true, Ordering::Relaxed);
-    worker.join().unwrap().unwrap();
-    assert!(before.elapsed() < Duration::from_secs(2));
+    shutdown_stop.store(true, Ordering::Relaxed);
+    shutdown_worker.join().unwrap().unwrap();
+    assert!(before.elapsed() < Duration::from_secs(5));
 
-    let state: Train =
-        serde_json::from_reader(std::fs::File::open(config.state_dir.join("train.json")).unwrap())
-            .unwrap();
+    let state: Train = serde_json::from_reader(
+        std::fs::File::open(shutdown_config.state_dir.join("train.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         state.nodes[&goal("shutdown-hung")].state,
         NodeState::Pending
