@@ -24,6 +24,8 @@ hosts = new {
 }
 domains = new S.Domains {
   zones = new Listing { "example.test" }
+  dnsZones { new S.DnsZone { name = "example.test" } }
+  dynamicHosts { new S.DynamicHost { fqdn = "wg.example.test" } }
   publicationTargets {
     ["edge"] = new S.PublicationTarget {
       hostname = "edge.example.test"
@@ -57,6 +59,55 @@ deployment = new S.Deployment {
     );
     assert_eq!(topology.publication_address_intents()[0].ipv4, "192.0.2.10");
     assert!(topology.publication_address_intents()[0].ipv6.is_none());
+    assert_eq!(topology.zone_provider("example.test"), Some("cloudflare"));
+    assert_eq!(
+        topology.dynamic_host_address_excludes("example.test").len(),
+        2
+    );
+}
+
+#[test]
+fn authored_pkl_dns_migration_loads_through_the_real_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Schema.pkl"),
+        include_str!("../lib/topology/Schema.pkl"),
+    )
+    .unwrap();
+    let source = dir.path().join("Topology.pkl");
+    std::fs::write(
+        &source,
+        r#"
+import "Schema.pkl" as S
+schemaVersion = 2
+links = new {}
+hosts = new {}
+services = new {}
+domains = new S.Domains {
+  zones { "example.test" }
+  dnsProviders = new Mapping {
+    ["primary"] = new S.DnsProvider { kind = "desec" }
+    ["next"] = new S.DnsProvider { kind = "hetzner" }
+  }
+  dnsZones { new S.DnsZone { name = "example.test"; provider = "primary"; migrateTo = "next" } }
+  dynamicHosts { new S.DynamicHost { fqdn = "wg.example.test"; families = new Listing { "ipv4" } } }
+}
+accessMode: S.HttpAccess = "proxied"
+"#,
+    )
+    .unwrap();
+    let value: serde_json::Value = fleetix::pkl::load_sync(&source).unwrap();
+    assert_eq!(value["accessMode"], "proxied");
+    assert!(value["domains"]["dnsProviders"].get("cloudflare").is_none());
+    assert_eq!(value["domains"]["dnsProviders"]["next"]["kind"], "hetzner");
+    let topology: Topology = serde_json::from_value(value).unwrap();
+    assert!(validate(&topology).is_ok());
+    let updaters = topology.dynamic_updaters();
+    assert_eq!(updaters["primary"][0].fqdn, "wg.example.test");
+    assert_eq!(
+        updaters["next"][0].families,
+        [fleetix::topology::IpFamily::Ipv4]
+    );
 }
 
 #[test]

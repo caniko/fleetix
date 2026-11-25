@@ -1,6 +1,7 @@
 use crate::topology::{
-    DnsPublication, EndpointBind, HttpAccess, HttpAction, IngressScope, LinkRole, PathMatch,
-    ServiceLifecycle, ServiceSurfaces, Topology, VpnConnection, VpnPortForwarding,
+    DEFAULT_DNS_PROVIDER, DnsPublication, EndpointBind, HttpAccess, HttpAction, IngressScope,
+    LinkRole, PathMatch, ServiceLifecycle, ServiceSurfaces, Topology, VpnConnection,
+    VpnPortForwarding,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -511,9 +512,8 @@ fn validate_services(topology: &Topology, report: &mut ValidationReport) {
                 ),
             );
         }
-        if site.dns_publication == DnsPublication::Managed
-            && topology.zone_for_host(&site.hostname).is_none()
-        {
+        let zone = topology.zone_for_host(&site.hostname);
+        if site.dns_publication == DnsPublication::Managed && zone.is_none() {
             report.error(
                 "site.managed_hostname_outside_zone",
                 Some(format!("{base}.hostname")),
@@ -524,13 +524,39 @@ fn validate_services(topology: &Topology, report: &mut ValidationReport) {
                 ),
             );
         }
+        if site.access.is_proxied() {
+            let declared = topology.declared_zone_for_host(&site.hostname);
+            // The managed CNAME can target a different zone than an external delegation.
+            let managed = zone.filter(|&zone| {
+                site.dns_publication == DnsPublication::Managed && Some(zone) != declared
+            });
+            for zone in declared.into_iter().chain(managed) {
+                for id in topology.zone_provider_ids(zone) {
+                    if topology
+                        .domains
+                        .dns_providers
+                        .get(id)
+                        .is_some_and(|p| !p.kind.supports_proxy())
+                    {
+                        report.error(
+                            "site.unsupported_dns_proxy",
+                            Some(format!("{base}.access")),
+                            Some(id.into()),
+                            format!("DNS provider '{id}' for zone '{zone}' does not support proxying HTTP site '{name}'"),
+                        );
+                    }
+                }
+            }
+        }
 
         let ingress = topology.deployment.ingress_groups.get(&site.ingress);
         if let Some(ingress) = ingress {
             let expected = match site.access {
                 HttpAccess::Vpn => IngressScope::Vpn,
                 HttpAccess::Lan => IngressScope::Lan,
-                HttpAccess::Cloudflare | HttpAccess::Direct => IngressScope::Public,
+                HttpAccess::Proxied | HttpAccess::Cloudflare | HttpAccess::Direct => {
+                    IngressScope::Public
+                }
             };
             if ingress.scope != expected {
                 report.error(
@@ -1428,6 +1454,45 @@ fn validate_domains(topology: &Topology, report: &mut ValidationReport) {
             );
         }
     }
+    for (index, zone) in topology.domains.dns_zones.iter().enumerate() {
+        for (field, id) in [("provider", zone.provider.as_str())]
+            .into_iter()
+            .chain(zone.migrate_to.as_deref().map(|id| ("migrateTo", id)))
+        {
+            if !topology.domains.dns_providers.contains_key(id) {
+                report.error(
+                    "dns.unknown_provider",
+                    Some(format!("domains.dnsZones.{index}.{field}")),
+                    Some(id.into()),
+                    format!(
+                        "DNS zone '{}' references unknown provider '{id}'",
+                        zone.name
+                    ),
+                );
+            }
+        }
+    }
+    if !topology
+        .domains
+        .dns_providers
+        .contains_key(DEFAULT_DNS_PROVIDER)
+    {
+        for zone in &topology.domains.zones {
+            if !topology
+                .domains
+                .dns_zones
+                .iter()
+                .any(|entry| &entry.name == zone)
+            {
+                report.error(
+                    "dns.unknown_provider",
+                    Some("domains.zones".into()),
+                    Some(DEFAULT_DNS_PROVIDER.into()),
+                    format!("DNS zone '{zone}' defaults to an undeclared Cloudflare provider"),
+                );
+            }
+        }
+    }
     let mut fqdns = HashSet::new();
     for host in &topology.domains.dynamic_hosts {
         if !fqdns.insert(&host.fqdn) {
@@ -1899,30 +1964,27 @@ mod tests {
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
-                publication_targets: IndexMap::new(),
                 zones: vec!["example.test".to_string()],
-                mail_subdomain: None,
-                vpn_subdomain: None,
-                managed_zones: vec![],
                 dynamic_hosts: vec![
                     DynamicHost {
                         fqdn: "api.example.test".to_string(),
                         proxied: false,
                         zone: None,
+                        families: crate::topology::default_ip_families(),
                     },
                     DynamicHost {
                         fqdn: "example.test.evil".to_string(),
                         proxied: false,
                         zone: None,
+                        families: crate::topology::default_ip_families(),
                     },
                 ],
-                dns_zones: vec![],
                 pages_sites: vec![PagesSite {
                     subdomain: "apt.modde".to_string(),
                     repository: "caniko/apt-modde".to_string(),
                     cname_target: "caniko.github.io".to_string(),
                 }],
-                redirects: vec![],
+                ..Domains::default()
             },
             services: Services::default(),
             deployment: Default::default(),
@@ -1942,6 +2004,68 @@ mod tests {
             !report
                 .warnings()
                 .any(|warning| warning.message.contains("api.example.test"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_zone_providers_and_unsupported_site_proxying() {
+        let mut topology: Topology = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 2,
+            "links": {},
+            "hosts": {},
+            "domains": {
+                "zones": ["example.test"],
+                "dnsProviders": {
+                    "edge": {"kind": "cloudflare"},
+                    "cloudflare": {"kind": "hetzner"},
+                },
+                "dnsZones": [
+                    {"name": "example.test", "provider": "edge", "migrateTo": "cloudflare"},
+                    {"name": "unused.test", "provider": "missing", "migrateTo": "also-missing"},
+                ],
+            },
+            "services": {"httpSites": {"media": {
+                "hostname": "media.example.test",
+                "ingress": "public",
+                "access": "cloudflare",
+                "dnsPublication": "managed",
+                "routes": [],
+            }}},
+        }))
+        .unwrap();
+        let report = validate(&topology);
+        for (code, value) in [
+            ("dns.unknown_provider", "missing"),
+            ("dns.unknown_provider", "also-missing"),
+            ("site.unsupported_dns_proxy", "cloudflare"),
+        ] {
+            assert!(
+                report
+                    .errors()
+                    .any(|issue| { issue.code == code && issue.value.as_deref() == Some(value) }),
+                "{:?}",
+                report.issues
+            );
+        }
+
+        topology.domains.dns_zones[0].migrate_to = None;
+        assert!(
+            !validate(&topology)
+                .errors()
+                .any(|issue| issue.code == "site.unsupported_dns_proxy")
+        );
+        topology.domains.dns_zones[0].provider = "cloudflare".into();
+        assert!(
+            validate(&topology)
+                .errors()
+                .any(|issue| issue.code == "site.unsupported_dns_proxy")
+        );
+        topology.domains.zones.clear();
+        topology.services.http_sites["media"].dns_publication = DnsPublication::External;
+        assert!(
+            validate(&topology)
+                .errors()
+                .any(|issue| issue.code == "site.unsupported_dns_proxy")
         );
     }
 

@@ -88,6 +88,44 @@
       null
       matches;
 
+  declaredZoneForHost = topology: fqdn: let
+    tdom = topology.domains or {};
+  in
+    zoneForHostImpl {
+      inherit fqdn;
+      zones = (tdom.zones or []) ++ map (entry: entry.name) (tdom.dnsZones or []);
+    };
+
+  defaultDnsProvider = "cloudflare";
+  defaultIpFamilies = ["ipv4" "ipv6"];
+
+  dnsZone = topology: zone:
+    findFirst (entry: entry.name == zone) null (topology.domains.dnsZones or []);
+
+  primaryProvider = entry: entry.provider or defaultDnsProvider;
+
+  zoneProviderIds = entry: let
+    primary = primaryProvider entry;
+    migration = entry.migrateTo or null;
+  in
+    [primary] ++ lib.optional (migration != null && migration != primary) migration;
+
+  validatedDnsProviders = topology: let
+    tdom = topology.domains or {};
+    providers = tdom.dnsProviders or {cloudflare.kind = "cloudflare";};
+    check = zone: ids:
+      builtins.all (id:
+        builtins.hasAttr id providers
+        || throw "fleetix DNS: zone '${zone}' references unknown provider '${id}'")
+      ids;
+  in
+    assert builtins.all
+    (entry: check entry.name (zoneProviderIds entry))
+    (tdom.dnsZones or []);
+    assert builtins.all
+    (zone: check zone (zoneProviderIds (dnsZone topology zone)))
+    ((tdom.zones or []) ++ (tdom.managedZones or [])); providers;
+
   relativeNameImpl = {
     fqdn,
     zone,
@@ -189,6 +227,20 @@ in rec {
     }:
       zoneForHostImpl {inherit zones fqdn;};
 
+    # Primary provider ID, or null for an undeclared zone.
+    zoneProvider = {
+      topology,
+      zone,
+    }: let
+      tdom = topology.domains or {};
+      entry = dnsZone topology zone;
+    in
+      builtins.seq (validatedDnsProviders topology) (
+        if entry != null || builtins.elem zone ((tdom.zones or []) ++ (tdom.managedZones or []))
+        then primaryProvider entry
+        else null
+      );
+
     relativeName = relativeNameImpl;
 
     dynamicHostsForZone = {
@@ -203,26 +255,43 @@ in rec {
         == zone)
       (topology.domains.dynamicHosts or []);
 
+    # Hosts grouped by updater provider ID, with both IDs present during migration.
+    dynamicUpdaters = {topology}:
+      builtins.seq (validatedDnsProviders topology) (
+        mapAttrs (_id: map (entry: entry.host))
+        (lib.groupBy (entry: entry.id) (builtins.concatMap (host: let
+          zone = domains.zoneForHost {
+            inherit topology;
+            inherit (host) fqdn;
+          };
+        in
+          if zone == null
+          then []
+          else
+            map (id: {
+              inherit id;
+              host = host // {families = host.families or defaultIpFamilies;};
+            }) (zoneProviderIds (dnsZone topology zone)))
+        (topology.domains.dynamicHosts or [])))
+      );
+
     dynamicHostAddressExcludes = {
       topology,
       zone,
     }:
-      builtins.concatMap (host: [
-        {
+      builtins.concatMap (host: let
+        families = host.families or defaultIpFamilies;
+        exclude = type: {
           name = relativeNameImpl {
             inherit zone;
             inherit (host) fqdn;
           };
-          type = "A";
-        }
-        {
-          name = relativeNameImpl {
-            inherit zone;
-            inherit (host) fqdn;
-          };
-          type = "AAAA";
-        }
-      ]) (domains.dynamicHostsForZone {inherit topology zone;});
+          inherit type;
+        };
+      in
+        lib.optional (builtins.elem "ipv4" families) (exclude "A")
+        ++ lib.optional (builtins.elem "ipv6" families) (exclude "AAAA"))
+      (domains.dynamicHostsForZone {inherit topology zone;});
 
     proxiedDynamicHosts = {topology}:
       filter (host: host.proxied or false) (topology.domains.dynamicHosts or []);
@@ -310,6 +379,7 @@ in rec {
       serviceHosts = services.serviceHosts {topology = cleanTopology;};
 
       dynamicHosts = tdom.dynamicHosts or [];
+      dnsProviders = validatedDnsProviders cleanTopology;
       dnsZones = tdom.dnsZones or [];
       inherit managedZones;
       pagesSites = tdom.pagesSites or [];
@@ -389,13 +459,27 @@ in rec {
       map (endpointName: resolveEndpoint {inherit topology endpointName ingressHost require;})
       ([action.endpoint] ++ action.fallbackEndpoints or []);
 
-    managedDnsCnameIntents = {topology}:
+    managedDnsCnameIntents = {topology}: let
+      providers = validatedDnsProviders topology;
+    in
       builtins.concatMap (name: let
         site = (siteByName {inherit topology;}).${name};
         zone = domains.zoneForHost {
           inherit topology;
           fqdn = site.hostname;
         };
+        proxied = builtins.elem site.access ["proxied" "cloudflare"];
+        declared = declaredZoneForHost topology site.hostname;
+        proxyOk =
+          !proxied
+          || builtins.all (checkedZone:
+            builtins.all (id:
+              providers.${id}.kind
+              == "cloudflare"
+              || throw "fleetix DNS: provider '${id}' for zone '${checkedZone}' does not support proxying HTTP site '${name}'")
+            (zoneProviderIds (dnsZone topology checkedZone)))
+          (lib.optional (declared != null) declared
+            ++ lib.optional (site.dnsPublication == "managed" && zone != null && zone != declared) zone);
         destination = site.publicationTarget or null;
         target =
           if destination == null
@@ -408,6 +492,7 @@ in rec {
           || throw "fleetix publication: explicit target requires managed DNS-only public access";
       in
         assert policyOk;
+        assert proxyOk;
           if
             site.dnsPublication
             != "managed"
@@ -420,10 +505,10 @@ in rec {
               inherit name zone;
               inherit (site) hostname;
               inherit target;
-              proxied = site.access == "cloudflare";
+              inherit proxied;
               source = "service";
             })
-          ]) (builtins.attrNames (siteByName {inherit topology;}));
+          ]) (builtins.seq providers (builtins.attrNames (siteByName {inherit topology;})));
 
     pagesCnameIntents = {
       topology,

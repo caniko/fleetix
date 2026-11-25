@@ -56,6 +56,13 @@ derive runtime data from a generated topology sidecar:
   `dnsPublication = "managed"` for them; consumers publish explicit records.
 - `domains.publicationAddressIntents` renders explicit static destinations and
   directly published apexes as A/AAAA ownership intents.
+- `domains.zoneProvider` returns the primary provider ID for a declared zone.
+  `domains.dynamicUpdaters` groups hosts by the provider IDs of their most
+  specific managed zone, including `migrateTo` during an overlap. Dynamic hosts
+  use IPv4 and IPv6 by default. In Pkl, replace the default list with
+  `families = new Listing { "ipv4" }` for IPv4-only updates.
+  Existing zones default to Cloudflare. HTTP access `"proxied"` (legacy alias:
+  `"cloudflare"`) requires a proxy-capable provider on both sides of a migration.
 - `adapters.infernix.mkFleetNodes` converts fleet host topology plus
   consumer-owned node overlays into Infernix node definitions.
 
