@@ -1,7 +1,8 @@
 use crate::topology::{
-    DnsPublication, DynamicHost, Endpoint, EndpointBind, HttpAccess, HttpSite, Link, LinkBinding,
-    LinkRole, Topology, VpnProfile,
+    DEFAULT_DNS_PROVIDER, DnsPublication, DnsZone, DynamicHost, Endpoint, EndpointBind, HttpAccess,
+    HttpSite, IpFamily, Link, LinkBinding, LinkRole, Topology, VpnProfile,
 };
+use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -251,11 +252,46 @@ impl Topology {
         } else {
             &self.domains.managed_zones
         };
-        zones
+        matching_zone(zones.iter().map(String::as_str), fqdn)
+    }
+
+    pub(crate) fn declared_zone_for_host(&self, fqdn: &str) -> Option<&str> {
+        matching_zone(
+            self.domains
+                .zones
+                .iter()
+                .map(String::as_str)
+                .chain(self.domains.dns_zones.iter().map(|zone| zone.name.as_str())),
+            fqdn,
+        )
+    }
+
+    fn dns_zone(&self, zone: &str) -> Option<&DnsZone> {
+        self.domains
+            .dns_zones
             .iter()
-            .filter(|zone| Self::host_in_zone(fqdn, zone))
-            .max_by_key(|zone| zone.split('.').count())
-            .map(String::as_str)
+            .find(|entry| entry.name == zone)
+    }
+
+    /// Primary provider ID for a declared zone in a validated topology.
+    /// A zone without a DNS entry uses Cloudflare.
+    pub fn zone_provider(&self, zone: &str) -> Option<&str> {
+        if let Some(entry) = self.dns_zone(zone) {
+            return Some(&entry.provider);
+        }
+        self.domains
+            .zones
+            .iter()
+            .chain(&self.domains.managed_zones)
+            .any(|name| name == zone)
+            .then_some(DEFAULT_DNS_PROVIDER)
+    }
+
+    pub(crate) fn zone_provider_ids(&self, zone: &str) -> impl Iterator<Item = &str> {
+        let entry = self.dns_zone(zone);
+        let primary = entry.map_or(DEFAULT_DNS_PROVIDER, |entry| entry.provider.as_str());
+        let migration = entry.and_then(|entry| entry.migrate_to.as_deref());
+        std::iter::once(primary).chain(migration.filter(|&id| id != primary))
     }
 
     /// Relative DNS owner name for an FQDN inside a zone.
@@ -276,22 +312,33 @@ impl Topology {
             .collect()
     }
 
+    /// Dynamic hosts grouped by provider ID, including both providers during migration.
+    /// Hosts outside managed zones are not assigned to an updater.
+    pub fn dynamic_updaters(&self) -> IndexMap<&str, Vec<&DynamicHost>> {
+        let mut updaters = IndexMap::<_, Vec<_>>::new();
+        for host in &self.domains.dynamic_hosts {
+            if let Some(zone) = self.zone_for_host(&host.fqdn) {
+                for id in self.zone_provider_ids(zone) {
+                    updaters.entry(id).or_default().push(host);
+                }
+            }
+        }
+        updaters
+    }
+
     /// Provider-neutral A/AAAA ownership intent for dynamic hosts in a zone.
     pub fn dynamic_host_address_excludes(&self, zone: &str) -> Vec<AddressExclude> {
         self.dynamic_hosts_for_zone(zone)
             .into_iter()
             .flat_map(|host| {
                 let name = Self::relative_name(&host.fqdn, zone).unwrap_or(host.fqdn.as_str());
-                [
-                    AddressExclude {
+                [(IpFamily::Ipv4, "A"), (IpFamily::Ipv6, "AAAA")]
+                    .into_iter()
+                    .filter(|(family, _)| host.families.contains(family))
+                    .map(move |(_, record_type)| AddressExclude {
                         name: name.to_string(),
-                        record_type: "A",
-                    },
-                    AddressExclude {
-                        name: name.to_string(),
-                        record_type: "AAAA",
-                    },
-                ]
+                        record_type,
+                    })
             })
             .collect()
     }
@@ -336,7 +383,7 @@ impl Topology {
                         .unwrap_or(&site.hostname)
                         .to_string(),
                     target: target.to_string(),
-                    proxied: site.access == HttpAccess::Cloudflare,
+                    proxied: site.access.is_proxied(),
                     comment: None,
                     source: "service",
                 })
@@ -370,6 +417,12 @@ impl Topology {
             })
             .collect()
     }
+}
+
+fn matching_zone<'a>(zones: impl Iterator<Item = &'a str>, fqdn: &str) -> Option<&'a str> {
+    zones
+        .filter(|zone| Topology::host_in_zone(fqdn, zone))
+        .max_by_key(|zone| zone.split('.').count())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -487,13 +540,10 @@ mod tests {
             links: IndexMap::new(),
             hosts,
             domains: Domains {
-                publication_targets: IndexMap::new(),
                 zones: vec![
                     "example.test".to_string(),
                     "internal.example.test".to_string(),
                 ],
-                mail_subdomain: None,
-                vpn_subdomain: None,
                 managed_zones: vec![
                     "example.test".to_string(),
                     "internal.example.test".to_string(),
@@ -503,19 +553,21 @@ mod tests {
                         fqdn: "example.test".to_string(),
                         proxied: true,
                         zone: None,
+                        families: crate::topology::default_ip_families(),
                     },
                     DynamicHost {
                         fqdn: "wg.example.test".to_string(),
                         proxied: false,
                         zone: None,
+                        families: crate::topology::default_ip_families(),
                     },
                     DynamicHost {
                         fqdn: "host.internal.example.test".to_string(),
                         proxied: false,
                         zone: None,
+                        families: crate::topology::default_ip_families(),
                     },
                 ],
-                dns_zones: vec![],
                 pages_sites: vec![PagesSite {
                     subdomain: "docs".to_string(),
                     repository: "example/docs".to_string(),
@@ -527,6 +579,7 @@ mod tests {
                     status: 301,
                     preserve_path: true,
                 }],
+                ..Domains::default()
             },
             services: Services {
                 catalog: IndexMap::new(),
@@ -721,6 +774,68 @@ mod tests {
     }
 
     #[test]
+    fn resolves_dns_providers_and_groups_dynamic_hosts_during_migration() {
+        let mut topo = test_topology();
+        topo.domains = serde_json::from_value(serde_json::json!({
+            "zones": ["example.test", "internal.example.test"],
+            "dnsZones": [{"name": "example.test"}],
+            "dynamicHosts": [{"fqdn": "wg.internal.example.test"}],
+        }))
+        .unwrap();
+        assert_eq!(topo.zone_provider("example.test"), Some("cloudflare"));
+        assert_eq!(
+            topo.zone_provider("internal.example.test"),
+            Some("cloudflare")
+        );
+        assert_eq!(topo.zone_provider("other.test"), None);
+        assert_eq!(
+            topo.domains.dns_providers["cloudflare"].kind,
+            crate::topology::DnsProviderKind::Cloudflare
+        );
+        assert_eq!(topo.domains.dns_zones[0].migrate_to, None);
+        assert_eq!(
+            topo.dynamic_host_address_excludes("internal.example.test")
+                .len(),
+            2
+        );
+        assert_eq!(topo.dynamic_updaters()["cloudflare"].len(), 1);
+
+        topo.domains.dns_providers.insert(
+            "authoritative".into(),
+            crate::topology::DnsProvider {
+                kind: crate::topology::DnsProviderKind::Desec,
+            },
+        );
+        topo.domains.dns_zones.push(
+            serde_json::from_value(serde_json::json!({
+                "name": "internal.example.test",
+                "provider": "authoritative",
+                "migrateTo": "cloudflare",
+            }))
+            .unwrap(),
+        );
+        topo.domains.dynamic_hosts[0].families = vec![IpFamily::Ipv4];
+        assert_eq!(
+            topo.zone_provider("internal.example.test"),
+            Some("authoritative")
+        );
+        let updaters = topo.dynamic_updaters();
+        assert_eq!(updaters.len(), 2);
+        for id in ["authoritative", "cloudflare"] {
+            assert_eq!(updaters[id].len(), 1);
+            assert_eq!(updaters[id][0].fqdn, "wg.internal.example.test");
+            assert_eq!(updaters[id][0].families, [IpFamily::Ipv4]);
+        }
+        assert_eq!(
+            topo.dynamic_host_address_excludes("internal.example.test"),
+            [AddressExclude {
+                name: "wg".into(),
+                record_type: "A",
+            }]
+        );
+    }
+
+    #[test]
     fn exposes_redirects_service_hosts_and_cname_intents() {
         let topo = test_topology();
         assert_eq!(topo.domains.redirects[0].from, "example.test");
@@ -736,6 +851,8 @@ mod tests {
         assert!(!service_intents.iter().any(|intent| intent.name == "models"));
 
         let mut lan_topo = test_topology();
+        lan_topo.services.http_sites["photos"].access = HttpAccess::Proxied;
+        assert_eq!(lan_topo.service_cname_intents(), service_intents);
         let photos = lan_topo.services.http_sites.get_mut("photos").unwrap();
         photos.access = HttpAccess::Lan;
         assert!(lan_topo.service_cname_intents().is_empty());

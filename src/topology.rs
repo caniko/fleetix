@@ -373,27 +373,64 @@ pub struct Storage {
     pub flake_root: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Domains {
-    #[serde(default)]
     pub zones: Vec<String>,
-    #[serde(default)]
     pub mail_subdomain: Option<String>,
-    #[serde(default)]
     pub vpn_subdomain: Option<String>,
-    #[serde(default)]
     pub managed_zones: Vec<String>,
-    #[serde(default)]
+    pub dns_providers: IndexMap<String, DnsProvider>,
     pub dynamic_hosts: Vec<DynamicHost>,
-    #[serde(default)]
     pub dns_zones: Vec<DnsZone>,
-    #[serde(default)]
     pub pages_sites: Vec<PagesSite>,
-    #[serde(default)]
     pub redirects: Vec<Redirect>,
-    #[serde(default)]
     pub publication_targets: IndexMap<String, PublicationTarget>,
+}
+
+pub(crate) const DEFAULT_DNS_PROVIDER: &str = "cloudflare";
+
+impl Default for Domains {
+    fn default() -> Self {
+        Self {
+            zones: Vec::new(),
+            mail_subdomain: None,
+            vpn_subdomain: None,
+            managed_zones: Vec::new(),
+            dns_providers: IndexMap::from([(
+                DEFAULT_DNS_PROVIDER.into(),
+                DnsProvider {
+                    kind: DnsProviderKind::Cloudflare,
+                },
+            )]),
+            dynamic_hosts: Vec::new(),
+            dns_zones: Vec::new(),
+            pages_sites: Vec::new(),
+            redirects: Vec::new(),
+            publication_targets: IndexMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsProvider {
+    pub kind: DnsProviderKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsProviderKind {
+    Cloudflare,
+    Desec,
+    Hetzner,
+    Gcore,
+    Bunny,
+}
+
+impl DnsProviderKind {
+    pub fn supports_proxy(self) -> bool {
+        self == Self::Cloudflare
+    }
 }
 
 /// Non-secret desired publication addresses; never live provider state.
@@ -415,6 +452,19 @@ pub struct DynamicHost {
     pub proxied: bool,
     #[serde(default)]
     pub zone: Option<String>,
+    #[serde(default = "default_ip_families")]
+    pub families: Vec<IpFamily>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IpFamily {
+    Ipv4,
+    Ipv6,
+}
+
+pub(crate) fn default_ip_families() -> Vec<IpFamily> {
+    vec![IpFamily::Ipv4, IpFamily::Ipv6]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -448,6 +498,10 @@ pub struct DnsExclude {
 #[serde(rename_all = "camelCase")]
 pub struct DnsZone {
     pub name: String,
+    #[serde(default = "default_dns_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub migrate_to: Option<String>,
     #[serde(default = "default_dns_ttl")]
     pub default_ttl: i64,
     #[serde(default = "default_dns_mode")]
@@ -456,6 +510,10 @@ pub struct DnsZone {
     pub records: Vec<DnsRecord>,
     #[serde(default)]
     pub exclude: Vec<DnsExclude>,
+}
+
+fn default_dns_provider() -> String {
+    DEFAULT_DNS_PROVIDER.into()
 }
 
 fn default_true() -> bool {
@@ -561,10 +619,18 @@ pub struct HttpSite {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HttpAccess {
+    Proxied,
+    /// Legacy spelling of `Proxied`, retained for existing snapshots.
     Cloudflare,
     Direct,
     Vpn,
     Lan,
+}
+
+impl HttpAccess {
+    pub fn is_proxied(self) -> bool {
+        matches!(self, Self::Proxied | Self::Cloudflare)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
