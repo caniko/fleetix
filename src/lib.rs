@@ -1,5 +1,6 @@
 pub mod accessors;
 pub mod build_train;
+pub mod compute;
 pub mod deployment;
 #[cfg(feature = "forge")]
 pub mod forge;

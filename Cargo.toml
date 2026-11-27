@@ -48,7 +48,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 sha2 = "0.10"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 # AsyncFd I/O safety fix (RUSTSEC-2026-0386).
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "time"] }
 clap = { version = "4", features = ["derive"] }
