@@ -7,7 +7,7 @@ use std::io::{self, Write};
 
 pub(super) const FIELD_LIMIT: usize = 4096;
 // Reserve space for the policy, bounded identities, failure detail and fence.
-const OUTPUT_LIMIT: usize = MAX_FRAME as usize - 131_072;
+const OUTPUT_LIMIT: usize = MAX_FRAME - 131_072;
 
 struct LimitedJson {
     raw: Vec<u8>,
@@ -93,24 +93,23 @@ pub(super) fn encode(result: &Reply) -> Result<Vec<u8>, String> {
         outputs: &result.outputs,
         healed: result.healed.as_deref(),
     };
-    let mut raw = match serialize(&frame, MAX_FRAME as usize - 1) {
-        Ok(raw) => raw,
-        Err(_) => {
-            // Older retained evidence may exceed today's admission budget. Do not
-            // kill the coordinator or silently drop an already-applied command.
-            let outputs = BTreeMap::new();
-            let fallback = ReplyFrame {
-                outputs: &outputs,
-                healed: None,
-                // A historical fence can itself exceed the frame budget. Its
-                // exact identity remains in the journal; never truncate a token
-                // or claim the absence of a durable fence through this error.
-                fence: None,
-                error: Some("coordinator reply exceeds protocol limit; durable command may already be recorded; inspect the persisted journal and request status before retrying".into()),
-                ..frame
-            };
-            serialize(&fallback, MAX_FRAME as usize - 1)?
-        }
+    let mut raw = if let Ok(raw) = serialize(&frame, MAX_FRAME - 1) {
+        raw
+    } else {
+        // Older retained evidence may exceed today's admission budget. Do not
+        // kill the coordinator or silently drop an already-applied command.
+        let outputs = BTreeMap::new();
+        let fallback = ReplyFrame {
+            outputs: &outputs,
+            healed: None,
+            // A historical fence can itself exceed the frame budget. Its
+            // exact identity remains in the journal; never truncate a token
+            // or claim the absence of a durable fence through this error.
+            fence: None,
+            error: Some("coordinator reply exceeds protocol limit; durable command may already be recorded; inspect the persisted journal and request status before retrying".into()),
+            ..frame
+        };
+        serialize(&fallback, MAX_FRAME - 1)?
     };
     raw.push(b'\n');
     Ok(raw)

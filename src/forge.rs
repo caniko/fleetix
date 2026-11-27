@@ -19,6 +19,10 @@ pub struct Source {
 }
 
 /// A repository normalized across providers.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent forge properties can hold simultaneously; preserve the public record shape"
+)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
@@ -45,6 +49,10 @@ pub struct Repository {
     pub pull_requests_total: Option<u64>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "matches the independent boolean fields in the forge API payload"
+)]
 #[derive(Debug, Default, Deserialize)]
 struct RawRepository {
     #[serde(default)]

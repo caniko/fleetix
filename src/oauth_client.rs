@@ -950,7 +950,9 @@ pub fn discover_downloaded_client(
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if !name.starts_with("client_secret") || !name.ends_with(".json") {
+            if !name.starts_with("client_secret")
+                || path.extension().is_none_or(|ext| ext != "json")
+            {
                 continue;
             }
             let meta = match entry.metadata() {
@@ -973,8 +975,7 @@ pub fn discover_downloaded_client(
             }
             let is_newer = best
                 .as_ref()
-                .map(|(best_time, _, _)| modified > *best_time)
-                .unwrap_or(true);
+                .is_none_or(|(best_time, _, _)| modified > *best_time);
             if is_newer {
                 best = Some((modified, path, client));
             }
@@ -1026,7 +1027,9 @@ pub fn secure_remove_file(path: &Path) -> Result<(), OAuthClientError> {
             let _ = file.seek(SeekFrom::Start(0));
             let mut remaining = len;
             while remaining > 0 {
-                let chunk = (remaining as usize).min(zeros.len());
+                let chunk = usize::try_from(remaining)
+                    .unwrap_or(usize::MAX)
+                    .min(zeros.len());
                 if file.write_all(&zeros[..chunk]).is_err() {
                     break;
                 }

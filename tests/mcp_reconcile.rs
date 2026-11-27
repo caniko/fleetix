@@ -5,17 +5,21 @@ use serde_json::json;
 use std::fs;
 
 fn manifest(path: &std::path::Path, servers: serde_json::Value) -> Manifest {
-    serde_json::from_value(json!({
+    let mut value = json!({
         "version": 1,
-        "targets": [{"name": "codex", "path": path, "format": "toml", "root": ["mcp_servers"], "servers": servers}]
-    })).unwrap()
+        "targets": [{"name": "codex", "path": path, "format": "toml", "root": ["mcp_servers"]}]
+    });
+    value["targets"][0]["servers"] = servers;
+    serde_json::from_value(value).unwrap()
 }
 
 fn antigravity_manifest(path: &std::path::Path, servers: serde_json::Value) -> Manifest {
-    serde_json::from_value(json!({
+    let mut value = json!({
         "version": 1,
-        "targets": [{"name": "antigravity", "path": path, "format": "json", "root": ["mcpServers"], "servers": servers}]
-    })).unwrap()
+        "targets": [{"name": "antigravity", "path": path, "format": "json", "root": ["mcpServers"]}]
+    });
+    value["targets"][0]["servers"] = servers;
+    serde_json::from_value(value).unwrap()
 }
 
 #[test]
@@ -95,11 +99,9 @@ fn mcp_reconciles_only_owned_entries_and_preserves_toml_comments() {
     let rendered = fs::read_to_string(&path).unwrap();
     assert!(rendered.contains("# personal settings"));
     assert!(rendered.contains("'/bin/manual'"));
-    assert!(
-        reconcile(&desired, &state, false)
-            .unwrap()
-            .changed
-            .is_empty()
+    assert_eq!(
+        reconcile(&desired, &state, false).unwrap().changed,
+        [] as [std::path::PathBuf; 0]
     );
     let empty: Manifest = serde_json::from_value(json!({"version": 1, "targets": []})).unwrap();
     reconcile(&empty, &state, false).unwrap();
@@ -181,11 +183,9 @@ fn mcp_adopts_identical_json_without_reformatting_it() {
     let original = "{\"mcpServers\":{\"graph\":{\"url\":\"http://localhost/mcp\"}},\"keep\":true}";
     fs::write(&path, original).unwrap();
     let desired: Manifest = serde_json::from_value(json!({"version":1,"targets":[{"name":"claude","path":path,"format":"json","root":["mcpServers"],"servers":{"graph":{"url":"http://localhost/mcp"}}}]})).unwrap();
-    assert!(
-        reconcile(&desired, &state, false)
-            .unwrap()
-            .changed
-            .is_empty()
+    assert_eq!(
+        reconcile(&desired, &state, false).unwrap().changed,
+        [] as [std::path::PathBuf; 0]
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
 }
@@ -290,11 +290,11 @@ fn mcp_replays_interrupted_update_and_pruning() {
     fs::write(&state, journal.to_string()).unwrap();
     // Simulate a process stopping after the destination write but before finalizing state.
     fs::write(&path, "[mcp_servers.graph]\ncommand = '/bin/new'\n").unwrap();
-    assert!(
+    assert_eq!(
         reconcile(&manifest(&path, json!({"graph":new})), &state, false)
             .unwrap()
-            .changed
-            .is_empty()
+            .changed,
+        [] as [std::path::PathBuf; 0]
     );
     let final_state: serde_json::Value =
         serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();

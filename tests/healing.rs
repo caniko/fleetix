@@ -111,7 +111,7 @@ fn process_identity_detects_exited_child_and_watchdog_observes_real_tree() {
     assert_eq!(sample1.output_bytes, 9);
 
     let diag = watchdog::diagnose_stuck_pids(&liveness::descendant_pids(pid), 4);
-    assert!(!diag.is_empty());
+    assert_ne!(diag, [] as [fleetix::healing::StuckProcess; 0]);
     assert!(diag.iter().any(|entry| entry.cmdline.is_some()));
 
     // Appending to the log advances the sample immediately.

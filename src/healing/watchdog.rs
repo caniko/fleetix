@@ -274,16 +274,14 @@ pub fn observe_cgroup(cgroup_dir: &Path, log_paths: &[&Path]) -> Option<Progress
         .unwrap_or(0);
     let io_bytes = fs::read_to_string(cgroup_dir.join("io.stat"))
         .ok()
-        .map(|text| parse_cgroup_io_bytes(&text))
-        .unwrap_or(0);
+        .map_or(0, |text| parse_cgroup_io_bytes(&text));
     let live_processes = fs::read_to_string(cgroup_dir.join("cgroup.procs"))
         .ok()
-        .map(|text| {
+        .map_or(0, |text| {
             text.lines()
                 .filter(|line| line.trim().parse::<u32>().is_ok())
                 .count()
-        })
-        .unwrap_or(0);
+        });
     Some(ProgressSample {
         output_bytes,
         output_mtime_nanos,
@@ -448,7 +446,7 @@ mod tests {
     fn parses_cgroup_and_proc_counters() {
         assert_eq!(
             parse_cgroup_cpu_usec("usage_usec 123456\nuser_usec 100000\n"),
-            Some(123456)
+            Some(123_456)
         );
         assert_eq!(
             parse_cgroup_io_bytes("259:0 rbytes=4096 wbytes=8192 rios=2 wios=3\n"),

@@ -35,6 +35,7 @@
 //! clean shutdown. The library never writes to stdout outside that transport.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -182,12 +183,12 @@ impl ServerHandler for Server {
         info
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(self.router.list_all()))
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
+        std::future::ready(Ok(ListToolsResult::with_all_items(self.router.list_all())))
     }
 
     async fn call_tool(

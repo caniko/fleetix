@@ -90,9 +90,8 @@ mod tests {
 
     #[test]
     fn help_needs_no_privilege_or_deployment_state() {
-        let error = match Cli::try_parse_from(["fleetix-deploy", "--help"]) {
-            Ok(_) => panic!("--help must not parse as a command"),
-            Err(error) => error,
+        let Err(error) = Cli::try_parse_from(["fleetix-deploy", "--help"]) else {
+            panic!("--help must not parse as a command");
         };
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
     }

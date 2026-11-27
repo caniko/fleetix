@@ -2,21 +2,22 @@ use fleetix::{Topology, validate};
 use serde_json::{Value, json};
 
 fn topology(management: Value, key: Value) -> Topology {
-    serde_json::from_value(json!({
+    let mut value = json!({
         "schemaVersion": 2,
         "links": {"wg-edge": {"subnet": "10.90.0.0/24", "port": 51820}},
         "hosts": {
             "builder": {"system": "x86_64-linux", "links": {
                 "wg-edge": {"address": "10.90.0.2", "publicKey": "builder-key"}
             }},
-            "edge": {"system": "x86_64-linux", "hostPubkey": key,
-                "management": management,
+            "edge": {"system": "x86_64-linux",
                 "links": {"wg-edge": {"address": "10.90.0.1", "publicKey": "edge-key"}}
             }
         },
         "domains": {}, "services": {}
-    }))
-    .unwrap()
+    });
+    value["hosts"]["edge"]["hostPubkey"] = key;
+    value["hosts"]["edge"]["management"] = management;
+    serde_json::from_value(value).unwrap()
 }
 
 #[test]
@@ -96,7 +97,10 @@ fn cloud_management_accepts_distinct_recovery_and_tunnel_routes_without_lan() {
             .iter()
             .all(|r| r.port == 1337 && r.host_key == "ssh-ed25519 fixture-key")
     );
-    assert!(t.management_routes("edge", "edge", 22).unwrap().is_empty());
+    assert_eq!(
+        t.management_routes("edge", "edge", 22).unwrap(),
+        [] as [fleetix::management::ManagementRoute; 0]
+    );
 }
 
 #[test]

@@ -143,7 +143,7 @@ pub fn validate(topology: &Topology) -> ValidationReport {
             .filter(|(_, host)| {
                 host.links
                     .get(link_name)
-                    .is_some_and(|b| b.role == crate::topology::LinkRole::Server)
+                    .is_some_and(|b| b.role == LinkRole::Server)
             })
             .collect();
 
@@ -802,7 +802,7 @@ fn validate_http_routes(
     if fallbacks.len() != 1 {
         report.error(
             "site.route_fallback_count",
-            Some(base.clone()),
+            Some(base),
             Some(fallbacks.len().to_string()),
             format!("HTTP site '{site_name}' must declare exactly one fallback route"),
         );
@@ -1300,9 +1300,10 @@ fn validate_local_access(topology: &Topology, report: &mut ValidationReport) {
                 }
                 destination.clone()
             }
-            None => match target.links.get(&policy.fallback_link) {
-                Some(binding) => binding.address.clone(),
-                None => {
+            None => {
+                if let Some(binding) = target.links.get(&policy.fallback_link) {
+                    binding.address.clone()
+                } else {
                     report.error(
                         "local_access.target_missing_fallback_binding",
                         Some(format!("{base}.fallbackLink")),
@@ -1314,7 +1315,7 @@ fn validate_local_access(topology: &Topology, report: &mut ValidationReport) {
                     );
                     continue;
                 }
-            },
+            }
         };
         if policy.tcp_ports.is_empty() && policy.udp_ports.is_empty() {
             report.error(
@@ -1915,9 +1916,9 @@ fn address_in_subnet(address: IpAddr, network: IpAddr, prefix: u8) -> bool {
 mod tests {
     use super::*;
     use crate::topology::{
-        DnsPublication, Domains, DynamicHost, Endpoint, EndpointBind, EndpointTransport,
-        HealthIntent, Host, HttpAccess, HttpAction, HttpMatch, HttpRoute, HttpSite, IngressGroup,
-        PagesSite, ServiceIntent, Services,
+        Deployment, DnsPublication, Domains, DynamicHost, Endpoint, EndpointBind,
+        EndpointTransport, HealthIntent, Host, HttpAccess, HttpAction, HttpMatch, HttpRoute,
+        HttpSite, IngressGroup, PagesSite, ServiceIntent, Services, Supply, Trust,
     };
     use indexmap::IndexMap;
     use serde_json::json;
@@ -1960,7 +1961,7 @@ mod tests {
         let topology = Topology {
             schema_version: 2,
             access: None,
-            supply: Default::default(),
+            supply: Supply::default(),
             links: IndexMap::new(),
             hosts: IndexMap::new(),
             domains: Domains {
@@ -1987,8 +1988,8 @@ mod tests {
                 ..Domains::default()
             },
             services: Services::default(),
-            deployment: Default::default(),
-            trust: Default::default(),
+            deployment: Deployment::default(),
+            trust: Trust::default(),
         };
 
         let report = validate(&topology);
@@ -2315,7 +2316,7 @@ mod tests {
     fn proxy(endpoint: &str, fallbacks: &[&str]) -> HttpAction {
         HttpAction::Proxy {
             endpoint: endpoint.to_string(),
-            fallback_endpoints: fallbacks.iter().map(|name| name.to_string()).collect(),
+            fallback_endpoints: fallbacks.iter().map(ToString::to_string).collect(),
             strip_prefix: None,
         }
     }
@@ -2637,7 +2638,10 @@ mod tests {
         };
         let igpu =
             json!({ "address": "0000:7d:00.0", "id": "1002:13c0", "vendor": "amd", "rom": "vfct" });
-        assert!(codes(json!({ "igpu": "amd", "passthrough": { "igpu": igpu } })).is_empty());
+        assert_eq!(
+            codes(json!({ "igpu": "amd", "passthrough": { "igpu": igpu } })),
+            [] as [String; 0]
+        );
         assert_eq!(
             codes(
                 json!({ "passthrough": { "Bad": igpu, "b": { "address": "0000:7D:00.0", "id": "1002:13c0", "vendor": "amd" } } })
@@ -2767,7 +2771,7 @@ mod tests {
                     LinkBinding {
                         address: wg_ip.to_string(),
                         public_key: None,
-                        role: crate::topology::LinkRole::Client,
+                        role: LinkRole::Client,
                         external_interface: None,
                         mac_address: None,
                     },

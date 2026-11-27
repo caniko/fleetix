@@ -39,7 +39,7 @@ pub(super) struct LandConfig {
 struct HostSelection {
     /// Return a single host instead of the entire topology.
     host: Option<String>,
-    /// Keep only these top-level keys of the result, e.g. ["hosts"] or ["gpu", "network"].
+    /// Keep only these top-level keys of the result, e.g. `["hosts"]` or `["gpu", "network"]`.
     fields: Option<Vec<String>>,
 }
 
@@ -266,7 +266,7 @@ pub(super) fn server(
                     move |Parameters(args): Parameters<SupplyLandSelection>,
                           context: rmcp::service::RequestContext<rmcp::RoleServer>| {
                         let config = Arc::clone(&land_config);
-                        let cancelled = context.ct.clone();
+                        let cancelled = context.ct;
                         let lander = Arc::clone(&lander);
                         let SupplyLandSelection {
                             producer,
@@ -499,7 +499,7 @@ fn land(
     let work = supply::WorkItems {
         contract: supply::WORK_ITEMS_CONTRACT,
         producer: report.producer,
-        target: target.clone(),
+        target,
         items,
     };
     save_work_items(&path, &work)?;
@@ -646,7 +646,7 @@ mod tests {
     #[tokio::test]
     async fn snapshot_tools_are_discoverable_and_recover_after_bad_arguments() {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let topology = crate::Topology {
+            let topology = Topology {
                 schema_version: 2,
                 ..Default::default()
             };
@@ -713,7 +713,7 @@ mod tests {
     fn supply_tools_are_registered_only_with_startup_flags() {
         use rmcp::ServerHandler;
 
-        let topology = || crate::Topology {
+        let topology = || Topology {
             schema_version: 2,
             ..Default::default()
         };
@@ -723,8 +723,8 @@ mod tests {
         let configured = server(
             topology(),
             Some(SupplyConfig {
-                root: std::path::PathBuf::from("/workspace"),
-                inventory: std::path::PathBuf::from("/workspace/inventory.json"),
+                root: PathBuf::from("/workspace"),
+                inventory: PathBuf::from("/workspace/inventory.json"),
                 facts: Vec::new(),
                 land: None,
             }),
@@ -738,11 +738,11 @@ mod tests {
         let landing = server(
             topology(),
             Some(SupplyConfig {
-                root: std::path::PathBuf::from("/workspace"),
-                inventory: std::path::PathBuf::from("/workspace/inventory.json"),
+                root: PathBuf::from("/workspace"),
+                inventory: PathBuf::from("/workspace/inventory.json"),
                 facts: Vec::new(),
                 land: Some(LandConfig {
-                    program: std::path::PathBuf::from("/bin/true"),
+                    program: PathBuf::from("/bin/true"),
                     args: Vec::new(),
                 }),
             }),
@@ -1012,13 +1012,13 @@ mod tests {
             &[("flake.lock", r#"{"nodes":{"root":{"inputs":{}}}}"#)],
         );
         let target = head(&producer);
-        let mut stale: serde_json::Value = serde_json::from_str(&flake_lock(&pinned)).unwrap();
-        stale["nodes"]["root"]["inputs"]["git-hooks"] =
+        let mut lock: serde_json::Value = serde_json::from_str(&flake_lock(&pinned)).unwrap();
+        lock["nodes"]["root"]["inputs"]["git-hooks"] =
             serde_json::json!(["harbor-rs", "git-hooks"]);
         init_repo(
             workspace.path(),
             "stale",
-            &[("flake.lock", &stale.to_string())],
+            &[("flake.lock", &lock.to_string())],
         );
         let blocked = serde_json::json!([{
             "coordinate": "github.com/caniko/stale",
@@ -1161,7 +1161,7 @@ mod tests {
 
     #[test]
     fn topology_tools_filter_and_report_validation_without_side_effects() {
-        let topology: crate::Topology = serde_json::from_value(json!({
+        let topology: Topology = serde_json::from_value(json!({
             "schemaVersion": 2,
             "links": {"mesh": {"subnet": "10.44.0.0/24", "port": 51820}},
             "hosts": {"edge": {"system": "x86_64-linux"}},

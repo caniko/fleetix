@@ -1,12 +1,12 @@
 #![cfg(unix)]
 
-//! Bounded execution of concrete NixOS and Home Manager deployment actions.
+//! Bounded execution of concrete `NixOS` and Home Manager deployment actions.
 //!
 //! Commands are explicit absolute argv arrays: no shell and no argument or
 //! environment expansion. The environment is inherited from the caller. stdout
 //! capture is capped at 64 KiB and stderr is inherited so systemd/journald owns
 //! the diagnostic stream. Every child runs in its own process group; the group
-//! is SIGKILLed on timeout, capture overflow, or normal exit so descendants can
+//! is `SIGKILLed` on timeout, capture overflow, or normal exit so descendants can
 //! neither outlive the command nor keep the capture pipe open.
 //!
 //! These helpers trust the policy layer to select absolute executables and
@@ -113,7 +113,7 @@ pub(super) fn command(
     // SAFETY: zero-initialized sigaction storage is filled by the query below.
     let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
     // SAFETY: sigaction writes into valid storage without changing the handler.
-    if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition) } < 0 {
+    if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &raw mut disposition) } < 0 {
         return Err(std::io::Error::last_os_error().to_string().into());
     }
     if disposition.sa_sigaction == libc::SIG_IGN || disposition.sa_flags & libc::SA_NOCLDWAIT != 0 {
@@ -217,7 +217,7 @@ fn drain_stdout(stdout: &mut Option<ChildStdout>, output: &mut Vec<u8>) -> Resul
                     output.extend_from_slice(&buffer[..count]);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(format!("read command output: {error}")),
             }
         }
@@ -233,7 +233,7 @@ fn exited_without_reaping(pid: u32) -> Result<bool, String> {
         libc::waitid(
             libc::P_PID,
             pid,
-            &mut info,
+            &raw mut info,
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         )
     };
@@ -272,8 +272,8 @@ fn wait_bounded(child: &mut Child, deadline: Instant) -> Result<ExitStatus, Fail
     }
 }
 
-fn kill_group(pgid: u32) {
-    let Ok(pid) = i32::try_from(pgid) else {
+fn kill_group(process_group: u32) {
+    let Ok(pid) = i32::try_from(process_group) else {
         return;
     };
     // SAFETY: `process_group(0)` made the child the leader of a fresh group.
@@ -306,7 +306,7 @@ fn store_path(path: &Path) -> Result<String, String> {
     }
     canonical
         .to_str()
-        .map(|text| text.to_owned())
+        .map(ToOwned::to_owned)
         .ok_or_else(|| format!("store path is not UTF-8: {}", canonical.display()))
 }
 
@@ -400,7 +400,7 @@ pub(super) fn retain(
     Ok(())
 }
 
-/// Activate `candidate` non-persistently: NixOS runs
+/// Activate `candidate` non-persistently: `NixOS` runs
 /// `switch-to-configuration test`, Home Manager runs `activate`.
 pub(super) fn trial(is_nixos: bool, candidate: &str, timeout: Duration) -> Result<(), Failure> {
     let candidate = Path::new(candidate);
@@ -419,7 +419,7 @@ pub(super) fn trial(is_nixos: bool, candidate: &str, timeout: Duration) -> Resul
         .map_err(|error| error.context(format!("trial {}", candidate.display())))
 }
 
-/// NixOS: set the system profile to `candidate`, then run the candidate's boot
+/// `NixOS`: set the system profile to `candidate`, then run the candidate's boot
 /// activation. Home Manager: no-op, because activation already wrote the user
 /// profile.
 pub(super) fn commit(
@@ -454,7 +454,7 @@ pub(super) fn commit(
     .map_err(|error| error.context(format!("boot candidate {candidate}")))
 }
 
-/// NixOS: test the previous system, set the profile to `previous_profile`, then
+/// `NixOS`: test the previous system, set the profile to `previous_profile`, then
 /// boot that profile. Home Manager: activate `previous_profile`. The caller
 /// verifies live identity before and after this call.
 pub(super) fn restore(
@@ -576,7 +576,7 @@ mod tests {
             &format!("printf ran > {}", marker.display()),
         );
         let output = command(&[program], b"", Duration::from_secs(5), false).unwrap();
-        assert!(output.is_empty());
+        assert_eq!(output, [] as [u8; 0]);
         assert_eq!(contents(&marker), "ran");
     }
 

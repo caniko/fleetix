@@ -2,12 +2,13 @@ use fleetix::{Topology, validate};
 use serde_json::{Value, json};
 
 fn topology(gpu: Value) -> Topology {
-    serde_json::from_value(json!({
+    let mut value = json!({
         "schemaVersion": 2,
-        "hosts": {"desktop": {"system": "x86_64-linux", "gpu": gpu}},
+        "hosts": {"desktop": {"system": "x86_64-linux"}},
         "links": {}, "domains": {}, "services": {}
-    }))
-    .unwrap()
+    });
+    value["hosts"]["desktop"]["gpu"] = gpu;
+    serde_json::from_value(value).unwrap()
 }
 
 #[test]

@@ -318,15 +318,12 @@ pub fn check_follows_with(
             let path = repository
                 .and_then(|repository| repository.attrs.get("relativePath"))
                 .and_then(serde_json::Value::as_str);
-            match path {
-                Some(path) => {
-                    super::observe::root_inputs_at(&root.join(path), None, &target, fetch)
-                }
-                None => {
-                    let producer = &report.producer;
-                    cached_inputs(graph, producer, cache, remote_base, &target, fetch)
-                        .map_err(|error| format!("{producer} has no observed checkout; {error}"))
-                }
+            if let Some(path) = path {
+                super::observe::root_inputs_at(&root.join(path), None, &target, fetch)
+            } else {
+                let producer = &report.producer;
+                cached_inputs(graph, producer, cache, remote_base, &target, fetch)
+                    .map_err(|error| format!("{producer} has no observed checkout; {error}"))
             }
         });
         let inputs = match inputs {
@@ -412,8 +409,7 @@ fn remote_url(base: &str, coordinate: &str) -> Result<String, String> {
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn attribute_of(node: &super::GraphNode, key: &str) -> Option<String> {

@@ -20,7 +20,7 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     }
     temporary
         .write_all(contents)
-        .and_then(|_| temporary.as_file().sync_all())
+        .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| miette!("write {}: {error}", path.display()))?;
     temporary
         .persist(path)

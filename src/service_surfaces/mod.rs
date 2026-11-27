@@ -2,7 +2,7 @@
 //! service stack.
 //!
 //! Nothing in this module performs I/O or reads a clock. A release artifact is
-//! an exact realized NixOS guest system output store path. Both containers run
+//! an exact realized `NixOS` guest system output store path. Both containers run
 //! the same closure with independent root filesystems and their own runtime
 //! bindings; promotion is therefore a store-path identity operation, never a
 //! rebuild, copy of application state, or secret transfer.
@@ -131,7 +131,7 @@ pub struct Policy {
     /// Root-installed, immutable operator admission executable. It evaluates
     /// candidates without executing candidate code on the host.
     pub admission_check: PathBuf,
-    /// Declarative NixOS container configuration directory. Defaults keep
+    /// Declarative `NixOS` container configuration directory. Defaults keep
     /// module-generated JSON compatible.
     #[serde(default = "default_container_config_dir")]
     pub container_config_dir: PathBuf,
@@ -611,7 +611,7 @@ impl Pending {
     }
 }
 
-/// Guest release manifest. Services must exactly cover policy.required_services.
+/// Guest release manifest. Services must exactly cover `policy.required_services`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -751,7 +751,9 @@ pub fn validate_store_path(field: &str, path: &Path) -> Result<(), String> {
         || name.len() > 211
         || name.contains('/')
         || matches!(name, "." | "..")
-        || name.ends_with(".drv")
+        || name
+            .rsplit_once('.')
+            .is_some_and(|(_, suffix)| suffix == "drv")
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"+-._?=".contains(&byte))

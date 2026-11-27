@@ -11,14 +11,16 @@ fn surfaces(services: &[&str], dev: &str, prod: &str) -> Value {
 }
 
 fn topology(host_surfaces: Value, catalog: Value) -> Topology {
-    serde_json::from_value(json!({
+    let mut value = json!({
         "schemaVersion": 2,
         "links": {},
-        "hosts": {"hub": {"system": "x86_64-linux", "serviceSurfaces": host_surfaces}},
+        "hosts": {"hub": {"system": "x86_64-linux"}},
         "domains": {},
-        "services": {"catalog": catalog},
-    }))
-    .unwrap()
+        "services": {},
+    });
+    value["hosts"]["hub"]["serviceSurfaces"] = host_surfaces;
+    value["services"]["catalog"] = catalog;
+    serde_json::from_value(value).unwrap()
 }
 
 fn catalog(lifecycle: &str) -> Value {

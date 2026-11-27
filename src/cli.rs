@@ -347,7 +347,7 @@ pub enum TrustCommand {
         /// Modular topology entrypoint (Topology.aggregated.pkl).
         #[arg(long)]
         topology: PathBuf,
-        /// Trust store to observe (default: ~/.ssh/known_hosts).
+        /// Trust store to observe (default: ~/.`ssh/known_hosts`).
         #[arg(long)]
         known_hosts: Option<PathBuf>,
         /// Observer decisions directory.
@@ -489,7 +489,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         } => {
             let topology =
                 topology::evaluate_topology_with_options(&path, build_options(&evaluator)?).await?;
-            let report = validate::validate(&topology);
+            let report = validate(&topology);
             if format == OutputFormat::Json {
                 println!(
                     "{}",
@@ -652,7 +652,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         } => {
             let options = build_options(&evaluator)?;
             let topology = topology::load_topology_with_options(&path, options).await?;
-            let report = validate::validate(&topology);
+            let report = validate(&topology);
             if !report.is_ok() {
                 return Err(CliError::new(
                     EXIT_VALIDATION,
@@ -723,11 +723,6 @@ fn run_ops(subcommand: OpsCommand) -> Result<(), CliError> {
             }
         }
         OpsCommand::Heal { spool, format } => {
-            let root = spool.unwrap_or_else(crate::ops::default_spool_dir);
-            let completed_drops = crate::ops::complete_dropping(&root)
-                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
-            let summary = crate::ops::summarize(&root, chrono::Utc::now())
-                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
             #[derive(Serialize)]
             #[serde(rename_all = "camelCase")]
             struct OpsHealOutput {
@@ -735,6 +730,11 @@ fn run_ops(subcommand: OpsCommand) -> Result<(), CliError> {
                 completed_drops: Vec<String>,
                 summary: crate::ops::SpoolSummary,
             }
+            let root = spool.unwrap_or_else(crate::ops::default_spool_dir);
+            let completed_drops = crate::ops::complete_dropping(&root)
+                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
+            let summary = crate::ops::summarize(&root, chrono::Utc::now())
+                .map_err(|error| CliError::new(EXIT_IO, format!("{error}")))?;
             let output = OpsHealOutput {
                 spool: root,
                 completed_drops,
@@ -772,19 +772,13 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
     }
 
     fn resolve_known_hosts(path: Option<PathBuf>) -> miette::Result<PathBuf> {
-        match path {
-            Some(path) => Ok(path),
-            None => {
-                let home = std::env::var_os("HOME").ok_or_else(|| {
-                    miette::miette!("HOME is unset; pass --known-hosts explicitly")
-                })?;
-                Ok(PathBuf::from(home).join(".ssh/known_hosts"))
-            }
+        if let Some(path) = path {
+            Ok(path)
+        } else {
+            let home = std::env::var_os("HOME")
+                .ok_or_else(|| miette::miette!("HOME is unset; pass --known-hosts explicitly"))?;
+            Ok(PathBuf::from(home).join(".ssh/known_hosts"))
         }
-    }
-
-    fn resolve_state_dir(path: Option<PathBuf>) -> miette::Result<PathBuf> {
-        Ok(path.unwrap_or_else(state::default_state_dir))
     }
 
     /// Re-run the scan and return the actionable (non-suppressed) proposals.
@@ -841,7 +835,7 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
             json,
         } => {
             let known_hosts = resolve_known_hosts(known_hosts)?;
-            let state_dir = resolve_state_dir(state_dir)?;
+            let state_dir = state_dir.unwrap_or_else(state::default_state_dir);
             let ScanOutcome {
                 actionable, report, ..
             } = actionable_proposals(&topology, &known_hosts, &state_dir, review_existing).await?;
@@ -926,7 +920,7 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
             json,
         } => {
             let known_hosts = resolve_known_hosts(known_hosts)?;
-            let state_dir = resolve_state_dir(state_dir)?;
+            let state_dir = state_dir.unwrap_or_else(state::default_state_dir);
             let ScanOutcome {
                 actionable, report, ..
             } = actionable_proposals(&topology, &known_hosts, &state_dir, review_existing).await?;
@@ -968,7 +962,7 @@ async fn run_trust(subcommand: TrustCommand) -> Result<(), CliError> {
             state_dir,
         } => {
             let known_hosts = resolve_known_hosts(known_hosts)?;
-            let state_dir = resolve_state_dir(state_dir)?;
+            let state_dir = state_dir.unwrap_or_else(state::default_state_dir);
             let (entries, _) = openssh::parse_entries(&known_hosts).map_err(CliError::from)?;
             if !entries.iter().any(|entry| entry.id == id) {
                 return Err(CliError::new(
@@ -1503,7 +1497,7 @@ async fn export_topology(
     evaluator: &EvaluatorArgs,
 ) -> miette::Result<()> {
     let topology = topology::load_topology_with_options(path, build_options(evaluator)?).await?;
-    let report = validate::validate(&topology);
+    let report = validate(&topology);
     if !report.is_ok() {
         return Err(miette::miette!(
             "refusing to export invalid topology: {} errors",
@@ -1690,8 +1684,8 @@ mod tests {
     }
 
     async fn supply(args: &[&str]) -> Result<(), CliError> {
-        let argv = ["fleetix", "supply"].iter().chain(args);
-        run(Cli::try_parse_from(argv).unwrap()).await
+        let command_line = ["fleetix", "supply"].iter().chain(args);
+        run(Cli::try_parse_from(command_line).unwrap()).await
     }
 
     #[tokio::test]

@@ -34,7 +34,7 @@ struct InputOutput {
     /// Bypass the persistent cache (check always does so)
     #[arg(long)]
     no_cache: bool,
-    /// HTTP URL rewrite rule in source_prefix=target_prefix format
+    /// HTTP URL rewrite rule in `source_prefix=target_prefix` format
     #[arg(long = "http-rewrite")]
     http_rewrite: Vec<String>,
     /// HTTP proxy URL

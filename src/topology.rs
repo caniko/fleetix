@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod service_profiles;
 pub use service_profiles::*;
@@ -891,8 +891,7 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
     let schema_version = entrypoint
         .lines()
         .find(|line| line.trim_start().starts_with("schemaVersion"))
-        .map(str::trim)
-        .unwrap_or("schemaVersion = 0");
+        .map_or("schemaVersion = 0", str::trim);
     out.push_str("\n\n");
     out.push_str(schema_version);
     let shared_names = strip_imports(&read_to_string(src_dir.join("../shared/Names.pkl"))?);
@@ -965,8 +964,9 @@ pub fn flatten_modular_topology(path: &Path) -> miette::Result<String> {
     Ok(out)
 }
 
-fn read_to_string(path: PathBuf) -> miette::Result<String> {
-    std::fs::read_to_string(&path).map_err(|e| miette::miette!("read {}: {e}", path.display()))
+fn read_to_string(path: impl AsRef<Path>) -> miette::Result<String> {
+    let path = path.as_ref();
+    std::fs::read_to_string(path).map_err(|e| miette::miette!("read {}: {e}", path.display()))
 }
 
 fn strip_imports(input: &str) -> String {
@@ -1217,7 +1217,7 @@ links = new {
 
         fs::write(
             root.join("Schema.pkl"),
-            r#"
+            r"
 class Link {
   subnet: String
   port: UInt16 = 51820
@@ -1252,7 +1252,7 @@ class Supply {
   runnerPools: Mapping<String, RunnerPool> = new {}
   budgets: Mapping<String, Budget> = new {}
 }
-"#,
+",
         )
         .map_err(|e| miette::miette!("write Schema.pkl: {e}"))?;
         fs::write(
@@ -1405,7 +1405,7 @@ trust = new S.Trust {
     async fn example_deserializes_tagged_variants() -> miette::Result<()> {
         let temp = tempfile::tempdir().map_err(|error| miette::miette!("tempdir: {error}"))?;
         let path = temp.path().join("Topology.pkl");
-        std::fs::write(
+        fs::write(
             &path,
             r#"
 schemaVersion = 2

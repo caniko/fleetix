@@ -6,14 +6,15 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 fn config(url: String) -> PublisherConfig {
-    serde_json::from_value(json!({
-        "host": "hub", "url": url,
+    let mut value = json!({
+        "host": "hub",
         "systemctl": "/missing-systemctl", "timeout": "/missing-timeout",
         "checks": [{"key": "storage_backup-·-job", "source": {
             "probe": {"type": "unit", "host": "hub", "unit": "worker.service"}
         }}]
-    }))
-    .unwrap()
+    });
+    value["url"] = url.into();
+    serde_json::from_value(value).unwrap()
 }
 
 #[test]

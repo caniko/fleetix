@@ -261,7 +261,7 @@ mod tests {
         let parent_link = root.path().join("parent-link");
         symlink(root.path(), &parent_link).unwrap();
         assert!(read_json::<serde_json::Value>(&parent_link.join("request"), false).is_err());
-        fs::write(&source, vec![b' '; MAX_JSON as usize + 1]).unwrap();
+        fs::write(&source, vec![b' '; usize::try_from(MAX_JSON).unwrap() + 1]).unwrap();
         assert!(read_json::<serde_json::Value>(&source, false).is_err());
         assert!(read_json::<serde_json::Value>(root.path(), false).is_err());
     }

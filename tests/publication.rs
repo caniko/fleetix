@@ -45,7 +45,7 @@ fn apex_and_destination_sites_emit_addresses_without_self_cnames() {
         t["services"]["httpSites"]["media"]["hostname"] = json!(hostname);
         let t = parse(t);
         assert!(validate(&t).is_ok());
-        assert!(t.service_cname_intents().is_empty());
+        assert_eq!(t.service_cname_intents(), [] as [fleetix::CnameIntent; 0]);
         assert!(
             t.publication_address_intents()
                 .iter()
@@ -65,7 +65,10 @@ fn unselected_legacy_sites_keep_the_zone_apex_and_private_names_stay_unpublished
     assert!(t.service_cname_intents()[0].proxied);
     value["services"]["httpSites"]["media"]["access"] = json!("vpn");
     value["services"]["httpSites"]["media"]["dnsPublication"] = json!("none");
-    assert!(parse(value).service_cname_intents().is_empty());
+    assert_eq!(
+        parse(value).service_cname_intents(),
+        [] as [fleetix::CnameIntent; 0]
+    );
 }
 
 #[test]

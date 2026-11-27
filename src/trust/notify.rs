@@ -7,6 +7,7 @@
 
 use super::openssh::Entry;
 use miette::{Result, miette};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -21,10 +22,10 @@ pub fn prompt(entry: &Entry) -> Result<Option<Action>> {
     let summary = format!("Fleetix: new SSH host key for {hostnames}");
     let mut body = format!("{} ({})", entry.key_text, entry.key_type);
     if let Some(fingerprint) = &entry.fingerprint {
-        body.push_str(&format!("\nFingerprint: {fingerprint}"));
+        write!(body, "\nFingerprint: {fingerprint}").unwrap();
     }
     if let Some(comment) = &entry.comment {
-        body.push_str(&format!("\nComment: {comment}"));
+        write!(body, "\nComment: {comment}").unwrap();
     }
     body.push_str("\n\nIntegrate to declare it in Trust.pkl, or ignore.");
 

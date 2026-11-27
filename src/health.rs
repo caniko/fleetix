@@ -82,13 +82,10 @@ fn body_matches(body: &str, assertion: &BodyAssertion) -> bool {
     if !assertion.path.is_empty() && value.is_none() {
         return false;
     }
-    let text = value
-        .map(|v| {
-            v.as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| v.to_string())
-        })
-        .unwrap_or_else(|| body.to_owned());
+    let text = value.map_or_else(
+        || body.to_owned(),
+        |v| v.as_str().map_or_else(|| v.to_string(), str::to_owned),
+    );
     match assertion.operator {
         BodyOperator::Equals => text == assertion.value,
         BodyOperator::Contains => text.contains(&assertion.value),
@@ -320,7 +317,7 @@ pub async fn publish(
         for observation in batch {
             let mut url = base.clone();
             url.path_segments_mut()
-                .map_err(|_| miette::miette!("invalid health publication URL"))?
+                .map_err(|()| miette::miette!("invalid health publication URL"))?
                 .clear()
                 .extend(["api", "v1", "endpoints", &observation.key, "external"]);
             url.query_pairs_mut().append_pair(

@@ -263,7 +263,7 @@ mod tests {
                 },
             ]
         );
-        assert!(plan.deferred_ids.is_empty());
+        assert_eq!(plan.deferred_ids, [] as [String; 0]);
         assert_eq!(
             plan.effective_specs,
             BTreeMap::from([
@@ -305,7 +305,7 @@ mod tests {
         );
         assert_eq!(capped.boarded_ids, vec!["old"]);
         assert_eq!(capped.deferred_ids, vec!["new"]);
-        assert!(capped.superseded.is_empty());
+        assert_eq!(capped.superseded, []);
     }
 
     #[test]
@@ -316,7 +316,7 @@ mod tests {
         ];
         let plan = coalesce_keyed(&items, CoalescePolicy::default());
         assert_eq!(plan.boarded_ids, vec!["a", "b"]);
-        assert!(plan.superseded.is_empty());
+        assert_eq!(plan.superseded, []);
         assert_eq!(plan.solo_groups.len(), 1);
         assert_eq!(plan.solo_groups[0].ids, vec!["a", "b"]);
     }

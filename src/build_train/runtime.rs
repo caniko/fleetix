@@ -5,7 +5,10 @@
 //! restart, the backend rechecks the store; Nix retains ownership of its own output
 //! locks if an old daemon worker outlives the coordinator.
 
-use super::*;
+use super::{
+    BTreeMap, BTreeSet, Definition, Deserialize, Dispatch, Fence, Goal, Graph, HealReport,
+    NodeState, Operation, Outcome, Request, RequestRecord, Serialize, Train, VERSION,
+};
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::os::fd::AsRawFd;
@@ -22,7 +25,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const MAX_FRAME: u64 = 1024 * 1024;
+const MAX_FRAME: usize = 1024 * 1024;
 
 mod ipc;
 pub mod preparation;
@@ -104,6 +107,10 @@ pub struct HealingConfig {
     pub heal_interval_seconds: u64,
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "Serde predicates take the field by reference"
+)]
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
@@ -248,7 +255,7 @@ impl Client {
             command,
         })
         .map_err(|e| e.to_string())?;
-        if raw.len() as u64 >= MAX_FRAME {
+        if raw.len() >= MAX_FRAME {
             return Err("request exceeds protocol limit".into());
         }
         raw.push(b'\n');
@@ -428,7 +435,7 @@ fn same_uid(stream: &UnixStream) -> Result<(), String> {
             uid: 0,
             gid: 0,
         };
-        let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let mut size = libc::socklen_t::try_from(size_of::<libc::ucred>()).unwrap();
         // SAFETY: credential and size are writable, correctly sized buffers. The
         // live stream owns the descriptor. getsockopt initializes no references.
         let result = unsafe {
@@ -436,11 +443,11 @@ fn same_uid(stream: &UnixStream) -> Result<(), String> {
                 stream.as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_PEERCRED,
-                (&mut credential as *mut libc::ucred).cast(),
-                &mut size,
+                (&raw mut credential).cast(),
+                &raw mut size,
             )
         };
-        if result != 0 || size as usize != std::mem::size_of::<libc::ucred>() {
+        if result != 0 || size as usize != size_of::<libc::ucred>() {
             return Err("cannot authenticate coordinator peer".into());
         }
         // SAFETY: geteuid has no preconditions.
@@ -684,11 +691,17 @@ fn flush_waiters(
 }
 
 /// Run one exclusive coordinator. No evaluation lease is held by this service.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "keep the owned coordinator entry point for callers that move their inputs into a thread"
+)]
 pub fn serve(
     config: Config,
     backend: Arc<dyn Backend>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    use std::os::unix::fs::FileTypeExt;
+
     if config.workers == 0
         || config.workers > 64
         || config.queue_limit == 0
@@ -809,7 +822,6 @@ pub fn serve(
         if UnixStream::connect(&config.socket).is_ok() {
             return Err("a live coordinator already owns this socket".into());
         }
-        use std::os::unix::fs::FileTypeExt;
         let metadata = fs::symlink_metadata(&config.socket).map_err(|e| e.to_string())?;
         if !metadata.file_type().is_socket() {
             return Err("refusing to replace a non-socket endpoint".into());
@@ -1006,8 +1018,7 @@ pub fn serve(
                 for id in pending_before {
                     if train
                         .outcome(&id)
-                        .ok()
-                        .is_some_and(|outcome| outcome != Outcome::Pending)
+                        .is_ok_and(|outcome| outcome != Outcome::Pending)
                     {
                         train.touch_request(&id, ts);
                     }

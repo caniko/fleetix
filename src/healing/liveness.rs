@@ -113,25 +113,29 @@ pub fn parse_proc_stat_bytes(bytes: &[u8]) -> Option<ProcStat> {
     let ppid = fields.next()?.parse::<u32>().ok()?;
     let pgrp = fields.next()?.parse::<u32>().ok()?;
     // Skip fields 3..=10 (session, tty_nr, tpgid, flags, minflt, cminflt, majflt, cmajflt).
-    let utime = fields.nth(8)?.parse::<u64>().ok()?;
-    let stime = fields.next()?.parse::<u64>().ok()?;
-    let cutime = fields.next()?.parse::<u64>().ok()?;
-    let cstime = fields.next()?.parse::<u64>().ok()?;
+    let user_ticks = fields.nth(8)?.parse::<u64>().ok()?;
+    let system_ticks = fields.next()?.parse::<u64>().ok()?;
+    let child_user_ticks = fields.next()?.parse::<u64>().ok()?;
+    let child_system_ticks = fields.next()?.parse::<u64>().ok()?;
     // Skip fields 15..=18 (priority, nice, num_threads, itrealvalue).
     let start_ticks = fields.nth(4)?.parse::<u64>().ok()?;
     Some(ProcStat {
         state,
         ppid,
         pgrp,
-        utime,
-        stime,
-        cutime,
-        cstime,
+        utime: user_ticks,
+        stime: system_ticks,
+        cutime: child_user_ticks,
+        cstime: child_system_ticks,
         start_ticks,
     })
 }
 
 /// Pure, testable liveness verdict from pre-collected host observations.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "keep accepting an owned observation result from the procfs reader"
+)]
 pub fn evaluate_liveness<E>(
     recorded: &ProcessIdentity,
     current_boot_id: Option<&str>,
@@ -354,7 +358,7 @@ mod tests {
         assert_eq!(stat.stime, 222);
         assert_eq!(stat.cutime, 33);
         assert_eq!(stat.cstime, 44);
-        assert_eq!(stat.start_ticks, 9876543);
+        assert_eq!(stat.start_ticks, 9_876_543);
         assert_eq!(stat.total_cpu_ticks(), 410);
     }
 

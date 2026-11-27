@@ -445,7 +445,7 @@ fn named_outputs_of_one_derivation_never_compile_concurrently() {
     };
     let definitions = BTreeMap::from([
         (
-            out.clone(),
+            out,
             Definition {
                 output_path: "/store/out".into(),
                 dependencies: BTreeSet::new(),
@@ -684,7 +684,7 @@ fn auto_healing_cancels_superseded_expires_held_retires_terminal_and_requeues_ca
         .register(request("held", "murph", "m"), false)
         .unwrap();
     train.touch_request("held", 100);
-    assert!(train.expire_held(199, 100).is_empty());
+    assert_eq!(train.expire_held(199, 100), [] as [String; 0]);
     assert_eq!(train.expire_held(200, 100), vec!["held"]);
     assert_eq!(train.outcome("held").unwrap(), Outcome::Cancelled);
 

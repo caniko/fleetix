@@ -9,7 +9,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use fleetix::mcp_server::{Effect, Invocation, Server};
+use fleetix::mcp_server::{Effect, Invocation, Server, rmcp};
 use rmcp::ClientLifecycleMode;
 use rmcp::handler::server::common::schema_for_input;
 use rmcp::handler::server::router::tool::ToolRoute;
@@ -102,7 +102,7 @@ fn text(result: &CallToolResult) -> &str {
 
 #[test]
 fn sdk_is_reexported() {
-    let implementation = fleetix::mcp_server::rmcp::model::Implementation::new("reexport", "0");
+    let implementation = rmcp::model::Implementation::new("reexport", "0");
     assert_eq!(implementation.name, "reexport");
 }
 
@@ -375,14 +375,14 @@ mod consumer {
     use super::*;
 
     /// One downstream consumer contributes a typed route.
-    pub fn install_reads(server: &mut Server, calls: Arc<AtomicUsize>) {
+    pub(crate) fn install_reads(server: &mut Server, calls: Arc<AtomicUsize>) {
         server
             .register(Effect::Read, echo_route("alpha-read", "consumer a", calls))
             .unwrap();
     }
 
     /// Another consumer contributes a dynamic route to the same server.
-    pub fn install_dynamic(server: &mut Server) {
+    pub(crate) fn install_dynamic(server: &mut Server) {
         let route = ToolRoute::new_dyn(echo_tool("beta-run", "consumer b"), |context| {
             Box::pin(async move {
                 let name = context.name.to_string();

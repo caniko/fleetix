@@ -163,7 +163,11 @@ pub fn queue(spool: &Path, request: Request) -> Result<Op> {
             .into_diagnostic()
             .wrap_err("serialize the transaction")?,
     );
-    op.id = format!("{}-{}", created.format("%Y%m%dT%H%M%S"), &hex(&digest)[..6]);
+    op.id = format!(
+        "{}-{}",
+        created.format("%Y%m%dT%H%M%S"),
+        &format!("{digest:x}")[..6]
+    );
     validate(&op)?;
     let dir = spool.join(PENDING);
     std::fs::create_dir_all(&dir)
@@ -183,10 +187,6 @@ pub fn queue(spool: &Path, request: Request) -> Result<Op> {
         .into_diagnostic()
         .wrap_err("persist the transaction")?;
     Ok(op)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Whether a transaction passes every on-disk contract check.
@@ -287,6 +287,10 @@ pub fn load(path: &Path) -> Result<Op> {
 
 /// Debug formatting escapes control characters that a hostile file name or
 /// spool content would otherwise send to the operator's terminal.
+#[expect(
+    clippy::unnecessary_debug_formatting,
+    reason = "preserve control-character escaping for untrusted spool paths"
+)]
 fn ignored(path: &Path, error: &miette::Report) -> String {
     let chain: Vec<String> = error.chain().map(ToString::to_string).collect();
     format!("ops: ignoring {:?}: {:?}", path, chain.join(": "))
@@ -485,10 +489,10 @@ pub fn summarize(spool: &Path, now: chrono::DateTime<chrono::Utc>) -> Result<Spo
                     Ok(op) => {
                         count += 1;
                         if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&op.created) {
-                            let age = now
+                            let elapsed = now
                                 .signed_duration_since(created.with_timezone(&chrono::Utc))
-                                .num_seconds()
-                                .max(0) as u64;
+                                .num_seconds();
+                            let age = u64::try_from(elapsed).unwrap_or(0);
                             *oldest_age = Some(oldest_age.map_or(age, |prev| prev.max(age)));
                         }
                     }
@@ -565,7 +569,7 @@ mod tests {
             steps: argvs
                 .iter()
                 .map(|argv| Step {
-                    argv: argv.iter().map(|word| word.to_string()).collect(),
+                    argv: argv.iter().map(ToString::to_string).collect(),
                     note: "Do the step.".into(),
                     root: true,
                 })
@@ -617,7 +621,7 @@ mod tests {
         let path = spool_path(spool.path(), PENDING, &op.id).unwrap();
         assert_eq!(load(&path).unwrap(), op);
         assert_eq!(pending(spool.path(), None).unwrap(), vec![op.clone()]);
-        assert!(pending(spool.path(), Some("nomad")).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), Some("nomad")).unwrap(), []);
         // The status snapshot carries the same transaction.
         let pending_op = crate::status::PendingOp::from(&op);
         assert_eq!(pending_op.id, op.id);
@@ -635,26 +639,26 @@ mod tests {
         let mut forged = op.clone();
         forged.title = "harmless\x1b[2K\r    1. true".into();
         write(&forged);
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         forged.title = op.title.clone();
         forged.source = Some(Source {
             t3_thread: Some("x\x1b[2K".into()),
             claude_session: None,
         });
         write(&forged);
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         forged.source = None;
         forged.created = "\x1b[2K".into();
         write(&forged);
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         forged.created = op.created.clone();
         // Every step carries a printable note.
         forged.steps[0].note = " ".into();
         write(&forged);
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         forged.steps[0].note = "x\x1b[2K".into();
         write(&forged);
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         forged.steps[0].note = "Check the unit first.".into();
         forged.steps[0].root = false;
         write(&forged);
@@ -668,16 +672,16 @@ mod tests {
                 .replace(",\"root\":false", ""),
         )
         .unwrap();
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         forged.host = "../atlas".into();
         write(&forged);
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
 
         // The file name must be the transaction id.
         let misnamed = spool.path().join(PENDING).join("other.json");
         std::fs::write(&misnamed, serde_json::to_vec(&op).unwrap()).unwrap();
         assert!(load(&misnamed).is_err());
-        assert!(pending(spool.path(), None).unwrap().is_empty());
+        assert_eq!(pending(spool.path(), None).unwrap(), []);
         std::fs::remove_file(&misnamed).unwrap();
 
         // A step is argv: a bare operator would reach the command as an argument.

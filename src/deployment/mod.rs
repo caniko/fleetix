@@ -495,13 +495,15 @@ impl Transaction {
                 }
             }
         }
-        if (self.state == State::Prepared && self.trial_started)
-            || (matches!(
+        let invalid_trial = if self.trial_started {
+            self.state == State::Prepared
+        } else {
+            matches!(
                 self.state,
                 State::Trial | State::Committing | State::Committed
-            ) && !self.trial_started)
-            || (self.after.is_some() && !self.trial_started)
-        {
+            ) || self.after.is_some()
+        };
+        if invalid_trial {
             return Err(DeploymentError::InvalidField {
                 field: "trialStarted",
                 reason: "does not match the recorded phase".into(),
@@ -613,18 +615,12 @@ impl Transaction {
                 self.state = State::Committing;
                 Ok(())
             }
-            (State::Trial, Event::TrialFailed { reason }) => {
-                self.restore(reason);
-                Ok(())
-            }
-            (
+            (State::Trial, Event::TrialFailed { reason })
+            | (
                 State::Prepared | State::Trial | State::Committing,
                 Event::VerificationFailed { reason },
-            ) => {
-                self.restore(reason);
-                Ok(())
-            }
-            (State::Committing, Event::CommitFailed { reason }) => {
+            )
+            | (State::Committing, Event::CommitFailed { reason }) => {
                 self.restore(reason);
                 Ok(())
             }
@@ -820,11 +816,11 @@ fn check_slug(field: &'static str, value: &str, max_len: usize) -> Result<(), De
         && value
             .as_bytes()
             .first()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            .is_some_and(u8::is_ascii_alphanumeric)
         && value
             .as_bytes()
             .last()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric());
+            .is_some_and(u8::is_ascii_alphanumeric);
     if valid {
         Ok(())
     } else {

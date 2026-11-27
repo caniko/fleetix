@@ -9,6 +9,7 @@ use crate::fsutil::atomic_write;
 use crate::pkl::string_literal;
 use crate::topology::matching_brace;
 use miette::{Result, miette};
+use std::fmt::Write as _;
 use std::path::Path;
 
 const DEFAULT_TRUST_PKL: &str = r#"// Fleet-level trust declarations.
@@ -28,11 +29,11 @@ pub fn entry_literal(entry: &Entry) -> String {
     out.push_str("    new S.SshKnownHost {\n");
     out.push_str("      hostNames = new Listing {\n");
     for name in &entry.host_names {
-        out.push_str(&format!("        {}\n", string_literal(name)));
+        writeln!(out, "        {}", string_literal(name)).unwrap();
     }
     out.push_str("      }\n");
     out.push_str("      publicKeys = new Listing {\n");
-    out.push_str(&format!("        {}\n", string_literal(&entry.key_text)));
+    writeln!(out, "        {}", string_literal(&entry.key_text)).unwrap();
     out.push_str("      }\n");
     out.push_str("      provenance = \"observed-known-hosts\"\n");
     out.push_str("    }");
@@ -44,10 +45,10 @@ pub fn entry_literal(entry: &Entry) -> String {
 /// Returns the previous file contents so callers can roll back.
 pub fn patch_trust_pkl(path: &Path, entry: &Entry) -> Result<Option<Vec<u8>>> {
     let previous = std::fs::read(path).ok();
-    let content = previous
-        .as_deref()
-        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-        .unwrap_or_else(|| DEFAULT_TRUST_PKL.to_string());
+    let content = previous.as_deref().map_or_else(
+        || DEFAULT_TRUST_PKL.to_string(),
+        |bytes| String::from_utf8_lossy(bytes).into_owned(),
+    );
     let patched = insert_entry(&content, entry)?;
     atomic_write(path, patched.as_bytes())?;
     Ok(previous)
@@ -81,7 +82,7 @@ fn insert_entry(content: &str, entry: &Entry) -> Result<String> {
         return Err(miette!("sshKnownHosts listing is not brace-balanced"));
     }
     let mut patched = String::with_capacity(content.len() + 256);
-    patched.push_str(&content[..open + 1]);
+    patched.push_str(&content[..=open]);
     patched.push('\n');
     patched.push_str(&entry_literal(entry));
     patched.push_str(&content[open + 1..]);
@@ -190,10 +191,10 @@ trust = new S.Trust {
     fn restore_returns_file_to_previous_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("Trust.pkl");
-        let original = r#"trust = new S.Trust {
+        let original = r"trust = new S.Trust {
   sshKnownHosts = new Listing<S.SshKnownHost> {}
 }
-"#
+"
         .to_string();
         std::fs::write(&path, &original).unwrap();
         let previous = patch_trust_pkl(&path, &entry("host.example", "AAAA")).unwrap();

@@ -17,14 +17,19 @@ fn doc(producer: &str, body: Value) -> FactsDocument {
         "producer": {"name": producer, "version": "0"},
         "observedAt": "2026-10-26T00:00:00Z"
     });
-    for (key, field) in body.as_object().unwrap() {
-        value[key] = field.clone();
+    let Value::Object(body) = body else {
+        panic!("fixture body must be an object");
+    };
+    for (key, field) in body {
+        value[key] = field;
     }
     serde_json::from_value(value).unwrap()
 }
 
 fn repo(coordinate: &str, attrs: Value) -> Value {
-    json!({"id": format!("repo:{coordinate}"), "kind": "repo", "attrs": attrs})
+    let mut node = json!({"id": format!("repo:{coordinate}"), "kind": "repo"});
+    node["attrs"] = attrs;
+    node
 }
 
 fn usage(coordinate: &str, kind: &str, state: &str) -> Value {
@@ -37,22 +42,27 @@ fn usage(coordinate: &str, kind: &str, state: &str) -> Value {
 
 fn row(kind: &str, matches: Value, status: &str, lands: bool, extra: Value) -> Value {
     let mut value = json!({
-        "usageKind": kind, "match": matches, "path": "p", "via": "v",
+        "usageKind": kind, "path": "p", "via": "v",
         "lands": lands, "status": status, "reason": "r"
     });
-    for (key, field) in extra.as_object().unwrap() {
-        value[key] = field.clone();
+    value["match"] = matches;
+    let Value::Object(extra) = extra else {
+        panic!("fixture extras must be an object");
+    };
+    for (key, field) in extra {
+        value[key] = field;
     }
     value
 }
 
 fn enrolled(coordinate: &str, orchestrator: &str, attrs: Value) -> Value {
-    json!({
+    let mut edge = json!({
         "from": format!("repo:{coordinate}"),
         "to": format!("orchestrator:{orchestrator}"),
         "kind": "enrolledIn",
-        "attrs": attrs
-    })
+    });
+    edge["attrs"] = attrs;
+    edge
 }
 
 /// `(node, blocker, subcode, owner)` for every gap.
@@ -101,7 +111,7 @@ fn parse_accepts_one_document_or_an_array_and_rejects_other_contracts() {
     let error = supply::parse(&json!([one, newer]).to_string()).unwrap_err();
     assert!(error.to_string().contains("unsupported facts contract"));
 
-    let mut unknown = one.clone();
+    let mut unknown = one;
     unknown["extra"] = json!(true);
     assert!(supply::parse(&unknown.to_string()).is_err());
 }
@@ -190,7 +200,10 @@ fn r2_picks_the_most_specific_row_per_producer_and_ties_conflict() {
         json!({"capabilities": [row("ci.primary", json!({}), "implemented", true, json!({}))]}),
     );
     let with_nodes = doc("simit", json!({"nodes": nodes}));
-    assert!(blockers(&[duplicate.clone(), duplicate, with_nodes]).is_empty());
+    assert_eq!(
+        blockers(&[duplicate.clone(), duplicate, with_nodes]),
+        [] as [String; 0]
+    );
 }
 
 #[test]
@@ -306,7 +319,7 @@ fn r4_requires_an_enabled_enrollment_of_the_row_orchestrator() {
         enrolled("h/o/r", "updater/canary", json!({"enabled": true}))
     ]));
     let report = supply::gaps(&supply::build(&[facts.clone(), enabled], None));
-    assert!(report.gaps.is_empty());
+    assert_eq!(report.gaps, [] as [supply::Gap; 0]);
     assert_eq!(
         (report.summary.covered, report.summary.drift.covered),
         (1, 1)
@@ -320,7 +333,10 @@ fn r4_requires_an_enabled_enrollment_of_the_row_orchestrator() {
             "capabilities": [row("ci.primary", json!({}), "implemented", true, json!({"orchestrator": "converge"}))]
         }),
     );
-    assert!(gaps(&[facts.clone(), disabled.clone(), alternate]).is_empty());
+    assert_eq!(
+        gaps(&[facts.clone(), disabled.clone(), alternate]),
+        [] as [(String, String, Option<String>, Option<String>); 0]
+    );
     let alternate_unenrolled = doc(
         "canix",
         json!({"capabilities": [row("ci.primary", json!({}), "implemented", true, json!({"orchestrator": "converge"}))]}),
@@ -361,7 +377,7 @@ fn r5_reports_expectations_until_some_producer_supplies_the_attr() {
         blockers(&[facts.clone(), overlay(Value::Null)]),
         ["unknown-generator-revision"]
     );
-    assert!(blockers(&[facts, overlay(json!("abc"))]).is_empty());
+    assert_eq!(blockers(&[facts, overlay(json!("abc"))]), [] as [String; 0]);
 }
 
 #[test]
@@ -394,7 +410,7 @@ fn blocker_summary_counts_usages_without_a_usage_kind() {
     let kindless = json!({"id": "usage:h/o/r#x", "kind": "usage"});
     let report = supply::gaps(&supply::build(
         &[
-            doc("simit", json!({"nodes": [kindless.clone()]})),
+            doc("simit", json!({"nodes": [kindless]})),
             doc(
                 "canix",
                 json!({"nodes": [{"id": "usage:h/o/r#x", "kind": "usage", "attrs": {"state": "drift"}}]}),
