@@ -574,7 +574,10 @@ fn diff_reports_added_removed_and_revision_changes_per_producer() {
     );
 
     // The same graph compared with itself is empty.
-    assert!(supply::diff(&next, &next).producers.is_empty());
+    assert_eq!(
+        supply::diff(&next, &next).producers,
+        [] as [supply::ProducerDiff; 0]
+    );
 }
 
 #[test]
@@ -875,7 +878,7 @@ fn commit_lock(directory: &Path, lock: &str) -> String {
 fn producer_lock(inputs: &[&str]) -> String {
     let inputs: serde_json::Map<_, _> = inputs
         .iter()
-        .map(|name| (name.to_string(), json!(name)))
+        .map(|&name| (name.to_string(), json!(name)))
         .collect();
     json!({"nodes": {"root": {"inputs": inputs}}, "root": "root", "version": 7}).to_string()
 }

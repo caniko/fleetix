@@ -1,8 +1,8 @@
 //! Native Nix integration over the shared construction engine. Publication,
 //! live admission checks and host activation remain caller-owned.
 use super::{
+    Definition, Dispatch, Goal, Graph, Operation, Request, Train,
     runtime::{self, Backend, Client, Config},
-    *,
 };
 use nix_manager_core::build::frontier::{Native, Node as NativeNode, Output};
 use serde::{Deserialize, Serialize};
@@ -80,8 +80,8 @@ pub struct Service {
     pub memory_max: String,
 }
 
-/// Version-2 positional JSON, mirrored by the NixOS module. Arrays remain stable
-/// under serde_json/preserve_order feature unification.
+/// Version-2 positional JSON, mirrored by the `NixOS` module. Arrays remain stable
+/// under `serde_json/preserve_order` feature unification.
 pub fn policy_identity(service: &Service) -> Result<String, String> {
     let native = &service.native;
     let config = &service.coordinator;
@@ -135,7 +135,9 @@ impl NixBackend {
             }
             match std::fs::symlink_metadata(path) {
                 Ok(meta)
-                    if meta.is_dir() && meta.uid() == base.uid() && meta.mode() & 0o077 == 0 => {}
+                    if meta.is_dir()
+                        && meta.uid() == base.uid()
+                        && meta.mode().trailing_zeros() >= 6 => {}
                 Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => {}
                 _ => return Err("unsafe request GC root namespace".into()),
             }
@@ -442,7 +444,7 @@ impl Backend for NixBackend {
             outputs
                 .iter()
                 .filter(|path| std::fs::symlink_metadata(path).is_ok())
-                .map(|path| path.to_string())
+                .map(ToString::to_string)
                 .collect(),
         )?;
         let live: std::collections::BTreeMap<_, _> = train
@@ -462,17 +464,14 @@ impl Backend for NixBackend {
             if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
                 continue;
             }
-            match entry.file_name().to_str().and_then(|name| live.get(name)) {
+            if let Some(request) = entry.file_name().to_str().and_then(|name| live.get(name)) {
                 // Also compacts per-path request roots written by older trains.
-                Some(request) => {
-                    let keep = request_paths(request, &Graph::new());
-                    remove_roots(&directory, |target| !keep.contains(target))?;
-                }
+                let keep = request_paths(request, &Graph::new());
+                remove_roots(&directory, |target| !keep.contains(target))?;
+            } else {
                 // Abandoned: its request left the journal without release.
-                None => {
-                    remove_roots(&directory, |_| true)?;
-                    let _ = std::fs::remove_dir(&directory);
-                }
+                remove_roots(&directory, |_| true)?;
+                let _ = std::fs::remove_dir(&directory);
             }
         }
         remove_roots(&self.0.gc_roots.join("outputs"), |target| {

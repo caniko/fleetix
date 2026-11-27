@@ -107,6 +107,10 @@ pub struct RequestRecord {
     pub updated_at: u64,
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "Serde predicates take the field by reference"
+)]
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
@@ -286,7 +290,8 @@ impl Train {
             .filter(|record| record.prepared && !record.cancelled)
             .flat_map(|record| self.needed(&record.request.roots))
             .collect();
-        self.register(request.clone(), true)?;
+        let attempt = request.attempt.clone();
+        self.register(request, true)?;
         for (goal, definition) in graph {
             let may_replan = selected.contains(&goal)
                 && (definition.operation == Operation::Restore
@@ -308,7 +313,7 @@ impl Train {
         }
         let record = self
             .requests
-            .get_mut(&request.attempt)
+            .get_mut(&attempt)
             .ok_or("missing prepared request")?;
         record.prepared = true;
         record.preparation_error = None;
@@ -368,7 +373,7 @@ impl Train {
             .map(|id| self.retained_graph(id))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
-            .flat_map(|graph| graph.into_keys())
+            .flat_map(BTreeMap::into_keys)
             .collect();
         self.nodes.retain(|goal, node| {
             retained.contains(goal) || matches!(node.state, NodeState::Running { .. })
@@ -824,9 +829,8 @@ impl Train {
                         .is_none_or(|fence| fence.attempt != **id)
                     && self
                         .outcome(id)
-                        .ok()
-                        .is_some_and(|outcome| outcome != Outcome::Pending)
-                    && self.retained_graph(id).ok().is_some_and(|graph| {
+                        .is_ok_and(|outcome| outcome != Outcome::Pending)
+                    && self.retained_graph(id).is_ok_and(|graph| {
                         !graph
                             .keys()
                             .any(|goal| matches!(self.nodes[goal].state, NodeState::Running { .. }))

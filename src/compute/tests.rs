@@ -87,7 +87,7 @@ fn placement_and_recommendation_use_caller_supplied_hosts() {
         host_required_bytes: BTreeMap::from([("worker-b".into(), 8 * GIB)]),
         ..PlacementRequest::default()
     };
-    assert!(req.prefer.is_empty());
+    assert_eq!(req.prefer, [] as [String; 0]);
     assert_eq!(snapshot.eligible_host_for(&req), None);
     assert_eq!(
         tracker.try_claim(req.clone(), "job", OWNER, at(0)),
@@ -196,7 +196,7 @@ fn dropped_response_and_restart_do_not_duplicate_a_live_remote_unit() {
         .record_sample(sample("nomad", 2, 95), at(95))
         .unwrap();
     let view = &tracker.snapshot(at(95)).hosts["nomad"];
-    assert!(view.active_claims.is_empty());
+    assert_eq!(view.active_claims, []);
     assert_eq!(view.state, HostAvailability::Free);
     assert!(grant(&mut tracker, other, "next", 95).generation > granted.generation);
 }
@@ -808,7 +808,7 @@ fn stale_or_pre_reconciliation_samples_cannot_clear_a_claim() {
     tracker
         .record_sample(sample("nomad", 4, 19), at(19))
         .unwrap();
-    assert!(tracker.persisted_state().claims.is_empty());
+    assert_eq!(tracker.persisted_state().claims, []);
 }
 
 #[test]
@@ -897,7 +897,7 @@ fn claim_actions_require_the_principal_not_the_public_holder_label() {
             .release(
                 "pending",
                 ReleaseRequest {
-                    holder: pending.holder.clone(),
+                    holder: pending.holder,
                     unit_confirmed_stopped: true,
                     never_started: false,
                 },
@@ -949,7 +949,7 @@ fn omitted_workload_inventory_complete_defaults_false_and_cannot_clear_reconcili
 
 #[test]
 fn wire_defaults_round_trip_and_schema_versions_fail_closed() {
-    fn check<T: Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq>(value: &T) {
+    fn check<T: Serialize + serde::de::DeserializeOwned + fmt::Debug + PartialEq>(value: &T) {
         let mut json = serde_json::to_value(value).unwrap();
         assert_eq!(json["schemaVersion"], SCHEMA_VERSION);
         assert_eq!(&serde_json::from_value::<T>(json.clone()).unwrap(), value);
@@ -966,7 +966,7 @@ fn wire_defaults_round_trip_and_schema_versions_fail_closed() {
         "kind": "adjacentRun", "project": "phemus", "requiredBytes": 1
     }))
     .unwrap();
-    assert!(req.prefer.is_empty());
+    assert_eq!(req.prefer, [] as [String; 0]);
     assert_eq!(req.ttl_secs, 90);
     check(&req);
     let mut tracker = ComputeTracker::new(hosts(), "wire");

@@ -286,19 +286,19 @@ fn malformed_native_intake_is_rejected_without_poisoning_restart() {
                 request.roots = BTreeSet::from([Goal {
                     derivation: "00000000000000000000000000000000-relative.drv".into(),
                     output: "out".into(),
-                }])
+                }]);
             }
             "long-source" => {
                 request.source = format!(
                     "/nix/store/00000000000000000000000000000000-{}#target",
                     "x".repeat(256)
-                )
+                );
             }
             _ => {
                 request.roots = BTreeSet::from([Goal {
                     derivation: format!("{valid}.drv"),
                     output: "bad/name".into(),
-                }])
+                }]);
             }
         }
         let attempt = request.attempt.clone();
@@ -391,7 +391,7 @@ fn requests_root_only_their_identity_and_prune_drops_unowned_roots() {
             .mode(0o700)
             .recursive(true)
             .create(path)
-            .unwrap()
+            .unwrap();
     };
     private(&native.gc_roots);
     let backend = NixBackend(native.clone());

@@ -80,41 +80,41 @@ fn dispatch(args: Args) -> Result<(), String> {
         Command::DeployDev { system } => {
             print_operation(
                 "deployed dev",
-                runtime::deploy_dev(&policy, &backend, &system)?,
+                &runtime::deploy_dev(&policy, &backend, &system)?,
             );
             Ok(())
         }
         Command::Promote { expected_dev } => {
             print_operation(
                 "promoted to prod",
-                runtime::promote(&policy, &backend, &expected_dev)?,
+                &runtime::promote(&policy, &backend, &expected_dev)?,
             );
             Ok(())
         }
         Command::Rollback { expected_prod } => {
             print_operation(
                 "rolled back prod",
-                runtime::rollback(&policy, &backend, expected_prod.as_deref())?,
+                &runtime::rollback(&policy, &backend, expected_prod.as_deref())?,
             );
             Ok(())
         }
         Command::Recover { operation } => {
             print_operation(
                 "recovered",
-                runtime::recover(&policy, &backend, operation.as_deref())?,
+                &runtime::recover(&policy, &backend, operation.as_deref())?,
             );
             Ok(())
         }
         Command::Resume { operation } => {
             print_operation(
                 "resumed",
-                runtime::resume(&policy, &backend, operation.as_deref())?,
+                &runtime::resume(&policy, &backend, operation.as_deref())?,
             );
             Ok(())
         }
         Command::Boot => {
             let report = runtime::boot(&policy, &backend)?;
-            print_boot(&report)?;
+            print_boot(&report);
             if report.ok() {
                 Ok(())
             } else {
@@ -173,7 +173,7 @@ fn print_status(status: &StatusReport) -> Result<(), String> {
     Ok(())
 }
 
-fn print_operation(action: &str, report: OperationReport) {
+fn print_operation(action: &str, report: &OperationReport) {
     if report.aborted {
         println!(
             "aborted: surface={} candidate={} operation={}",
@@ -188,7 +188,7 @@ fn print_operation(action: &str, report: OperationReport) {
     );
 }
 
-fn print_boot(report: &BootReport) -> Result<(), String> {
+fn print_boot(report: &BootReport) {
     if report.started.is_empty() {
         println!("boot: no durably verified surfaces");
     } else {
@@ -205,7 +205,6 @@ fn print_boot(report: &BootReport) -> Result<(), String> {
     for error in &report.errors {
         eprintln!("boot: {error}");
     }
-    Ok(())
 }
 
 fn value(value: Option<&str>) -> &str {

@@ -275,7 +275,7 @@ fn fetches_from_mock_rbw_and_bootstraps_mock_gcloud() {
     fs::set_permissions(&mock_gcloud, fs::Permissions::from_mode(0o755)).unwrap();
 
     let mut cfg = GcpDriveBootstrapConfig::new("sample-drive-backup", "Sample Drive Backup");
-    cfg.gcloud_bin = mock_gcloud.clone();
+    cfg.gcloud_bin = mock_gcloud;
     cfg.interactive_login = false;
     let first = bootstrap_gcp_drive_project(&cfg).unwrap();
     assert_eq!(first.account, "operator@example.test");
@@ -290,7 +290,7 @@ fn fetches_from_mock_rbw_and_bootstraps_mock_gcloud() {
 
     let second = bootstrap_gcp_drive_project(&cfg).unwrap();
     assert!(!second.project_created);
-    assert!(second.newly_enabled_apis.is_empty());
+    assert_eq!(second.newly_enabled_apis, [] as [String; 0]);
 }
 
 #[test]

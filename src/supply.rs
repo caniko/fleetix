@@ -571,10 +571,10 @@ impl Graph {
             let entry = best
                 .entry(row.producer.as_str())
                 .or_insert((specificity, Vec::new()));
-            if specificity > entry.0 {
-                *entry = (specificity, vec![capability]);
-            } else if specificity == entry.0 {
-                entry.1.push(capability);
+            match specificity.cmp(&entry.0) {
+                std::cmp::Ordering::Greater => *entry = (specificity, vec![capability]),
+                std::cmp::Ordering::Equal => entry.1.push(capability),
+                std::cmp::Ordering::Less => {}
             }
         }
         best.into_iter()
@@ -1068,6 +1068,15 @@ pub fn walk(graph: &Graph, id: &str, reverse: bool, depth: usize) -> miette::Res
 const HEAVY_RUN_MINUTES: f64 = 30.0;
 const MONTH_DAYS: f64 = 30.0;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "publish whole rounded minutes; Rust's saturating cast preserves the report's existing bounds"
+)]
+fn rounded_minutes(minutes: f64) -> u64 {
+    minutes.round() as u64
+}
+
 /// A workflow's observed CI usage over `windowDays`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1226,7 +1235,7 @@ pub fn budget(
                     candidates.push(Candidate {
                         rule,
                         node: node.id.clone(),
-                        estimated_savings: minutes.round() as u64,
+                        estimated_savings: rounded_minutes(minutes),
                         reason,
                     });
                 }
@@ -1273,8 +1282,10 @@ pub fn budget(
         });
         // The total is the sum of the rounded components, so the serialized
         // report adds up.
-        let (observed_minutes, updater_minutes) =
-            (observed_total.round() as u64, updater_total.round() as u64);
+        let (observed_minutes, updater_minutes) = (
+            rounded_minutes(observed_total),
+            rounded_minutes(updater_total),
+        );
         let forecast = observed_total + updater_total;
         let allowance = f64::from(budget.minutes_per_month);
         budgets.push(BudgetForecast {

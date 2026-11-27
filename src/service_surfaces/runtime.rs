@@ -7,9 +7,13 @@
 //! mismatched journals before opening commands. In fixture mode (unprivileged)
 //! the same checks bind the current user and a private temp directory.
 
-use super::*;
+use super::{
+    Evidence, Failure, Operation, Pending, Phase, Policy, State, Surface, validate_absolute_path,
+    validate_operation_id, validate_store_path,
+};
 use fs2::FileExt;
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -174,7 +178,7 @@ pub(super) fn ensure_roots_dir(policy: &Policy) -> Result<PathBuf, String> {
 /// Keep it on the acquiring thread: synchronous Native commands retain its
 /// lease in a bounded host-only keeper, never in a guest command's fd table.
 pub struct HostLock {
-    _file: File,
+    file: File,
     // Native commands execute synchronously on the acquiring thread.
     _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
@@ -202,7 +206,7 @@ pub(super) fn lease_descriptors() -> std::io::Result<Vec<OwnedFd>> {
 
 impl Drop for HostLock {
     fn drop(&mut self) {
-        HOST_LEASES.with_borrow_mut(|fds| fds.retain(|&fd| fd != self._file.as_raw_fd()));
+        HOST_LEASES.with_borrow_mut(|fds| fds.retain(|&fd| fd != self.file.as_raw_fd()));
     }
 }
 
@@ -266,7 +270,7 @@ impl HostLock {
         // never guest payloads or unrelated processes/other worker threads.
         HOST_LEASES.with_borrow_mut(|fds| fds.push(file.as_raw_fd()));
         Ok(Self {
-            _file: file,
+            file,
             _thread_bound: std::marker::PhantomData,
         })
     }
@@ -1147,7 +1151,7 @@ fn health_bounded(
                         policy.health_timeout_seconds
                     ));
                 }
-                thread::sleep(interval.min(window - elapsed));
+                thread::sleep(interval.min(window.saturating_sub(elapsed)));
             }
         }
     }
@@ -1459,7 +1463,7 @@ fn record_evidence(
     Ok(())
 }
 
-fn fail(policy: &Policy, pending: &mut Pending, message: String) -> String {
+fn fail(policy: &Policy, pending: &mut Pending, mut message: String) -> String {
     let phase = pending.phase;
     pending.failure = Some(Failure {
         phase,
@@ -1467,24 +1471,28 @@ fn fail(policy: &Policy, pending: &mut Pending, message: String) -> String {
         unix_seconds: now().unwrap_or(1),
     });
     pending.updated_unix_seconds = now().unwrap_or(1);
-    match save_pending(policy, pending) {
-        Ok(()) => format!(
-            "operation {} ({}) failed at {}: {message}; pending journal {} blocks further \
-             changes; run `fleetix-surfaces --policy <path> recover --operation {}`",
+    message.insert_str(
+        0,
+        &format!(
+            "operation {} ({}) failed at {phase}: ",
             pending.id,
-            pending.operation.label(),
-            phase,
-            pending.id,
-            pending.id
+            pending.operation.label()
         ),
-        Err(error) => format!(
-            "operation {} ({}) failed at {}: {message}; additionally failed to persist the \
-             failure: {error}",
-            pending.id,
-            pending.operation.label(),
-            phase
+    );
+    match save_pending(policy, pending) {
+        Ok(()) => write!(
+            message,
+            "; pending journal {} blocks further \
+             changes; run `fleetix-surfaces --policy <path> recover --operation {}`",
+            pending.id, pending.id
+        ),
+        Err(error) => write!(
+            message,
+            "; additionally failed to persist the failure: {error}"
         ),
     }
+    .unwrap();
+    message
 }
 
 fn fail_after_activation(
@@ -1492,17 +1500,20 @@ fn fail_after_activation(
     backend: &dyn Backend,
     surface: Surface,
     pending: &mut Pending,
-    message: String,
+    mut message: String,
 ) -> String {
-    let message = match backend.stop(surface) {
-        Ok(_) => {
-            format!("{message}; stopped {surface} so an unverified closure is not left running")
-        }
-        Err(error) => format!(
-            "{message}; additionally failed to stop {surface}: {error}; \
+    match backend.stop(surface) {
+        Ok(_) => write!(
+            message,
+            "; stopped {surface} so an unverified closure is not left running"
+        ),
+        Err(error) => write!(
+            message,
+            "; additionally failed to stop {surface}: {error}; \
              containment is incomplete"
         ),
-    };
+    }
+    .unwrap();
     fail(policy, pending, message)
 }
 
@@ -1706,13 +1717,14 @@ fn read_bounded(mut file: File) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_JSON_BYTES {
-        return Err(format!("JSON input exceeds {} bytes", MAX_JSON_BYTES));
+        return Err(format!("JSON input exceeds {MAX_JSON_BYTES} bytes"));
     }
     Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Containers, Tools};
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 

@@ -520,10 +520,12 @@ impl HostTelemetrySample {
 }
 
 fn claim_expiry(now: DateTime<Utc>, ttl_secs: u64) -> Result<DateTime<Utc>, ComputeError> {
-    now.checked_add_signed(TimeDelta::seconds(ttl_secs.clamp(15, 300) as i64))
-        .ok_or(ComputeError::InvalidRequest(
-            "claim expiration is out of range",
-        ))
+    now.checked_add_signed(TimeDelta::seconds(
+        i64::try_from(ttl_secs.clamp(15, 300)).unwrap(),
+    ))
+    .ok_or(ComputeError::InvalidRequest(
+        "claim expiration is out of range",
+    ))
 }
 
 impl ComputeClaim {
@@ -696,9 +698,11 @@ impl ComputeTracker {
             }
             _ => {}
         }
+        let ttl = i64::try_from(sample.ttl_secs)
+            .map_err(|_| ComputeError::InvalidSample("sample TTL is out of range"))?;
         let expires_at = sample
             .observed_at
-            .checked_add_signed(TimeDelta::seconds(sample.ttl_secs as i64))
+            .checked_add_signed(TimeDelta::seconds(ttl))
             .ok_or(ComputeError::InvalidSample(
                 "sample expiration is out of range",
             ))?;
@@ -982,9 +986,9 @@ impl ComputeTracker {
                 "claim unit must be non-empty and immutable",
             ));
         }
-        let ttl = req
-            .ttl_secs
-            .unwrap_or_else(|| (claim.expires_at - claim.heartbeat_at).num_seconds().max(0) as u64);
+        let ttl = req.ttl_secs.unwrap_or_else(|| {
+            u64::try_from((claim.expires_at - claim.heartbeat_at).num_seconds()).unwrap_or(0)
+        });
         claim.expires_at = claim_expiry(now, ttl)?;
         claim.heartbeat_at = now;
         if let Some(stage) = req.stage {
@@ -1002,6 +1006,10 @@ impl ComputeTracker {
     }
 
     /// Remove a claim with sufficient stop evidence; otherwise fence it for reconciliation.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "keep the public owned request API; its holder label is not an authentication input"
+    )]
     pub fn release(
         &mut self,
         claim_id: &str,
@@ -1246,7 +1254,7 @@ impl ComputeTracker {
         pending_slots: u32,
         now: DateTime<Utc>,
     ) -> (HostAvailability, Option<&'static str>) {
-        use HostAvailability::*;
+        use HostAvailability::{Busy, Detached, Free, Saturated, Unknown};
         let Some(observation) = observation else {
             return (Unknown, Some("no telemetry"));
         };

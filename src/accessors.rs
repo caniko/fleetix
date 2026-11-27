@@ -51,7 +51,7 @@ impl Topology {
         self.link_server(name).map(|b| b.address.as_str())
     }
 
-    /// Dial string for a given link name: "server_address:port".
+    /// Dial string for a given link name: "`server_address:port`".
     pub fn link_dial(&self, name: &str) -> Option<String> {
         let link = self.links.get(name)?;
         let server_addr = self.link_server_address(name)?;
@@ -170,7 +170,7 @@ impl Topology {
         ))
     }
 
-    /// Best SSH address for a host: LAN, WireGuard, then direct-link.
+    /// Best SSH address for a host: LAN, `WireGuard`, then direct-link.
     pub fn best_ssh_address(&self, host_name: &str) -> Option<&str> {
         self.resolve_host_address(
             host_name,
@@ -344,7 +344,7 @@ impl Topology {
     }
 
     /// HTTP site hostnames keyed by site name.
-    pub fn service_hosts(&self) -> indexmap::IndexMap<&str, &str> {
+    pub fn service_hosts(&self) -> IndexMap<&str, &str> {
         self.services
             .http_sites
             .iter()
@@ -469,9 +469,9 @@ fn address_prefix_len(address: &str) -> Option<u8> {
 mod tests {
     use super::*;
     use crate::topology::{
-        DnsPublication, Domains, DynamicHost, Endpoint, EndpointBind, EndpointTransport, Host,
-        HttpAccess, HttpAction, HttpMatch, HttpRoute, HttpSite, Link, Network, PagesSite, Redirect,
-        Services,
+        Deployment, DnsPublication, Domains, DynamicHost, Endpoint, EndpointBind,
+        EndpointTransport, Gpu, Host, HostManagement, HttpAccess, HttpAction, HttpMatch, HttpRoute,
+        HttpSite, Link, Network, PagesSite, Rebuild, Redirect, Services, Storage, Supply, Trust,
     };
     use indexmap::IndexMap;
 
@@ -536,7 +536,7 @@ mod tests {
         Topology {
             schema_version: 2,
             access: None,
-            supply: Default::default(),
+            supply: Supply::default(),
             links: IndexMap::new(),
             hosts,
             domains: Domains {
@@ -651,8 +651,8 @@ mod tests {
                     ),
                 ]),
             },
-            deployment: Default::default(),
-            trust: Default::default(),
+            deployment: Deployment::default(),
+            trust: Trust::default(),
         }
     }
 
@@ -665,13 +665,13 @@ mod tests {
             host_pubkey: None,
             host_names: vec![],
             network: Network::default(),
-            management: Default::default(),
-            rebuild: Default::default(),
+            management: HostManagement::default(),
+            rebuild: Rebuild::default(),
             links: IndexMap::new(),
             users: IndexMap::new(),
             vpn_profiles: IndexMap::new(),
-            gpu: Default::default(),
-            storage: Default::default(),
+            gpu: Gpu::default(),
+            storage: Storage::default(),
             service_surfaces: None,
         }
     }
@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(lan_topo.service_cname_intents(), service_intents);
         let photos = lan_topo.services.http_sites.get_mut("photos").unwrap();
         photos.access = HttpAccess::Lan;
-        assert!(lan_topo.service_cname_intents().is_empty());
+        assert_eq!(lan_topo.service_cname_intents(), []);
 
         let page_intents = topo.pages_cname_intents(None);
         assert_eq!(page_intents.len(), 1);

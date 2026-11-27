@@ -415,7 +415,7 @@ fn promote_rejects_stale_expected_dev_before_any_prod_action() {
 
     let error = runtime::promote(&policy, &fake, &second).unwrap_err();
     assert!(error.contains("stale expected dev release"), "{error}");
-    assert!(fake.activations(Surface::Prod).is_empty());
+    assert_eq!(fake.activations(Surface::Prod), [] as [String; 0]);
     assert!(pending_of(&policy, &fake).is_none());
 }
 
@@ -430,7 +430,7 @@ fn promote_rejects_fresh_dev_health_failure_without_journal() {
 
     let error = runtime::promote(&policy, &fake, &first).unwrap_err();
     assert!(error.contains("health failed"), "{error}");
-    assert!(fake.activations(Surface::Prod).is_empty());
+    assert_eq!(fake.activations(Surface::Prod), [] as [String; 0]);
     assert!(pending_of(&policy, &fake).is_none());
 }
 
@@ -962,7 +962,7 @@ fn boot_no_state_is_a_safe_noop() {
     let fake = Fake::new(&[]);
     let report = runtime::boot(&policy, &fake).unwrap();
     assert!(report.ok());
-    assert!(report.started.is_empty());
+    assert_eq!(report.started, [] as [Surface; 0]);
     assert!(fake.starts.lock().unwrap().is_empty());
 }
 
@@ -1280,7 +1280,7 @@ fn post_activation_health_failure_stops_candidate_and_keeps_pending() {
 
     let error = runtime::deploy_dev(&policy, &fake, &second).unwrap_err();
     assert!(error.contains("simulated unhealthy stack"), "{error}");
-    assert!(!error.is_empty());
+    assert_ne!(error, "");
     let status = state_of(&policy, &fake);
     assert_eq!(status.pending.as_ref().unwrap().phase.as_str(), "activated");
     assert_eq!(status.state.dev.artifact.as_deref(), Some(first.as_str()));

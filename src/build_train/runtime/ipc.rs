@@ -20,7 +20,7 @@ pub(super) struct Incoming {
 }
 
 impl Incoming {
-    pub fn new(stream: UnixStream) -> Result<Self, String> {
+    pub(super) fn new(stream: UnixStream) -> Result<Self, String> {
         stream.set_nonblocking(true).map_err(|e| e.to_string())?;
         same_uid(&stream)?;
         Ok(Self {
@@ -33,7 +33,7 @@ impl Incoming {
     /// The deadline bounds a slow sender, not this loop: once it expires,
     /// whatever has already arrived is still drained, so a frame that is
     /// complete when the coordinator gets to it is always accepted.
-    pub fn receive(&mut self) -> Result<Option<Vec<u8>>, String> {
+    pub(super) fn receive(&mut self) -> Result<Option<Vec<u8>>, String> {
         let mut buffer = [0u8; IO_CHUNK];
         loop {
             let expired = Instant::now() >= self.deadline;
@@ -44,7 +44,7 @@ impl Incoming {
                     let newline = frame.iter().position(|byte| *byte == b'\n');
                     self.raw
                         .extend_from_slice(&frame[..newline.map_or(size, |n| n + 1)]);
-                    if self.raw.len() as u64 > MAX_FRAME {
+                    if self.raw.len() > MAX_FRAME {
                         return Err("oversized protocol frame".into());
                     }
                     if newline.is_some() {
@@ -82,7 +82,7 @@ pub(super) struct Outgoing {
 }
 
 impl Outgoing {
-    pub fn new(stream: UnixStream, raw: Vec<u8>) -> Self {
+    pub(super) fn new(stream: UnixStream, raw: Vec<u8>) -> Self {
         Self {
             stream,
             raw,
@@ -95,7 +95,7 @@ impl Outgoing {
     /// The deadline bounds a slow reader, not this loop: once it expires, the
     /// reply is still written for as long as the socket accepts it, so a
     /// stalled coordinator never drops a reply the client can take.
-    pub fn pending(&mut self) -> bool {
+    pub(super) fn pending(&mut self) -> bool {
         loop {
             let expired = Instant::now() >= self.deadline;
             let end = (self.written + IO_CHUNK).min(self.raw.len());
@@ -136,7 +136,7 @@ pub(super) fn connected(stream: &UnixStream) -> bool {
     };
     // SAFETY: the borrowed stream keeps its descriptor live; poll receives one
     // initialized writable entry and a zero timeout, so this never blocks.
-    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    let result = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
     if result < 0 {
         return std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
     }
@@ -166,13 +166,11 @@ fn wait(
         } else {
             remaining
         };
-        let milliseconds = remaining
-            .as_millis()
-            .saturating_add(1)
-            .min(i32::MAX as u128) as i32;
+        let milliseconds =
+            i32::try_from(remaining.as_millis().saturating_add(1)).unwrap_or(i32::MAX);
         // SAFETY: the live stream owns the descriptor and poll receives one
         // initialized, writable pollfd. No descriptor crosses the call boundary.
-        let result = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+        let result = unsafe { libc::poll(&raw mut descriptor, 1, milliseconds) };
         if result < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::Interrupted {
@@ -200,9 +198,9 @@ fn connect(
     if name.is_empty() || name.len() >= address.sun_path.len() || name.contains(&0) {
         return Err("invalid coordinator socket path".into());
     }
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
     for (destination, byte) in address.sun_path.iter_mut().zip(name) {
-        *destination = *byte as libc::c_char;
+        *destination = libc::c_char::from_ne_bytes([*byte]);
     }
     // SAFETY: socket returns a fresh descriptor, adopted exactly once below.
     let raw = unsafe {
@@ -221,8 +219,8 @@ fn connect(
     let result = unsafe {
         libc::connect(
             stream.as_raw_fd(),
-            (&address as *const libc::sockaddr_un).cast(),
-            std::mem::size_of_val(&address) as libc::socklen_t,
+            (&raw const address).cast(),
+            libc::socklen_t::try_from(size_of_val(&address)).unwrap(),
         )
     };
     if result < 0 {
@@ -234,15 +232,15 @@ fn connect(
         }
         wait(&stream, libc::POLLOUT, deadline, stop)?;
         let mut error = 0i32;
-        let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
+        let mut length = libc::socklen_t::try_from(size_of_val(&error)).unwrap();
         // SAFETY: initialized, correctly sized writable SO_ERROR storage.
         let result = unsafe {
             libc::getsockopt(
                 stream.as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_ERROR,
-                (&mut error as *mut i32).cast(),
-                &mut length,
+                (&raw mut error).cast(),
+                &raw mut length,
             )
         };
         if result != 0 {
@@ -283,7 +281,7 @@ pub(super) fn exchange(
                 let frame = &buffer[..size];
                 let newline = frame.iter().position(|byte| *byte == b'\n');
                 reply.extend_from_slice(&frame[..newline.map_or(size, |offset| offset + 1)]);
-                if reply.len() as u64 > MAX_FRAME {
+                if reply.len() > MAX_FRAME {
                     return Err("oversized coordinator reply".into());
                 }
                 if newline.is_some() {
@@ -312,7 +310,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let mut reply = Outgoing::new(server.try_clone().unwrap(), frame.clone());
-        reply.deadline = Instant::now() - Duration::from_secs(1);
+        reply.deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         assert!(!reply.pending());
         let mut read = vec![0u8; frame.len()];
         client.read_exact(&mut read).unwrap();
@@ -320,7 +318,7 @@ mod tests {
 
         client.write_all(&frame).unwrap();
         let mut request = Incoming::new(server).unwrap();
-        request.deadline = Instant::now() - Duration::from_secs(1);
+        request.deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         assert_eq!(request.receive().unwrap().unwrap(), frame);
         assert!(request.receive().is_err());
     }

@@ -259,7 +259,7 @@ struct Server {
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<Result<(), String>>>,
     backend: Arc<TestBackend>,
-    _temp: tempfile::TempDir,
+    temp: tempfile::TempDir,
 }
 impl Server {
     fn start() -> Self {
@@ -285,7 +285,7 @@ impl Server {
             stop: Arc::new(AtomicBool::new(false)),
             worker: None,
             backend,
-            _temp: temp,
+            temp,
         };
         server.restart();
         server
@@ -1266,11 +1266,11 @@ fn disconnected_request_continues_and_late_join_changes_actual_worker_order() {
 fn standalone_registration_deadline_detaches_and_allows_explicit_reattachment() {
     let server = Server::start();
     server.backend.block_plan.store(true, Ordering::Relaxed);
-    let connection = server._temp.path().join("connection.json");
-    let request_path = server._temp.path().join("request.json");
+    let connection = server.temp.path().join("connection.json");
+    let request_path = server.temp.path().join("request.json");
     std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
         "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
-        "preparation_dir": server._temp.path().join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
+        "preparation_dir": server.temp.path().join("preparation"), "gc_roots": "/nix/var/nix/gcroots/per-user/operator/fleetix-train"
     })).unwrap()).unwrap();
     std::fs::write(
         &request_path,
@@ -1331,7 +1331,7 @@ fn standalone_registration_deadline_detaches_and_allows_explicit_reattachment() 
 #[test]
 fn standalone_registration_reattachment_rejects_failed_and_cancelled_outcomes() {
     let server = Server::start();
-    let directory = server._temp.path();
+    let directory = server.temp.path();
     let connection = directory.join("connection.json");
     std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
         "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
@@ -1382,7 +1382,7 @@ fn standalone_registration_reattachment_rejects_failed_and_cancelled_outcomes() 
 #[test]
 fn standalone_cli_joins_held_admission_waits_independently_and_reports_cancellation() {
     let server = Server::start();
-    let directory = server._temp.path();
+    let directory = server.temp.path();
     let connection = directory.join("connection.json");
     std::fs::write(&connection, serde_json::to_vec(&serde_json::json!({
         "builder": "builder", "socket": server.config.socket, "policy": server.config.policy,
@@ -1470,7 +1470,7 @@ fn standalone_cli_joins_held_admission_waits_independently_and_reports_cancellat
 fn socket_ownership_is_exclusive_even_with_another_state_directory() {
     let server = Server::start();
     let mut config = server.config.clone();
-    config.state_dir = server._temp.path().join("another-state");
+    config.state_dir = server.temp.path().join("another-state");
     let error = serve(
         config,
         server.backend.clone(),
@@ -2005,7 +2005,7 @@ fn client_policy_mismatch_is_typed_but_transport_failure_is_not() {
     let error = wrong.drain("any", Duration::from_secs(1)).unwrap_err();
     assert!(is_policy_changed(&error), "{error}");
     let absent = Client {
-        socket: server._temp.path().join("absent.sock"),
+        socket: server.temp.path().join("absent.sock"),
         policy: server.config.policy.clone(),
     };
     let error = absent.call(Command::Inspect).unwrap_err();
@@ -2104,7 +2104,7 @@ fn auto_cancel_superseded_cancels_orphaned_worker_without_poisoning_and_complete
     });
     let client = Client {
         socket: config.socket.clone(),
-        policy: config.policy.clone(),
+        policy: config.policy,
     };
     eventually(|| client.call(Command::Inspect).is_ok());
 

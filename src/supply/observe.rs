@@ -63,7 +63,9 @@ pub fn observe(root: &Path, repos: &[ObservedRepo]) -> FactsDocument {
                 "flake.lock",
                 flake_usages as fn(&str, &str) -> Result<Usages, String>,
             ),
-            ("Cargo.lock", cargo_usages),
+            ("Cargo.lock", |coordinate, text| {
+                Ok(cargo_usages(coordinate, text))
+            }),
         ] {
             match show_file(&directory, &reference, file) {
                 Ok(None) => {}
@@ -308,7 +310,7 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
 
-fn usage(coordinate: &str, locator: String, attrs: Attrs) -> Node {
+fn usage(coordinate: &str, locator: &str, attrs: Attrs) -> Node {
     let mut attrs = attrs;
     attrs.insert("state".into(), Value::String("unknown".into()));
     Node {
@@ -384,7 +386,7 @@ fn flake_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
             let follows = follows_through(nodes, &locator, key);
             attrs.insert("follows".into(), follows.into());
         }
-        let node = usage(coordinate, format!("flake-input:{locator}"), attrs);
+        let node = usage(coordinate, &format!("flake-input:{locator}"), attrs);
         let pins: Vec<_> = revision
             .map(|revision| (producer, revision.to_string()))
             .into_iter()
@@ -497,7 +499,7 @@ fn coordinate_from_url(raw: &str) -> Option<String> {
 
 /// Git sources in a Cargo.lock, grouped by package name. A package pinned at
 /// several revisions lists them all.
-fn cargo_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
+fn cargo_usages(coordinate: &str, text: &str) -> Usages {
     let mut packages: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
     let mut current: Option<(Option<String>, Option<String>)> = None;
     for line in text.lines() {
@@ -533,7 +535,7 @@ fn cargo_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         };
         let node = usage(
             coordinate,
-            format!("cargo-git:{package}"),
+            &format!("cargo-git:{package}"),
             Attrs::from([
                 ("usageKind".to_string(), Value::String("cargo-git".into())),
                 ("path".to_string(), Value::String("Cargo.lock".into())),
@@ -544,7 +546,7 @@ fn cargo_usages(coordinate: &str, text: &str) -> Result<Usages, String> {
         let pins: Vec<_> = sources.into_iter().collect();
         usages.push_usage(&repository, node, &pins);
     }
-    Ok(usages)
+    usages
 }
 
 fn finish_package(

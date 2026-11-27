@@ -3,13 +3,14 @@ use fleetix::validate::validate;
 use serde_json::{Value, json};
 
 fn topology(catalog: Value) -> Topology {
-    serde_json::from_value(json!({
+    let mut value = json!({
         "schemaVersion": 2,
         "hosts": {}, "links": {}, "domains": {},
-        "services": {"catalog": catalog},
+        "services": {},
         "access": {"ssh": {"port": 22, "hostKeyPath": "/host.key", "hostPubKeyPath": "/host.pub"}}
-    }))
-    .unwrap()
+    });
+    value["services"]["catalog"] = catalog;
+    serde_json::from_value(value).unwrap()
 }
 
 #[test]

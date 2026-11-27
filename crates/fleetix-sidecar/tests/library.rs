@@ -28,7 +28,7 @@ async fn http_proxy_works_on_a_single_thread_runtime_without_publishing_cache_en
                 match stream.try_read(&mut buffer) {
                     Ok(0) => panic!("proxy connection closed before request headers"),
                     Ok(count) => request.extend_from_slice(&buffer[..count]),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(error) => panic!("{error}"),
                 }
             }
@@ -39,7 +39,7 @@ async fn http_proxy_works_on_a_single_thread_runtime_without_publishing_cache_en
                 stream.writable().await.unwrap();
                 match stream.try_write(bytes) {
                     Ok(count) => bytes = &bytes[count..],
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(error) => panic!("{error}"),
                 }
             }

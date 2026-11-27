@@ -10,10 +10,10 @@ use miette::{Result, miette};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-/// The OpenSSH known_hosts store.
+/// The OpenSSH `known_hosts` store.
 pub struct OpenSshKnownHosts;
 
-/// A single host-key line from known_hosts, ready for proposal or declaration.
+/// A single host-key line from `known_hosts`, ready for proposal or declaration.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -46,19 +46,11 @@ pub fn entry_id(host_names: &[String], key_text: &str) -> String {
         hasher.update(b"\n");
     }
     hasher.update(key_text.as_bytes());
-    hex(&hasher.finalize())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    format!("{:x}", hasher.finalize())
 }
 
 impl OpenSshKnownHosts {
-    /// Observe a known_hosts store against the declared trust.
+    /// Observe a `known_hosts` store against the declared trust.
     pub fn observe(&self, path: &Path, declared: &DeclaredTrust) -> Result<Observation> {
         let (entries, skipped) = parse_entries(path)?;
         let mut proposals = Vec::new();
@@ -91,7 +83,7 @@ impl OpenSshKnownHosts {
     }
 }
 
-/// Parse a known_hosts store into entries and skip reasons. Used by the
+/// Parse a `known_hosts` store into entries and skip reasons. Used by the
 /// observer and by `integrate`/`ignore`, which re-read the store.
 pub fn parse_entries(path: &Path) -> Result<(Vec<Entry>, Vec<String>)> {
     let content = std::fs::read_to_string(path)
@@ -119,7 +111,7 @@ pub fn parse_entries(path: &Path) -> Result<(Vec<Entry>, Vec<String>)> {
     Ok((entries, skipped))
 }
 
-/// Parse one known_hosts line. `Ok(None)` marks lines that are structurally
+/// Parse one `known_hosts` line. `Ok(None)` marks lines that are structurally
 /// valid but can never be declared (hashed/marker lines).
 fn parse_line(line: &str, line_number: usize) -> Result<Option<Entry>> {
     let fields: Vec<&str> = line.split_whitespace().collect();

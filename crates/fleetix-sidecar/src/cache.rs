@@ -27,10 +27,7 @@ fn producer() -> Option<&'static str> {
 }
 
 pub(super) fn digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 pub(super) fn default_dir() -> Option<PathBuf> {
@@ -70,7 +67,7 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    async fn is_current(&self) -> bool {
+    fn is_current(&self) -> bool {
         for (path, hash) in &self.files {
             if !std::fs::read(path).is_ok_and(|bytes| digest(&bytes) == *hash) {
                 return false;
@@ -121,7 +118,7 @@ struct Entry {
     nix_hash: String,
 }
 
-pub(super) async fn get(dir: &Path, key: &str, flattened_hash: Option<&str>) -> Option<String> {
+pub(super) fn get(dir: &Path, key: &str, flattened_hash: Option<&str>) -> Option<String> {
     let entry: Entry =
         serde_json::from_slice(&std::fs::read(dir.join(format!("{key}.json"))).ok()?).ok()?;
     if entry.format != FORMAT
@@ -129,7 +126,7 @@ pub(super) async fn get(dir: &Path, key: &str, flattened_hash: Option<&str>) -> 
         || entry.flattened_hash.as_deref() != flattened_hash
         || entry.snapshot.volatile
         || digest(entry.nix.as_bytes()) != entry.nix_hash
-        || !entry.snapshot.is_current().await
+        || !entry.snapshot.is_current()
     {
         return None;
     }
@@ -315,8 +312,8 @@ impl EvalCapabilities for TracingCapabilities {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn binary_reads_invalidate_receipts_and_environment_enumeration_is_volatile() {
+    #[test]
+    fn binary_reads_invalidate_receipts_and_environment_enumeration_is_volatile() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("input.bin");
         std::fs::write(&path, [0, 255]).unwrap();
@@ -327,9 +324,9 @@ mod tests {
         };
         assert_eq!(capabilities.read_bytes(&path).unwrap(), [0, 255]);
         let snapshot = std::mem::take(&mut *observed.lock().unwrap());
-        assert!(snapshot.is_current().await);
+        assert!(snapshot.is_current());
         std::fs::write(&path, [1, 255]).unwrap();
-        assert!(!snapshot.is_current().await);
+        assert!(!snapshot.is_current());
         capabilities.env_vars().unwrap();
         assert!(observed.lock().unwrap().volatile);
     }

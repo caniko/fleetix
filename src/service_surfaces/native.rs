@@ -1,4 +1,4 @@
-//! Native argv-only backend for persistent NixOS containers.
+//! Native argv-only backend for persistent `NixOS` containers.
 //!
 //! Never calls `nixos-container update`: it evaluates and builds. Activation
 //! atomically replaces the declarative container's stable `system` symlink and
@@ -7,7 +7,10 @@
 //! operator executable independent of the candidate.
 
 use super::runtime::{self, Admission, Backend, CommandEvidence};
-use super::*;
+use super::{
+    HEALTH_BIN, MANIFEST_FILE, Manifest, Policy, Surface, validate_absolute_path,
+    validate_store_executable_path, validate_store_path,
+};
 use std::fs;
 use std::io;
 use std::io::Read;
@@ -65,7 +68,7 @@ impl Native {
         self.policy.surface_container(surface)
     }
 
-    fn health_hook(&self, artifact: &str) -> Result<PathBuf, String> {
+    fn health_hook(artifact: &str) -> Result<PathBuf, String> {
         let hook = Path::new(artifact).join(HEALTH_BIN);
         validate_executable("release health hook", &hook)?;
         Ok(hook)
@@ -186,7 +189,7 @@ impl Native {
                     ));
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("inspect release root {}: {error}", root.display())),
         }
         let argv = vec![
@@ -411,7 +414,7 @@ impl Native {
     /// Run one guest health attempt inside a transient systemd scope.
     ///
     /// `nixos-container run` reaches the release hook through `su -l -c`, which
-    /// calls setsid(): a hung hook leaves the spawned process group, so only a
+    /// calls `setsid()`: a hung hook leaves the spawned process group, so only a
     /// cgroup-wide kill contains it. The scope is named so the timeout path can
     /// kill exactly this attempt without touching any other unit.
     fn run_health_scoped(
@@ -471,7 +474,7 @@ impl Backend for Native {
         validate_release_directory(Path::new(artifact))?;
         self.check_closure(artifact)?;
         self.manifest(artifact)?;
-        self.health_hook(artifact)?;
+        Self::health_hook(artifact)?;
         Ok(())
     }
 
@@ -573,7 +576,7 @@ impl Backend for Native {
     }
 
     fn health(&self, surface: Surface, artifact: &str) -> Result<CommandEvidence, String> {
-        let hook = self.health_hook(artifact)?;
+        let hook = Self::health_hook(artifact)?;
         let argv = vec![
             path_string("nixos_container", &self.policy.tools.nixos_container)?,
             "run".into(),
@@ -846,7 +849,7 @@ fn run_with_limit(
     );
     let evidence = CommandEvidence {
         command: argv.to_vec(),
-        exit_code: status.as_ref().and_then(|status| status.code()),
+        exit_code: status.as_ref().and_then(std::process::ExitStatus::code),
         stdout,
         stderr,
     };
@@ -884,10 +887,12 @@ fn prepare_command_child(leases: &[i32], timeout_ms: i32) -> io::Result<()> {
     // membership reserves that process group even if the CLI is killed.
     unsafe {
         if !leases.is_empty() {
-            let pidfd = libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32;
+            let pidfd = libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0);
             if pidfd < 0 {
                 return Err(io::Error::last_os_error());
             }
+            let pidfd =
+                i32::try_from(pidfd).map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
             let mut ready = [-1; 2];
             if libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) < 0 {
                 return Err(io::Error::last_os_error());
@@ -904,12 +909,13 @@ fn prepare_command_child(leases: &[i32], timeout_ms: i32) -> io::Result<()> {
                 // in particular, close Rust's exec-error and output pipes.
                 let mut first = 2u32;
                 for &fd in leases {
-                    if first < fd as u32
-                        && libc::syscall(libc::SYS_close_range, first, fd as u32 - 1, 0) < 0
-                    {
+                    let Ok(fd) = u32::try_from(fd) else {
+                        libc::_exit(125);
+                    };
+                    if first < fd && libc::syscall(libc::SYS_close_range, first, fd - 1, 0) < 0 {
                         libc::_exit(125);
                     }
-                    first = fd as u32 + 1;
+                    first = fd + 1;
                 }
                 if libc::syscall(libc::SYS_close_range, first, u32::MAX, 0) < 0 {
                     libc::_exit(125);
@@ -924,14 +930,14 @@ fn prepare_command_child(leases: &[i32], timeout_ms: i32) -> io::Result<()> {
                     revents: 0,
                 };
                 // Timeout, leader exit, or an unexpected signal all fail closed.
-                libc::poll(&mut poll, 1, timeout_ms);
+                libc::poll(&raw mut poll, 1, timeout_ms);
                 libc::kill(-libc::getpgrp(), libc::SIGKILL);
                 libc::_exit(125);
             }
             libc::close(ready[1]);
             libc::close(pidfd);
             let mut byte = 0u8;
-            let read = libc::read(ready[0], (&mut byte as *mut u8).cast(), 1);
+            let read = libc::read(ready[0], (&raw mut byte).cast(), 1);
             libc::close(ready[0]);
             if read != 1 || byte != b'R' {
                 return Err(io::Error::from_raw_os_error(libc::EIO));
@@ -959,10 +965,10 @@ fn prepare_command_child(_: &[i32], _: i32) -> io::Result<()> {
 }
 
 fn kill_process_group(process_group: u32) {
-    if process_group <= i32::MAX as u32 {
+    if let Ok(pid) = i32::try_from(process_group) {
         // SAFETY: kill with a negative pid targets the child's own process
         // group. Failure (for example ESRCH) is harmless here.
-        let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
+        let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
 }
 
@@ -970,7 +976,7 @@ fn kill_process_group(process_group: u32) {
 /// transient systemd scope, its whole cgroup.
 ///
 /// Guest commands reach the release hook through `su -l -c`, which calls
-/// setsid() for a command invocation. The hook therefore leaves the process
+/// `setsid()` for a command invocation. The hook therefore leaves the process
 /// group and would survive a group-only kill while the lease is released; only
 /// the scope's cgroup still contains it.
 fn terminate(process_group: u32, cleanup: Option<&[String]>) -> Result<(), String> {
@@ -989,7 +995,7 @@ fn child_exited(pid: u32) -> io::Result<bool> {
         libc::waitid(
             libc::P_PID,
             pid as libc::id_t,
-            &mut info,
+            &raw mut info,
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         )
     } == -1
@@ -1018,7 +1024,7 @@ fn drain(mut stream: impl Read, limit: usize) -> (Vec<u8>, bool) {
                     truncated = true;
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => {
                 truncated = true;
                 break;
@@ -1657,7 +1663,11 @@ mod tests {
         );
         let unit = fs::read_to_string(&unit_log).unwrap();
         assert!(unit.starts_with("fleetix-surfaces-health-"), "{unit}");
-        assert!(unit.trim_end().ends_with(".scope"), "{unit}");
+        assert_eq!(
+            Path::new(unit.trim_end()).extension(),
+            Some("scope".as_ref()),
+            "{unit}"
+        );
         // Crash-safe bound: systemd stops the scope even if the CLI is killed.
         assert_eq!(
             fs::read_to_string(&property_log).unwrap(),

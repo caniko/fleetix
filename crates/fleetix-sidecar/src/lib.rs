@@ -106,7 +106,7 @@ pub async fn write_with_cache(
             None
         };
     if let Some((dir, key)) = &cache_location {
-        if let Some(nix) = cache::get(dir, key, None).await {
+        if let Some(nix) = cache::get(dir, key, None) {
             return Ok(WriteOutcome {
                 cached: true,
                 changed: write_rendered(output, &nix)?,

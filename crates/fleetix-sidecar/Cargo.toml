@@ -15,6 +15,9 @@ include = ["/src/**", "/tests/**", "/README.md", "/LICENSE*", "/Cargo.toml"]
 [package.metadata.docs.rs]
 all-features = true
 
+[lints]
+workspace = true
+
 # The default build ships this binary (`cli` is a default feature); it is not
 # gated with `required-features` so release archives and cargo-binstall see it.
 [[bin]]

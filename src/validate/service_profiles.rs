@@ -20,7 +20,7 @@ pub(super) fn validate(topology: &Topology, report: &mut ValidationReport) {
                 "Display name and category must be nonempty".into(),
             );
         }
-        if name.is_empty() || profile.health.keys().any(|id| id.is_empty()) {
+        if name.is_empty() || profile.health.keys().any(String::is_empty) {
             error(
                 "missing_id",
                 "Service and check identifiers must be nonempty".into(),
@@ -251,13 +251,13 @@ pub(super) fn validate(topology: &Topology, report: &mut ValidationReport) {
                             error(
                                 "invalid_unit",
                                 format!("Check '{id}' needs a single valid systemd unit"),
-                            )
+                            );
                         }
                         HealthProbe::Contract { contract, .. } if contract.trim().is_empty() => {
                             error(
                                 "invalid_contract",
                                 format!("Check '{id}' needs a contract ID"),
-                            )
+                            );
                         }
                         HealthProbe::Dns {
                             query, expected, ..
@@ -267,7 +267,7 @@ pub(super) fn validate(topology: &Topology, report: &mut ValidationReport) {
                             error(
                                 "invalid_dns",
                                 format!("Check '{id}' needs a DNS name and expected IPv4 address"),
-                            )
+                            );
                         }
                         _ => (),
                     }

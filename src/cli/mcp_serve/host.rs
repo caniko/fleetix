@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(found["cgroups"][0]["maxBytes"], Value::Null);
         assert_eq!(found["cgroups"][0]["anonBytes"], 200);
         assert_eq!(found["cgroups"][0]["events"]["oom_kill"], 76);
-        assert_eq!(found["cgroups"][1]["maxBytes"], 17179869184u64);
+        assert_eq!(found["cgroups"][1]["maxBytes"], 17_179_869_184u64);
         // Unreadable sources are absent, never confused with an unlimited `max`.
         let builders = found["cgroups"][1].as_object().unwrap();
         for absent in ["peakBytes", "anonBytes", "events", "swapBytes"] {
@@ -352,6 +352,6 @@ mod tests {
         assert_eq!(events[0]["time"], "2026-11-08T18:19:56+0100");
         assert_eq!(events[0]["killedProcesses"], 3);
         assert_eq!(events[0]["killedByCommand"]["cc1plus"], 2);
-        assert!(parse_oom_events("Killed process 1 (x)\n").is_empty());
+        assert_eq!(parse_oom_events("Killed process 1 (x)\n"), [] as [Value; 0]);
     }
 }

@@ -140,10 +140,10 @@ impl Policy {
             &mut policy.health_command[0],
         ] {
             storage::trusted_path(Path::new(executable))?;
-            *executable = freeze_executable(Path::new(executable))?
+            freeze_executable(Path::new(executable))?
                 .to_str()
                 .ok_or("policy executable is not UTF-8")?
-                .to_owned();
+                .clone_into(executable);
             store_root(Path::new(executable))?;
         }
         policy.validate_files()?;
@@ -152,9 +152,7 @@ impl Policy {
 
     fn validate_files(&self) -> Result<(), String> {
         self.validate()?;
-        // SAFETY: geteuid has no preconditions and does not mutate state.
-        let root = unsafe { libc::geteuid() } == 0;
-        if (self.backend == "nixos") != root {
+        if (self.backend == "nixos") != is_root() {
             return Err(
                 "NixOS requires a privileged worker; Home Manager requires its unprivileged owner"
                     .into(),
@@ -176,6 +174,11 @@ impl Policy {
     fn command_timeout(&self) -> Duration {
         Duration::from_secs(self.command_timeout_seconds)
     }
+}
+
+fn is_root() -> bool {
+    // SAFETY: geteuid has no preconditions and does not mutate state.
+    (unsafe { libc::geteuid() }) == 0
 }
 
 fn freeze_executable(path: &Path) -> Result<PathBuf, String> {
