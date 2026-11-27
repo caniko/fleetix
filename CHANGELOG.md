@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (default `0`), and `watchdogSeconds` (default `120`, setting
     `NotifyAccess = "main"` and `WatchdogSec`).
 
+- Fleet topology can model DNS zones across multiple providers, record
+  migration targets, and configure dynamic DNS by address family
+  ([#62](https://github.com/caniko/fleetix/pull/62)).
+- `fleetix::compute` adds topology-neutral placement contracts and tracks
+  reservations, reconciliation, and wait queues. Callers retain control of
+  placement and recommendation order
+  ([#63](https://github.com/caniko/fleetix/pull/63)).
+
 ### Changed
 
 - `build_train::RequestRecord` gains defaulted `updated_at`,
@@ -61,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts stay backward compatible.
 - Optional `build-train-native` dependency `nix-manager-core` updated from
   `0.4.2` to `0.4.9` for cooperative build cancellation.
+- `fleetix` and `fleetix-sidecar` now share Rust and Clippy lints without
+  changing their public APIs or wire formats
+  ([#64](https://github.com/caniko/fleetix/pull/64)).
 
 ## [0.16.0] - 2026-11-23
 
